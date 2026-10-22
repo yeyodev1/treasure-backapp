@@ -10,6 +10,7 @@ import * as inventory from "../controllers/inventory.controller";
 import * as reports from "../controllers/report.controller";
 import * as publicCtrl from "../controllers/public.controller";
 import * as uploads from "../controllers/upload.controller";
+import * as live from "../controllers/live.controller";
 import { upload } from "../middlewares/upload.middleware";
 
 export default function routerApi(app: Application) {
@@ -109,6 +110,9 @@ export default function routerApi(app: Application) {
     requireRole("admin", "bodega", "direccion"),
     inventory.listMovements,
   );
+
+  // Pulso en vivo (administración y dirección)
+  router.get("/live", requireAuth, requireRole("admin", "direccion"), live.livePulse);
 
   // Reportes (administración y dirección)
   router.get(
