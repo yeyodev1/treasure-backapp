@@ -70,21 +70,26 @@ export async function collectCabin(req: Request, res: Response, next: NextFuncti
 
 export async function listPayments(req: Request, res: Response, next: NextFunction) {
   try {
-    const { cruiseId, from, to } = req.query as Record<string, string>;
+    const { cruiseId, from, to, before, limit } = req.query as Record<string, string>;
     const filter: Record<string, unknown> = {};
     if (cruiseId) filter.cruise = cruiseId;
-    if (from || to) {
+    if (from || to || before) {
       filter.createdAt = {
         ...(from ? { $gte: new Date(from) } : {}),
         ...(to ? { $lte: new Date(to) } : {}),
+        ...(before ? { $lt: new Date(before) } : {}),
       };
     }
+
+    const pageSize = Math.min(Number(limit) || 40, 300);
     const payments = await Payment.find(filter)
       .populate("collectedBy", "name role")
       .populate("cruise", "name")
       .sort({ createdAt: -1 })
-      .limit(300);
-    res.json({ payments });
+      .limit(pageSize + 1);
+
+    const hasMore = payments.length > pageSize;
+    res.json({ payments: hasMore ? payments.slice(0, pageSize) : payments, hasMore });
   } catch (err) {
     next(err);
   }
