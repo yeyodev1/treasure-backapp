@@ -6,6 +6,8 @@ export interface AccountSummary {
   orders: Array<{
     id: string;
     createdAt: Date;
+    /** Trazabilidad: quién registró el pedido. */
+    by: string;
     items: Array<{ name: string; qty: number; unitPrice: number; courtesy: boolean }>;
     total: number;
   }>;
@@ -23,7 +25,9 @@ export async function buildCabinAccount(
     cruise: cruiseId,
     cabinNumber,
     status: "abierta",
-  }).sort({ createdAt: 1 });
+  })
+    .populate("createdBy", "name")
+    .sort({ createdAt: 1 });
 
   let subtotal = 0;
   let courtesyTotal = 0;
@@ -39,6 +43,7 @@ export async function buildCabinAccount(
     return {
       id: order._id.toString(),
       createdAt: order.createdAt as Date,
+      by: (order.createdBy as unknown as { name?: string })?.name ?? "",
       items: order.items.map((i) => ({
         name: i.name,
         qty: i.qty,
