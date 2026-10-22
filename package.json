@@ -1,0 +1,41 @@
+{
+  "name": "treasure-backapp",
+  "version": "1.0.0",
+  "private": true,
+  "description": "API del sistema de bar del crucero Treasure (TESE TURIS). Express 5 + Mongoose + TypeScript.",
+  "main": "dist/index.js",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "dev": "ts-node-dev --respawn --transpile-only src/index.ts",
+    "build": "tsc",
+    "compile": "tsc --watch",
+    "start": "node dist/index.js",
+    "seed": "ts-node-dev --transpile-only src/scripts/seed.ts",
+    "format": "prettier --write 'src/**/*.{ts,json,md}'"
+  },
+  "dependencies": {
+    "axios": "^1.7.9",
+    "bcryptjs": "^3.0.3",
+    "cloudinary": "^2.11.0",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.7",
+    "express": "^5.1.0",
+    "jsonwebtoken": "^9.0.2",
+    "mongoose": "^8.9.5",
+    "multer": "^2.5.0",
+    "resend": "^6.20.0"
+  },
+  "devDependencies": {
+    "@types/cors": "^2.8.17",
+    "@types/express": "^5.0.0",
+    "@types/jsonwebtoken": "^9.0.7",
+    "@types/multer": "^2.3.0",
+    "@types/node": "^22.10.5",
+    "mongodb-memory-server": "^11.3.0",
+    "prettier": "^3.6.2",
+    "ts-node-dev": "^2.0.0",
+    "typescript": "^5.7.3"
+  }
+}
