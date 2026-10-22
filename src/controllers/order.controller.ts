@@ -78,17 +78,21 @@ export async function createOrder(req: Request, res: Response, next: NextFunctio
 
 export async function listOrders(req: Request, res: Response, next: NextFunction) {
   try {
-    const { cruiseId, cabinNumber, status } = req.query as Record<string, string>;
+    const { cruiseId, cabinNumber, status, before, limit } = req.query as Record<string, string>;
     const filter: Record<string, unknown> = {};
     if (cruiseId) filter.cruise = cruiseId;
     if (cabinNumber) filter.cabinNumber = Number(cabinNumber);
     if (status) filter.status = status;
+    if (before) filter.createdAt = { $lt: new Date(before) };
 
+    const pageSize = Math.min(Number(limit) || 50, 300);
     const orders = await Order.find(filter)
       .populate("createdBy", "name role")
       .sort({ createdAt: -1 })
-      .limit(300);
-    res.json({ orders });
+      .limit(pageSize + 1);
+
+    const hasMore = orders.length > pageSize;
+    res.json({ orders: hasMore ? orders.slice(0, pageSize) : orders, hasMore });
   } catch (err) {
     next(err);
   }
