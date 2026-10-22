@@ -97,18 +97,22 @@ export async function warehousePurchase(req: Request, res: Response, next: NextF
 /** Bitácora de movimientos: quién hizo qué, cuándo y por qué. */
 export async function listMovements(req: Request, res: Response, next: NextFunction) {
   try {
-    const { cruiseId, productId, type } = req.query as Record<string, string>;
+    const { cruiseId, productId, type, before, limit } = req.query as Record<string, string>;
     const filter: Record<string, unknown> = {};
     if (cruiseId) filter.cruise = cruiseId;
     if (productId) filter.product = productId;
     if (type) filter.type = type;
+    if (before) filter.createdAt = { $lt: new Date(before) };
 
+    const pageSize = Math.min(Number(limit) || 40, 300);
     const movements = await StockMovement.find(filter)
       .populate("product", "name unit icon")
       .populate("user", "name role")
       .sort({ createdAt: -1 })
-      .limit(300);
-    res.json({ movements });
+      .limit(pageSize + 1);
+
+    const hasMore = movements.length > pageSize;
+    res.json({ movements: hasMore ? movements.slice(0, pageSize) : movements, hasMore });
   } catch (err) {
     next(err);
   }
