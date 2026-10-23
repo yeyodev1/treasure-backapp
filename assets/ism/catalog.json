@@ -1,0 +1,408 @@
+[
+ {
+  "code": "R-04",
+  "title": "Datos personales, competencias y estado físico de la tripulación",
+  "group": "Tripulación",
+  "frequency": "evento",
+  "officeOnly": false,
+  "pages": 1,
+  "fieldCount": 34,
+  "stages": {
+   "tripulacion": 1,
+   "capitan": 0,
+   "oficina": 1
+  }
+ },
+ {
+  "code": "R-05",
+  "title": "Familiarización del personal de tripulación",
+  "group": "Tripulación",
+  "frequency": "evento",
+  "officeOnly": false,
+  "pages": 1,
+  "fieldCount": 38,
+  "stages": {
+   "tripulacion": 1,
+   "capitan": 1,
+   "oficina": 1
+  }
+ },
+ {
+  "code": "R-06",
+  "title": "Capacitación para el personal",
+  "group": "Tripulación",
+  "frequency": "evento",
+  "officeOnly": false,
+  "pages": 1,
+  "fieldCount": 40,
+  "stages": {
+   "tripulacion": 13,
+   "capitan": 1,
+   "oficina": 1
+  }
+ },
+ {
+  "code": "R-07",
+  "title": "Acta entrega – recepción de cargo",
+  "group": "Tripulación",
+  "frequency": "por_cargo",
+  "officeOnly": false,
+  "pages": 1,
+  "fieldCount": 15,
+  "stages": {
+   "tripulacion": 2,
+   "capitan": 1,
+   "oficina": 1
+  }
+ },
+ {
+  "code": "R-08",
+  "title": "Reporte de incumplimiento",
+  "group": "Seguridad",
+  "frequency": "evento",
+  "officeOnly": false,
+  "pages": 1,
+  "fieldCount": 16,
+  "stages": {
+   "tripulacion": 0,
+   "capitan": 2,
+   "oficina": 1
+  }
+ },
+ {
+  "code": "R-09",
+  "title": "Reporte de accidente, cuasi accidente o condición peligrosa",
+  "group": "Seguridad",
+  "frequency": "evento",
+  "officeOnly": false,
+  "pages": 1,
+  "fieldCount": 16,
+  "stages": {
+   "tripulacion": 0,
+   "capitan": 2,
+   "oficina": 1
+  }
+ },
+ {
+  "code": "R-10",
+  "title": "Acta del comité de seguridad de a bordo",
+  "group": "Comités y gestión",
+  "frequency": "evento",
+  "officeOnly": false,
+  "pages": 1,
+  "fieldCount": 16,
+  "stages": {
+   "tripulacion": 3,
+   "capitan": 1,
+   "oficina": 1
+  }
+ },
+ {
+  "code": "R-11",
+  "title": "Acta del comité de revisión general",
+  "group": "Comités y gestión",
+  "frequency": "evento",
+  "officeOnly": true,
+  "pages": 1,
+  "fieldCount": 8,
+  "stages": {
+   "tripulacion": 0,
+   "capitan": 0,
+   "oficina": 4
+  }
+ },
+ {
+  "code": "R-12",
+  "title": "Registro de cambios",
+  "group": "Comités y gestión",
+  "frequency": "evento",
+  "officeOnly": false,
+  "pages": 1,
+  "fieldCount": 152,
+  "stages": {
+   "tripulacion": 25,
+   "capitan": 0,
+   "oficina": 2
+  }
+ },
+ {
+  "code": "R-13",
+  "title": "Lista de chequeo de combustible",
+  "group": "Operación",
+  "frequency": "evento",
+  "officeOnly": false,
+  "pages": 1,
+  "fieldCount": 46,
+  "stages": {
+   "tripulacion": 1,
+   "capitan": 1,
+   "oficina": 0
+  }
+ },
+ {
+  "code": "R-14",
+  "title": "Chequeo previo al zarpe y rondas de seguridad",
+  "group": "Operación",
+  "frequency": "por_salida",
+  "officeOnly": false,
+  "pages": 1,
+  "fieldCount": 65,
+  "stages": {
+   "tripulacion": 0,
+   "capitan": 1,
+   "oficina": 1
+  }
+ },
+ {
+  "code": "R-15",
+  "title": "Autorización de trabajos especiales",
+  "group": "Operación",
+  "frequency": "evento",
+  "officeOnly": false,
+  "pages": 1,
+  "fieldCount": 65,
+  "stages": {
+   "tripulacion": 1,
+   "capitan": 1,
+   "oficina": 0
+  }
+ },
+ {
+  "code": "R-16",
+  "title": "Mantenimiento preventivo de cubierta y máquinas",
+  "group": "Mantenimiento",
+  "frequency": "por_equipo",
+  "officeOnly": false,
+  "pages": 1,
+  "fieldCount": 139,
+  "stages": {
+   "tripulacion": 1,
+   "capitan": 1,
+   "oficina": 1
+  }
+ },
+ {
+  "code": "R-17",
+  "title": "Orden de trabajo",
+  "group": "Mantenimiento",
+  "frequency": "evento",
+  "officeOnly": false,
+  "pages": 1,
+  "fieldCount": 36,
+  "stages": {
+   "tripulacion": 1,
+   "capitan": 2,
+   "oficina": 2
+  }
+ },
+ {
+  "code": "R-18_Cubierta",
+  "title": "Orden de requisición · Cubierta",
+  "group": "Mantenimiento",
+  "frequency": "evento",
+  "officeOnly": false,
+  "pages": 2,
+  "fieldCount": 54,
+  "stages": {
+   "tripulacion": 2,
+   "capitan": 1,
+   "oficina": 0
+  }
+ },
+ {
+  "code": "R-18_Maquinas",
+  "title": "Orden de requisición · Máquinas",
+  "group": "Mantenimiento",
+  "frequency": "evento",
+  "officeOnly": false,
+  "pages": 2,
+  "fieldCount": 54,
+  "stages": {
+   "tripulacion": 2,
+   "capitan": 1,
+   "oficina": 0
+  }
+ },
+ {
+  "code": "R-19",
+  "title": "Reporte de cumplimiento de zafarrancho",
+  "group": "Seguridad",
+  "frequency": "evento",
+  "officeOnly": false,
+  "pages": 1,
+  "fieldCount": 31,
+  "stages": {
+   "tripulacion": 0,
+   "capitan": 1,
+   "oficina": 1
+  }
+ },
+ {
+  "code": "R-20",
+  "title": "Registro de entrega de medicinas",
+  "group": "Tripulación",
+  "frequency": "evento",
+  "officeOnly": false,
+  "pages": 1,
+  "fieldCount": 86,
+  "stages": {
+   "tripulacion": 14,
+   "capitan": 1,
+   "oficina": 1
+  }
+ },
+ {
+  "code": "R-21",
+  "title": "Entrega de EPP",
+  "group": "Tripulación",
+  "frequency": "evento",
+  "officeOnly": false,
+  "pages": 1,
+  "fieldCount": 25,
+  "stages": {
+   "tripulacion": 1,
+   "capitan": 0,
+   "oficina": 1
+  }
+ },
+ {
+  "code": "R-22",
+  "title": "Evaluación de desempeño",
+  "group": "Tripulación",
+  "frequency": "por_cargo",
+  "officeOnly": false,
+  "pages": 1,
+  "fieldCount": 38,
+  "stages": {
+   "tripulacion": 2,
+   "capitan": 0,
+   "oficina": 1
+  }
+ },
+ {
+  "code": "R-23",
+  "title": "Registro de horas de descanso",
+  "group": "Tripulación",
+  "frequency": "por_cargo_mensual",
+  "officeOnly": false,
+  "pages": 1,
+  "fieldCount": 850,
+  "stages": {
+   "tripulacion": 1,
+   "capitan": 1,
+   "oficina": 1
+  }
+ },
+ {
+  "code": "R-24",
+  "title": "Acta de eliminación de documentos",
+  "group": "Comités y gestión",
+  "frequency": "evento",
+  "officeOnly": true,
+  "pages": 1,
+  "fieldCount": 137,
+  "stages": {
+   "tripulacion": 0,
+   "capitan": 0,
+   "oficina": 2
+  }
+ },
+ {
+  "code": "R-25_Alcohol",
+  "title": "Control mensual de alcohol",
+  "group": "Seguridad",
+  "frequency": "mensual",
+  "officeOnly": false,
+  "pages": 1,
+  "fieldCount": 70,
+  "stages": {
+   "tripulacion": 0,
+   "capitan": 1,
+   "oficina": 1
+  }
+ },
+ {
+  "code": "R-25_Drogas",
+  "title": "Control mensual de drogas",
+  "group": "Seguridad",
+  "frequency": "mensual",
+  "officeOnly": false,
+  "pages": 1,
+  "fieldCount": 70,
+  "stages": {
+   "tripulacion": 0,
+   "capitan": 1,
+   "oficina": 1
+  }
+ },
+ {
+  "code": "R-26",
+  "title": "Reporte semanal de crucero",
+  "group": "Operación",
+  "frequency": "semanal",
+  "officeOnly": false,
+  "pages": 1,
+  "fieldCount": 24,
+  "stages": {
+   "tripulacion": 4,
+   "capitan": 1,
+   "oficina": 1
+  }
+ },
+ {
+  "code": "R-27",
+  "title": "Matriz de evaluación de riesgo",
+  "group": "Seguridad",
+  "frequency": "evento",
+  "officeOnly": false,
+  "pages": 1,
+  "fieldCount": 97,
+  "stages": {
+   "tripulacion": 1,
+   "capitan": 0,
+   "oficina": 0
+  }
+ },
+ {
+  "code": "R-28",
+  "title": "Chequeo mensual de equipos contraincendios y salvamento",
+  "group": "Seguridad",
+  "frequency": "mensual",
+  "officeOnly": false,
+  "pages": 4,
+  "fieldCount": 348,
+  "stages": {
+   "tripulacion": 1,
+   "capitan": 1,
+   "oficina": 1
+  }
+ },
+ {
+  "code": "R-29",
+  "title": "Registro de informe",
+  "group": "Comités y gestión",
+  "frequency": "evento",
+  "officeOnly": false,
+  "pages": 1,
+  "fieldCount": 10,
+  "stages": {
+   "tripulacion": 1,
+   "capitan": 1,
+   "oficina": 1
+  }
+ },
+ {
+  "code": "R-30",
+  "title": "Registro de toma de conocimiento",
+  "group": "Comités y gestión",
+  "frequency": "evento",
+  "officeOnly": false,
+  "pages": 1,
+  "fieldCount": 116,
+  "stages": {
+   "tripulacion": 19,
+   "capitan": 0,
+   "oficina": 2
+  }
+ }
+]
