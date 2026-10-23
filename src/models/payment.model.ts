@@ -19,10 +19,19 @@ export interface IBillingInfo {
   country: string;
 }
 
+export const PAYMENT_STATUSES = ["vigente", "reversado"] as const;
+export type PaymentStatus = (typeof PAYMENT_STATUSES)[number];
+
 export interface IPayment {
   cruise: Types.ObjectId;
   cabinNumber: number;
   orders: Types.ObjectId[];
+  /** Versión de la cuenta aprobada que se cobró. */
+  accountVersion: number;
+  status: PaymentStatus;
+  reversedBy: Types.ObjectId | null;
+  reversedAt: Date | null;
+  reverseReason: string;
   subtotal: number;
   courtesyTotal: number;
   total: number;
@@ -53,6 +62,11 @@ const paymentSchema = new Schema<IPayment>(
     cruise: { type: Schema.Types.ObjectId, ref: "Cruise", required: true },
     cabinNumber: { type: Number, required: true },
     orders: [{ type: Schema.Types.ObjectId, ref: "Order" }],
+    accountVersion: { type: Number, default: 1 },
+    status: { type: String, enum: PAYMENT_STATUSES, default: "vigente" },
+    reversedBy: { type: Schema.Types.ObjectId, ref: "User", default: null },
+    reversedAt: { type: Date, default: null },
+    reverseReason: { type: String, default: "" },
     subtotal: { type: Number, required: true, min: 0 },
     courtesyTotal: { type: Number, default: 0, min: 0 },
     total: { type: Number, required: true, min: 0 },
