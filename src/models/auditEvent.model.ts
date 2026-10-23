@@ -16,6 +16,7 @@ export const AUDIT_KINDS = [
   "catalogo",
   "equipo",
   "salida",
+  "registro",
 ] as const;
 export type AuditKind = (typeof AUDIT_KINDS)[number];
 
