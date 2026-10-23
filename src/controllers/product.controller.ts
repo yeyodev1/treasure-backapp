@@ -1,14 +1,21 @@
 import { NextFunction, Request, Response } from "express";
-import { Product, PRODUCT_CATEGORIES, ProductCategory } from "../models/product.model";
-import { cocktailPriceFromRecipe } from "../services/inventory.service";
-import { badRequest, notFound } from "../errors/httpError";
+import { Types } from "mongoose";
+import { IProduct, Product, PRODUCT_CATEGORIES, ProductCategory } from "../models/product.model";
+import { suggestedPrice } from "../services/inventory.service";
+import { logEvent } from "../services/audit.service";
+import { badRequest, forbidden, notFound } from "../errors/httpError";
+import { PRODUCT_KINDS, ProductKind, STOCK_UNITS, StockUnit } from "../utils/units";
+
+const RECIPE_POPULATE = "name kind stockUnit containerSize containerLabel servingSize servingPrice";
 
 export async function listProducts(req: Request, res: Response, next: NextFunction) {
   try {
-    const onlyActive = req.query.all !== "1";
-    const filter = onlyActive ? { active: true } : {};
+    const filter: Record<string, unknown> = {};
+    if (req.query.all !== "1") filter.active = true;
+    if (typeof req.query.kind === "string") filter.kind = req.query.kind;
     const products = await Product.find(filter)
-      .populate("recipe.product", "name price unit")
+      .populate("recipe.product", RECIPE_POPULATE)
+      .populate("priceHistory.changedBy", "name")
       .sort({ category: 1, name: 1 });
     res.json({ products });
   } catch (err) {
@@ -20,79 +27,122 @@ interface ProductBody {
   name?: string;
   category?: ProductCategory;
   icon?: string;
+  kind?: ProductKind;
   price?: number;
-  unit?: string;
-  warehouseStock?: number;
-  isCocktail?: boolean;
+  sellable?: boolean;
+  stockUnit?: StockUnit;
+  containerSize?: number;
+  containerLabel?: string;
+  lowStockThreshold?: number;
+  servingSize?: number;
+  servingPrice?: number;
   recipe?: Array<{ product: string; qty: number }>;
   active?: boolean;
 }
 
-async function resolvePrice(body: ProductBody): Promise<number> {
-  // Cócteles con receta: el precio se calcula automáticamente según los ingredientes.
-  if (body.isCocktail && body.recipe?.length) {
-    const ids = body.recipe.map((r) => r.product);
-    const ingredients = await Product.find({ _id: { $in: ids } }).select("price");
-    const priceMap = new Map(ingredients.map((p) => [p._id.toString(), p.price]));
-    return cocktailPriceFromRecipe(
-      body.recipe.map((r) => ({
-        product: { price: priceMap.get(r.product) ?? 0 },
-        qty: r.qty,
-      })),
-    );
+async function validateRecipe(recipe: Array<{ product: string; qty: number }>) {
+  if (!recipe.length) throw badRequest("La receta necesita al menos un ingrediente");
+  const ids = recipe.map((r) => r.product);
+  if (ids.some((id) => !Types.ObjectId.isValid(id))) throw badRequest("Ingrediente inválido");
+  const ingredients = await Product.find({ _id: { $in: ids } }).select("kind name");
+  if (ingredients.length !== new Set(ids).size) throw badRequest("Hay ingredientes que no existen");
+  const notPhysical = ingredients.find((p) => p.kind !== "fisico");
+  if (notPhysical) throw badRequest(`${notPhysical.name} no es un insumo físico`);
+  if (recipe.some((r) => !(r.qty > 0))) throw badRequest("Cada ingrediente necesita su medida");
+}
+
+/** Solo administración (Paula) cambia precios; queda historial con autor. */
+function applyPrice(product: IProduct, price: number, req: Request) {
+  if (req.auth!.role !== "admin") throw forbidden("Solo administración cambia precios");
+  if (!(price >= 0)) throw badRequest("Precio inválido");
+  if (product.price !== price) {
+    product.priceHistory.push({ price, changedBy: req.auth!.sub as never, at: new Date() });
+    product.price = price;
   }
-  if (body.price === undefined || body.price < 0) throw badRequest("Precio inválido");
-  return body.price;
+}
+
+function applyPhysicalFields(product: IProduct, body: ProductBody) {
+  if (body.stockUnit !== undefined) {
+    if (!STOCK_UNITS.includes(body.stockUnit)) throw badRequest("Unidad inválida");
+    product.stockUnit = body.stockUnit;
+  }
+  if (body.containerSize !== undefined) {
+    if (!(body.containerSize > 0)) throw badRequest("El tamaño del envase debe ser mayor a 0");
+    product.containerSize = body.containerSize;
+  }
+  if (body.containerLabel !== undefined) product.containerLabel = body.containerLabel;
+  if (body.sellable !== undefined) product.sellable = body.sellable;
+  if (body.lowStockThreshold !== undefined) product.lowStockThreshold = body.lowStockThreshold;
+  if (body.servingSize !== undefined) product.servingSize = body.servingSize;
+  if (body.servingPrice !== undefined) product.servingPrice = body.servingPrice;
 }
 
 export async function createProduct(req: Request, res: Response, next: NextFunction) {
   try {
     const body = req.body as ProductBody;
-    if (!body.name) throw badRequest("El nombre es obligatorio");
+    if (!body.name?.trim()) throw badRequest("El nombre es obligatorio");
+    if (!body.kind || !PRODUCT_KINDS.includes(body.kind)) throw badRequest("Tipo inválido");
     if (!body.category || !PRODUCT_CATEGORIES.includes(body.category)) {
       throw badRequest("Categoría inválida");
     }
+    if (body.kind === "receta") await validateRecipe(body.recipe ?? []);
 
-    const price = await resolvePrice(body);
-    const product = await Product.create({
-      name: body.name,
+    const product = new Product({
+      name: body.name.trim(),
       category: body.category,
       icon: body.icon ?? "glass",
-      price,
-      unit: body.unit ?? "unidad",
-      warehouseStock: body.warehouseStock ?? 0,
-      isCocktail: body.isCocktail ?? false,
-      recipe: body.recipe ?? [],
-      isCustom: false,
+      kind: body.kind,
+      price: 0,
+      sellable: body.kind === "fisico" ? body.sellable ?? true : true,
+      recipe: body.kind === "receta" ? body.recipe : [],
       createdBy: req.auth!.sub,
     });
-    res.status(201).json({ product });
+    if (body.kind === "fisico") applyPhysicalFields(product, body);
+    if (body.price !== undefined && body.price > 0) applyPrice(product, body.price, req);
+    await product.save();
+
+    await logEvent(req.auth, {
+      kind: "catalogo",
+      title: `Producto creado · ${product.name}`,
+      detail: product.kind,
+      amount: product.price || null,
+    });
+
+    res.status(201).json({ product: await product.populate("recipe.product", RECIPE_POPULATE) });
   } catch (err) {
     next(err);
   }
 }
 
-/** Cóctel creado sobre la marcha desde la tablet del bar (botón "crear cóctel"). */
+/** Cóctel fuera de carta armado en el bar: precio sugerido por sus medidas. */
 export async function createCustomCocktail(req: Request, res: Response, next: NextFunction) {
   try {
     const body = req.body as { name?: string; recipe?: Array<{ product: string; qty: number }> };
-    if (!body.name) throw badRequest("El cóctel necesita un nombre");
-    if (!body.recipe?.length) throw badRequest("El cóctel necesita al menos un ingrediente");
+    if (!body.name?.trim()) throw badRequest("El cóctel necesita un nombre");
+    await validateRecipe(body.recipe ?? []);
 
-    const price = await resolvePrice({ isCocktail: true, recipe: body.recipe });
+    const price = await suggestedPrice(body.recipe!);
     const product = await Product.create({
-      name: body.name,
+      name: body.name.trim(),
       category: "coctel",
       icon: "cocktail",
+      kind: "receta",
       price,
-      unit: "vaso",
-      isCocktail: true,
+      sellable: true,
       recipe: body.recipe,
       isCustom: true,
       createdBy: req.auth!.sub,
+      priceHistory: [{ price, changedBy: req.auth!.sub, at: new Date() }],
     });
-    const populated = await product.populate("recipe.product", "name price unit");
-    res.status(201).json({ product: populated });
+
+    await logEvent(req.auth, {
+      kind: "catalogo",
+      title: `Cóctel creado en bar · ${product.name}`,
+      detail: "Precio sugerido por sus medidas",
+      amount: price,
+    });
+
+    res.status(201).json({ product: await product.populate("recipe.product", RECIPE_POPULATE) });
   } catch (err) {
     next(err);
   }
@@ -104,32 +154,48 @@ export async function updateProduct(req: Request, res: Response, next: NextFunct
     const product = await Product.findById(req.params.id);
     if (!product) throw notFound("Producto no encontrado");
 
-    if (body.name !== undefined) product.name = body.name;
+    const changes: string[] = [];
+    if (body.name !== undefined && body.name.trim() && body.name !== product.name) {
+      product.name = body.name.trim();
+      changes.push("nombre");
+    }
     if (body.category !== undefined) {
       if (!PRODUCT_CATEGORIES.includes(body.category)) throw badRequest("Categoría inválida");
       product.category = body.category;
     }
     if (body.icon !== undefined) product.icon = body.icon;
-    if (body.unit !== undefined) product.unit = body.unit;
-    if (body.warehouseStock !== undefined) product.warehouseStock = body.warehouseStock;
-    if (body.recipe !== undefined) product.recipe = body.recipe as never;
-    if (body.active !== undefined) product.active = body.active;
-
-    if (body.isCocktail !== undefined) product.isCocktail = body.isCocktail;
-    // Si llega precio explícito manda el menú; el cálculo automático por
-    // ingredientes solo aplica cuando no se indica precio (cócteles creados en bar).
-    if (body.price !== undefined) {
-      if (body.price < 0) throw badRequest("Precio inválido");
-      product.price = body.price;
-    } else if (body.recipe !== undefined && product.isCocktail && product.recipe.length) {
-      product.price = await resolvePrice({
-        isCocktail: true,
-        recipe: product.recipe.map((r) => ({ product: r.product.toString(), qty: r.qty })),
-      });
+    if (body.kind !== undefined && body.kind !== product.kind) {
+      if (!PRODUCT_KINDS.includes(body.kind)) throw badRequest("Tipo inválido");
+      product.kind = body.kind;
+      changes.push(`tipo ${body.kind}`);
+    }
+    if (product.kind === "fisico") applyPhysicalFields(product, body);
+    if (product.kind === "receta" && body.recipe !== undefined) {
+      await validateRecipe(body.recipe);
+      product.recipe = body.recipe as never;
+      changes.push("receta");
+    }
+    if (product.kind !== "receta") product.recipe = [] as never;
+    if (body.price !== undefined && body.price !== product.price) {
+      const before = product.price;
+      applyPrice(product, body.price, req);
+      changes.push(`precio ${before} → ${body.price}`);
+    }
+    if (body.active !== undefined && body.active !== product.active) {
+      product.active = body.active;
+      changes.push(body.active ? "activado" : "desactivado");
     }
 
     await product.save();
-    res.json({ product });
+    if (changes.length) {
+      await logEvent(req.auth, {
+        kind: "catalogo",
+        title: `Producto editado · ${product.name}`,
+        detail: changes.join(", "),
+      });
+    }
+
+    res.json({ product: await product.populate("recipe.product", RECIPE_POPULATE) });
   } catch (err) {
     next(err);
   }
