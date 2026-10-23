@@ -5,13 +5,13 @@ import { notFound } from "../errors/httpError";
 
 /**
  * Cuenta pública de una cabina: el pasajero escanea el QR en la tablet
- * y abre este detalle en su propio celular, sin registrarse.
+ * y abre su consumo en su celular, sin registrarse.
  */
 export async function publicAccount(req: Request, res: Response, next: NextFunction) {
   try {
     const { token } = req.params;
     const cruise = await Cruise.findOne({ "cabins.accountToken": token }).select(
-      "name status cabins",
+      "name code status cabins",
     );
     if (!cruise) throw notFound("Cuenta no encontrada");
 
@@ -20,10 +20,28 @@ export async function publicAccount(req: Request, res: Response, next: NextFunct
 
     const account = await buildCabinAccount(cruise._id, cabin.number);
     res.json({
-      cruiseName: cruise.name,
+      cruiseName: cruise.code ? `Salida ${cruise.code}` : cruise.name,
       cabinNumber: cabin.number,
       guestName: cabin.guestName,
-      account,
+      account: {
+        cabinNumber: account.cabinNumber,
+        orders: account.orders.map((o) => ({
+          id: o.id,
+          createdAt: o.createdAt,
+          total: o.total,
+          items: o.items
+            .filter((i) => i.chargeableQty > 0)
+            .map((i) => ({
+              name: i.name,
+              qty: i.chargeableQty,
+              unitPrice: i.unitPrice,
+              courtesy: i.courtesy,
+            })),
+        })),
+        subtotal: account.subtotal,
+        courtesyTotal: account.courtesyTotal,
+        total: account.total,
+      },
     });
   } catch (err) {
     next(err);
