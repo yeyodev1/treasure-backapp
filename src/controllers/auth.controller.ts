@@ -23,7 +23,13 @@ export async function login(req: Request, res: Response, next: NextFunction) {
 
     res.json({
       token,
-      user: { id: user._id, name: user.name, email: user.email, role: user.role },
+      user: {
+        id: user._id,
+        name: user.name,
+        email: user.email,
+        role: user.role,
+        isCashier: user.isCashier,
+      },
     });
   } catch (err) {
     next(err);
@@ -32,9 +38,17 @@ export async function login(req: Request, res: Response, next: NextFunction) {
 
 export async function me(req: Request, res: Response, next: NextFunction) {
   try {
-    const user = await User.findById(req.auth!.sub).select("name email role active");
-    if (!user) throw unauthorized();
-    res.json({ user: { id: user._id, name: user.name, email: user.email, role: user.role } });
+    const user = await User.findById(req.auth!.sub).select("name email role active isCashier");
+    if (!user || !user.active) throw unauthorized();
+    res.json({
+      user: {
+        id: user._id,
+        name: user.name,
+        email: user.email,
+        role: user.role,
+        isCashier: user.isCashier,
+      },
+    });
   } catch (err) {
     next(err);
   }
