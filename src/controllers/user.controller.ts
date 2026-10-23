@@ -1,11 +1,11 @@
 import { NextFunction, Request, Response } from "express";
 import bcrypt from "bcryptjs";
 import { User } from "../models/user.model";
-import { USER_ROLES, UserRole, ROLE_LABELS } from "../utils/roles";
+import { CREW_POSITIONS, USER_ROLES, UserRole, ROLE_LABELS } from "../utils/roles";
 import { logEvent } from "../services/audit.service";
 import { badRequest, notFound } from "../errors/httpError";
 
-const PUBLIC_FIELDS = "name email role active isCashier createdBy updatedBy createdAt updatedAt";
+const PUBLIC_FIELDS = "name email role active isCashier position createdBy updatedBy createdAt updatedAt";
 
 export async function listUsers(_req: Request, res: Response, next: NextFunction) {
   try {
@@ -22,12 +22,13 @@ export async function listUsers(_req: Request, res: Response, next: NextFunction
 
 export async function createUser(req: Request, res: Response, next: NextFunction) {
   try {
-    const { name, email, password, role, isCashier } = req.body as {
+    const { name, email, password, role, isCashier, position } = req.body as {
       name?: string;
       email?: string;
       password?: string;
       role?: UserRole;
       isCashier?: boolean;
+      position?: string;
     };
     if (!name || !email || !password || !role) {
       throw badRequest("Nombre, correo, contraseña y rol son obligatorios");
@@ -43,6 +44,7 @@ export async function createUser(req: Request, res: Response, next: NextFunction
       email,
       role,
       isCashier: role === "direccion" && Boolean(isCashier),
+      position: position && CREW_POSITIONS.includes(position as never) ? position : "",
       passwordHash: await bcrypt.hash(password, 10),
       createdBy: req.auth!.sub,
     });
@@ -60,12 +62,13 @@ export async function createUser(req: Request, res: Response, next: NextFunction
 
 export async function updateUser(req: Request, res: Response, next: NextFunction) {
   try {
-    const { name, role, active, password, isCashier } = req.body as {
+    const { name, role, active, password, isCashier, position } = req.body as {
       name?: string;
       role?: UserRole;
       active?: boolean;
       password?: string;
       isCashier?: boolean;
+      position?: string;
     };
 
     const user = await User.findById(req.params.id);
@@ -91,6 +94,11 @@ export async function updateUser(req: Request, res: Response, next: NextFunction
     if (isCashier !== undefined && isCashier !== user.isCashier) {
       user.isCashier = isCashier;
       changes.push(isCashier ? "designado cajero" : "sin permiso de cobro");
+    }
+    if (position !== undefined && position !== user.position) {
+      if (position && !CREW_POSITIONS.includes(position as never)) throw badRequest("Cargo inválido");
+      user.position = position;
+      changes.push("cargo");
     }
     if (user.role !== "direccion") user.isCashier = false;
     if (password) {
