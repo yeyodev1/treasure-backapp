@@ -14,6 +14,7 @@ import * as reports from "../controllers/report.controller";
 import * as live from "../controllers/live.controller";
 import * as uploads from "../controllers/upload.controller";
 import * as publicCtrl from "../controllers/public.controller";
+import * as ism from "../controllers/ism.controller";
 
 /**
  * Permisos por rol (se validan siempre en el servidor):
@@ -30,9 +31,19 @@ export default function routerApi(app: Application) {
 
   const ALL = requireRole("admin", "direccion", "bartender", "bodega");
   const BAR = requireRole("admin", "direccion", "bartender");
+
   const LEAD = requireRole("admin", "direccion");
   const ADMIN = requireRole("admin");
-
+  // Registros ISM: toda la tripulación llena; las etapas se validan en el controlador.
+  const CREW = requireRole(
+    "admin",
+    "direccion",
+    "bartender",
+    "bodega",
+    "capitan",
+    "tripulante",
+    "designada",
+  );
   // Autenticación
   router.post("/auth/login", auth.login);
   router.get("/auth/me", requireAuth, auth.me);
@@ -41,7 +52,7 @@ export default function routerApi(app: Application) {
   router.get("/public/account/:token", publicCtrl.publicAccount);
 
   // Archivos (Cloudinary)
-  router.post("/uploads", requireAuth, LEAD, upload.single("file"), uploads.uploadFile);
+  router.post("/uploads", requireAuth, CREW, upload.single("file"), uploads.uploadFile);
 
   // Equipo
   router.get("/users", requireAuth, ADMIN, users.listUsers);
@@ -118,6 +129,22 @@ export default function routerApi(app: Application) {
   router.post("/counts/:id/submit", requireAuth, ALL, counts.submitCount);
   router.post("/counts/:id/approve", requireAuth, ADMIN, counts.approveCount);
   router.post("/counts/:id/reject", requireAuth, ADMIN, counts.rejectCount);
+
+  // Registros ISM (registros.teseturis.app)
+  router.get("/ism/catalog", requireAuth, CREW, ism.catalog);
+  router.get("/ism/summary", requireAuth, CREW, ism.summary);
+  router.get("/ism/forms/:code", requireAuth, CREW, ism.formDefinition);
+  router.get("/ism/records", requireAuth, CREW, ism.listRecords);
+  router.post("/ism/records", requireAuth, CREW, ism.createRecord);
+  router.get("/ism/records/:id", requireAuth, CREW, ism.getRecord);
+  router.patch("/ism/records/:id", requireAuth, CREW, ism.saveData);
+  router.delete("/ism/records/:id", requireAuth, CREW, ism.discard);
+  router.post("/ism/records/:id/signatures", requireAuth, CREW, ism.sign);
+  router.delete("/ism/records/:id/signatures/:field", requireAuth, CREW, ism.removeSignature);
+  router.post("/ism/records/:id/submit", requireAuth, CREW, ism.submit);
+  router.post("/ism/records/:id/approve", requireAuth, CREW, ism.approve);
+  router.post("/ism/records/:id/return", requireAuth, CREW, ism.giveBack);
+  router.get("/ism/records/:id/pdf", requireAuth, CREW, ism.pdf);
 
   // En vivo y reportes
   router.get("/live", requireAuth, LEAD, live.livePulse);
