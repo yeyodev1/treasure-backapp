@@ -1,4 +1,4 @@
-import mongoose, { Schema } from "mongoose";
+import mongoose, { Schema, Types } from "mongoose";
 import { USER_ROLES, UserRole } from "../utils/roles";
 
 export interface IUser {
@@ -7,6 +7,10 @@ export interface IUser {
   passwordHash: string;
   role: UserRole;
   active: boolean;
+  /** Dirección solo cobra si administración la designa como cajera. */
+  isCashier: boolean;
+  createdBy: Types.ObjectId | null;
+  updatedBy: Types.ObjectId | null;
   createdAt?: Date;
   updatedAt?: Date;
 }
@@ -18,6 +22,9 @@ const userSchema = new Schema<IUser>(
     passwordHash: { type: String, required: true },
     role: { type: String, enum: USER_ROLES, required: true },
     active: { type: Boolean, default: true },
+    isCashier: { type: Boolean, default: false },
+    createdBy: { type: Schema.Types.ObjectId, ref: "User", default: null },
+    updatedBy: { type: Schema.Types.ObjectId, ref: "User", default: null },
   },
   { timestamps: true },
 );
