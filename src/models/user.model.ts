@@ -1,5 +1,5 @@
 import mongoose, { Schema, Types } from "mongoose";
-import { USER_ROLES, UserRole } from "../utils/roles";
+import { CREW_POSITIONS, USER_ROLES, UserRole } from "../utils/roles";
 
 export interface IUser {
   name: string;
@@ -9,6 +9,8 @@ export interface IUser {
   active: boolean;
   /** Dirección solo cobra si administración la designa como cajera. */
   isCashier: boolean;
+  /** Cargo a bordo (registros ISM): CAP, TIM_01, MAQ… */
+  position: string;
   createdBy: Types.ObjectId | null;
   updatedBy: Types.ObjectId | null;
   createdAt?: Date;
@@ -23,6 +25,7 @@ const userSchema = new Schema<IUser>(
     role: { type: String, enum: USER_ROLES, required: true },
     active: { type: Boolean, default: true },
     isCashier: { type: Boolean, default: false },
+    position: { type: String, enum: ["", ...CREW_POSITIONS], default: "" },
     createdBy: { type: Schema.Types.ObjectId, ref: "User", default: null },
     updatedBy: { type: Schema.Types.ObjectId, ref: "User", default: null },
   },
