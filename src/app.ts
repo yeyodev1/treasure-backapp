@@ -11,6 +11,7 @@ const whitelist = [
   "http://127.0.0.1:5173",
   "https://teseturis.app",
   "https://www.teseturis.app",
+  "https://registros.teseturis.app",
   ...env.CORS_ORIGINS,
 ];
 
