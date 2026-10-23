@@ -2,7 +2,6 @@ import { NextFunction, Request, Response } from "express";
 import { PipelineStage, Types } from "mongoose";
 import { Order } from "../models/order.model";
 import { Payment } from "../models/payment.model";
-import { CruiseStock } from "../models/cruiseStock.model";
 import { Cruise } from "../models/cruise.model";
 
 function dateMatch(from?: string, to?: string) {
@@ -12,15 +11,23 @@ function dateMatch(from?: string, to?: string) {
   return Object.keys(range).length ? { createdAt: range } : {};
 }
 
+/** Unidades que siguen contando (pedido − cancelado − anulado). */
+const NET_QTY = {
+  $subtract: [
+    "$items.qty",
+    { $add: [{ $ifNull: ["$items.cancelledQty", 0] }, { $ifNull: ["$items.annulledQty", 0] }] },
+  ],
+};
+
 /**
- * Resumen de ventas para la administración: por día, por persona y top de
- * productos; filtrable por crucero y rango de fechas (semana, mes…).
+ * Resumen de ventas para administración: por día (hora de Ecuador), por
+ * persona y top de productos, filtrable por salida y rango de fechas.
  */
 export async function salesSummary(req: Request, res: Response, next: NextFunction) {
   try {
     const { cruiseId, from, to } = req.query as Record<string, string>;
     const match: Record<string, unknown> = {
-      status: { $ne: "anulada" },
+      status: { $ne: "cancelada" },
       ...dateMatch(from, to),
     };
     if (cruiseId) match.cruise = new Types.ObjectId(cruiseId);
@@ -30,11 +37,7 @@ export async function salesSummary(req: Request, res: Response, next: NextFuncti
       {
         $group: {
           _id: {
-            $dateToString: {
-              format: "%Y-%m-%d",
-              date: "$createdAt",
-              timezone: "America/Guayaquil",
-            },
+            $dateToString: { format: "%Y-%m-%d", date: "$createdAt", timezone: "America/Guayaquil" },
           },
           total: { $sum: "$total" },
           orders: { $sum: 1 },
@@ -48,9 +51,7 @@ export async function salesSummary(req: Request, res: Response, next: NextFuncti
       { $group: { _id: "$createdBy", total: { $sum: "$total" }, orders: { $sum: 1 } } },
       { $lookup: { from: "users", localField: "_id", foreignField: "_id", as: "user" } },
       { $unwind: "$user" },
-      {
-        $project: { _id: 0, name: "$user.name", role: "$user.role", total: 1, orders: 1 },
-      },
+      { $project: { _id: 0, name: "$user.name", role: "$user.role", total: 1, orders: 1 } },
       { $sort: { total: -1 } },
     ];
 
@@ -60,15 +61,14 @@ export async function salesSummary(req: Request, res: Response, next: NextFuncti
       {
         $group: {
           _id: "$items.name",
-          qty: { $sum: "$items.qty" },
+          qty: { $sum: NET_QTY },
           total: {
-            $sum: {
-              $cond: ["$items.courtesy", 0, { $multiply: ["$items.qty", "$items.unitPrice"] }],
-            },
+            $sum: { $cond: ["$items.courtesy", 0, { $multiply: [NET_QTY, "$items.unitPrice"] }] },
           },
-          courtesyQty: { $sum: { $cond: ["$items.courtesy", "$items.qty", 0] } },
+          courtesyQty: { $sum: { $cond: ["$items.courtesy", NET_QTY, 0] } },
         },
       },
+      { $match: { qty: { $gt: 0 } } },
       { $sort: { qty: -1 } },
       { $limit: 15 },
       { $project: { _id: 0, name: "$_id", qty: 1, total: 1, courtesyQty: 1 } },
@@ -87,7 +87,7 @@ export async function salesSummary(req: Request, res: Response, next: NextFuncti
     ]);
 
     res.json({
-      totals: totalsArr[0] ?? { total: 0, orders: 0 },
+      totals: { total: totalsArr[0]?.total ?? 0, orders: totalsArr[0]?.orders ?? 0 },
       byDay: byDay.map((d) => ({ date: d._id, total: d.total, orders: d.orders })),
       byUser,
       topProducts,
@@ -97,10 +97,11 @@ export async function salesSummary(req: Request, res: Response, next: NextFuncti
   }
 }
 
-/** Comparativo de ventas por crucero: lo que Paula quiere revisar crucero a crucero. */
+/** Recaudado por salida (cobros vigentes, sin los reversados). */
 export async function salesByCruise(_req: Request, res: Response, next: NextFunction) {
   try {
     const rows = await Payment.aggregate([
+      { $match: { status: { $ne: "reversado" } } },
       {
         $group: {
           _id: "$cruise",
@@ -109,11 +110,10 @@ export async function salesByCruise(_req: Request, res: Response, next: NextFunc
           payments: { $sum: 1 },
         },
       },
-      { $sort: { _id: -1 } },
-      { $limit: 24 },
+      { $limit: 48 },
     ]);
     const cruises = await Cruise.find({ _id: { $in: rows.map((r) => r._id) } }).select(
-      "name startDate endDate status",
+      "name code startDate status",
     );
     const cruiseMap = new Map(cruises.map((c) => [c._id.toString(), c]));
 
@@ -124,7 +124,7 @@ export async function salesByCruise(_req: Request, res: Response, next: NextFunc
           return cruise
             ? {
                 id: r._id,
-                name: cruise.name,
+                name: cruise.code || cruise.name,
                 startDate: cruise.startDate,
                 status: cruise.status,
                 collected: r.collected,
@@ -133,33 +133,11 @@ export async function salesByCruise(_req: Request, res: Response, next: NextFunc
               }
             : null;
         })
-        .filter(Boolean),
+        .filter(Boolean)
+        .sort(
+          (a, b) => new Date(b!.startDate).getTime() - new Date(a!.startDate).getTime(),
+        ),
     });
-  } catch (err) {
-    next(err);
-  }
-}
-
-/** Estado de inventario del crucero con alertas de stock bajo. */
-export async function inventoryStatus(req: Request, res: Response, next: NextFunction) {
-  try {
-    const { cruiseId } = req.params;
-    const stock = await CruiseStock.find({ cruise: cruiseId }).populate(
-      "product",
-      "name category icon unit",
-    );
-    const items = stock.map((s) => {
-      const consumed = s.initialQty - s.currentQty;
-      const ratio = s.initialQty > 0 ? s.currentQty / s.initialQty : 0;
-      return {
-        product: s.product,
-        initialQty: s.initialQty,
-        currentQty: s.currentQty,
-        consumed,
-        low: s.initialQty > 0 && ratio <= 0.2,
-      };
-    });
-    res.json({ items });
   } catch (err) {
     next(err);
   }
