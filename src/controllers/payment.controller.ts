@@ -1,17 +1,34 @@
 import { NextFunction, Request, Response } from "express";
+import { Types } from "mongoose";
 import { Order } from "../models/order.model";
 import { Payment, PAYMENT_METHODS, PaymentMethod } from "../models/payment.model";
-import { buildCabinAccount } from "../services/account.service";
+import { Cruise } from "../models/cruise.model";
+import { User } from "../models/user.model";
+import { Account } from "../models/account.model";
+import { buildCabinAccount, ensureAccount } from "../services/account.service";
 import { emitInvoice } from "../services/contifico.service";
-import { badRequest, notFound } from "../errors/httpError";
+import { logEvent } from "../services/audit.service";
+import { badRequest, conflict, forbidden, notFound } from "../errors/httpError";
+
+/** Paula cobra; Dirección solo si administración la designó como cajera. */
+async function assertCanCollect(userId: string, role: string) {
+  if (role === "admin") return;
+  if (role === "direccion") {
+    const user = await User.findById(userId).select("isCashier");
+    if (user?.isCashier) return;
+    throw forbidden("Solo cobra administración o una persona de Dirección designada como cajera");
+  }
+  throw forbidden();
+}
 
 /**
- * Cobra la cuenta completa de una cabina al final del crucero.
- * Con pago en efectivo quien cobra confirma la recaudación; al cobrar se
- * registran los datos de facturación y se dispara la factura en Contífico.
+ * Cobra una cuenta aprobada. Los datos de facturación salen del pagador de
+ * la cabina y solo se piden los que falten.
  */
 export async function collectCabin(req: Request, res: Response, next: NextFunction) {
   try {
+    await assertCanCollect(req.auth!.sub, req.auth!.role);
+
     const { cruiseId, cabinNumber, method, cashConfirmed, billing } = req.body as {
       cruiseId?: string;
       cabinNumber?: number;
@@ -20,41 +37,67 @@ export async function collectCabin(req: Request, res: Response, next: NextFuncti
       billing?: { name?: string; idNumber?: string; email?: string; country?: string };
     };
     if (!cruiseId || !cabinNumber || !method) {
-      throw badRequest("Crucero, cabina y método de pago son obligatorios");
+      throw badRequest("Salida, cabina y método de pago son obligatorios");
     }
     if (!PAYMENT_METHODS.includes(method)) throw badRequest("Método de pago inválido");
     if (method === "efectivo" && !cashConfirmed) {
       throw badRequest("Con efectivo debes confirmar la recaudación en caja");
     }
-    if (!billing?.name || !billing?.idNumber) {
-      throw badRequest("Los datos de facturación (nombre e identificación) son obligatorios");
+
+    const summary = await buildCabinAccount(cruiseId, cabinNumber);
+    if (!summary.orders.length) throw badRequest("La cabina no tiene consumos abiertos");
+    if (!summary.readyToCollect) {
+      throw conflict("La cuenta debe estar aprobada en su versión vigente antes de cobrar");
     }
 
-    const account = await buildCabinAccount(cruiseId, cabinNumber);
-    if (!account.orders.length) throw badRequest("La cabina no tiene consumos abiertos");
+    const cruise = await Cruise.findById(cruiseId);
+    const cabin = cruise?.cabins.find((c) => c.number === cabinNumber);
+    const payer = cabin?.passengers.find((p) => p.isPayer) ?? cabin?.passengers[0];
+
+    const finalBilling = {
+      name: billing?.name?.trim() || payer?.name || "",
+      idNumber: billing?.idNumber?.trim() || payer?.idNumber || "",
+      email: billing?.email?.trim() || payer?.email || "",
+      country: billing?.country?.trim() || payer?.country || "",
+    };
+    if (!finalBilling.name || !finalBilling.idNumber) {
+      throw badRequest("Falta el nombre o la identificación del pagador para facturar");
+    }
 
     const payment = await Payment.create({
       cruise: cruiseId,
       cabinNumber,
-      orders: account.orders.map((o) => o.id),
-      subtotal: account.subtotal,
-      courtesyTotal: account.courtesyTotal,
-      total: account.total,
+      orders: summary.orders.map((o) => o.id),
+      accountVersion: summary.version,
+      subtotal: summary.subtotal,
+      courtesyTotal: summary.courtesyTotal,
+      total: summary.total,
       method,
       cashConfirmed: Boolean(cashConfirmed),
-      billing: {
-        name: billing.name,
-        idNumber: billing.idNumber,
-        email: billing.email ?? "",
-        country: billing.country ?? "",
-      },
+      billing: finalBilling,
       collectedBy: req.auth!.sub,
     });
 
-    await Order.updateMany(
-      { _id: { $in: payment.orders } },
-      { $set: { status: "cobrada", payment: payment._id } },
-    );
+    await Order.updateMany({ _id: { $in: payment.orders } }, { $set: { payment: payment._id } });
+
+    // Si el pagador no tenía identificación o correo, se guardan para la próxima.
+    if (cruise && cabin && payer) {
+      payer.idNumber = payer.idNumber || finalBilling.idNumber;
+      payer.email = payer.email || finalBilling.email;
+      payer.country = payer.country || finalBilling.country;
+      await cruise.save();
+    }
+
+    const account = await ensureAccount(cruiseId, cabinNumber);
+    account.status = "cobrada";
+    account.history.push({
+      action: "cobrada",
+      version: account.version,
+      reason: method,
+      by: new Types.ObjectId(req.auth!.sub),
+      at: new Date(),
+    });
+    await account.save();
 
     const invoice = await emitInvoice(payment);
     payment.invoiceStatus = invoice.status;
@@ -62,7 +105,80 @@ export async function collectCabin(req: Request, res: Response, next: NextFuncti
     payment.invoiceError = invoice.error;
     await payment.save();
 
+    await logEvent(req.auth, {
+      kind: "cobro",
+      title: `Cobro · cabina ${cabinNumber}`,
+      detail: `${method} · ${finalBilling.name}`,
+      amount: payment.total,
+      cruise: cruiseId,
+      cabinNumber,
+    });
+
     res.status(201).json({ payment });
+  } catch (err) {
+    next(err);
+  }
+}
+
+/**
+ * Reverso autorizado (solo administración): un cobro con pago o factura no
+ * se cancela, se reversa con motivo y la cuenta vuelve a abrirse.
+ */
+export async function reversePayment(req: Request, res: Response, next: NextFunction) {
+  try {
+    const { reason } = req.body as { reason?: string };
+    if (!reason?.trim()) throw badRequest("El motivo del reverso es obligatorio");
+
+    const payment = await Payment.findOneAndUpdate(
+      { _id: req.params.id, status: "vigente" },
+      {
+        $set: {
+          status: "reversado",
+          reversedBy: req.auth!.sub,
+          reversedAt: new Date(),
+          reverseReason: reason.trim(),
+        },
+      },
+      { new: true },
+    );
+    if (!payment) throw conflict("El cobro no existe o ya fue reversado");
+
+    if (payment.invoiceStatus === "emitida") {
+      payment.invoiceError = "Factura emitida: registrar nota de crédito en Contífico";
+      await payment.save();
+    }
+
+    await Order.updateMany({ payment: payment._id }, { $set: { payment: null } });
+
+    const account = await Account.findOne({
+      cruise: payment.cruise,
+      cabinNumber: payment.cabinNumber,
+    });
+    if (account) {
+      account.status = "abierta";
+      account.version += 1;
+      account.approvedVersion = null;
+      account.approvedTotal = null;
+      account.history.push({
+        action: "reversada",
+        version: account.version,
+        reason: reason.trim(),
+        by: new Types.ObjectId(req.auth!.sub),
+        at: new Date(),
+      });
+      await account.save();
+    }
+
+    await logEvent(req.auth, {
+      kind: "cobro",
+      title: `Cobro reversado · cabina ${payment.cabinNumber}`,
+      detail: reason.trim(),
+      amount: payment.total,
+      cruise: payment.cruise,
+      cabinNumber: payment.cabinNumber,
+    });
+
+    res.json({ payment });
   } catch (err) {
     next(err);
   }
@@ -84,7 +200,8 @@ export async function listPayments(req: Request, res: Response, next: NextFuncti
     const pageSize = Math.min(Number(limit) || 40, 300);
     const payments = await Payment.find(filter)
       .populate("collectedBy", "name role")
-      .populate("cruise", "name")
+      .populate("reversedBy", "name")
+      .populate("cruise", "name code")
       .sort({ createdAt: -1 })
       .limit(pageSize + 1);
 
@@ -100,6 +217,7 @@ export async function retryInvoice(req: Request, res: Response, next: NextFuncti
   try {
     const payment = await Payment.findById(req.params.id);
     if (!payment) throw notFound("Pago no encontrado");
+    if (payment.status === "reversado") throw badRequest("El cobro fue reversado");
     if (payment.invoiceStatus === "emitida") throw badRequest("La factura ya fue emitida");
 
     const invoice = await emitInvoice(payment);
