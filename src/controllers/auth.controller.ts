@@ -29,6 +29,7 @@ export async function login(req: Request, res: Response, next: NextFunction) {
         email: user.email,
         role: user.role,
         isCashier: user.isCashier,
+        position: user.position,
       },
     });
   } catch (err) {
@@ -38,7 +39,7 @@ export async function login(req: Request, res: Response, next: NextFunction) {
 
 export async function me(req: Request, res: Response, next: NextFunction) {
   try {
-    const user = await User.findById(req.auth!.sub).select("name email role active isCashier");
+    const user = await User.findById(req.auth!.sub).select("name email role active isCashier position");
     if (!user || !user.active) throw unauthorized();
     res.json({
       user: {
@@ -47,6 +48,7 @@ export async function me(req: Request, res: Response, next: NextFunction) {
         email: user.email,
         role: user.role,
         isCashier: user.isCashier,
+        position: user.position,
       },
     });
   } catch (err) {
