@@ -1,0 +1,659 @@
+[
+ {
+  "category": "01_Propulsion_y_Generacion",
+  "folder": "Generador_Electrico_Babor",
+  "name": "Generador eléctrico babor",
+  "brand": "",
+  "model": "44TW 2GM",
+  "serial": "RJ30889",
+  "owner": "Jefe de Máquinas"
+ },
+ {
+  "category": "01_Propulsion_y_Generacion",
+  "folder": "Generador_Electrico_Estribor",
+  "name": "Generador eléctrico estribor",
+  "brand": "",
+  "model": "C4.4 / 3054C",
+  "serial": "PW W60364",
+  "owner": "Jefe de Máquinas"
+ },
+ {
+  "category": "01_Propulsion_y_Generacion",
+  "folder": "Motor_Principal_Babor",
+  "name": "Máquina principal babor",
+  "brand": "",
+  "model": "",
+  "serial": "",
+  "owner": "Jefe de Máquinas"
+ },
+ {
+  "category": "01_Propulsion_y_Generacion",
+  "folder": "Motor_Principal_Estribor",
+  "name": "Máquina principal estribor",
+  "brand": "Caterpillar",
+  "model": "",
+  "serial": "",
+  "owner": "Jefe de Máquinas"
+ },
+ {
+  "category": "01_Propulsion_y_Generacion",
+  "folder": "Motores_Fuera_de_Borda01",
+  "name": "Motor fuera de borda 1",
+  "brand": "",
+  "model": "30 HP",
+  "serial": "",
+  "owner": "Jefe de Máquinas"
+ },
+ {
+  "category": "01_Propulsion_y_Generacion",
+  "folder": "Motores_Fuera_de_Borda02",
+  "name": "Motor fuera de borda 2",
+  "brand": "",
+  "model": "",
+  "serial": "",
+  "owner": "Jefe de Máquinas"
+ },
+ {
+  "category": "02_Navegacion_y_Posicionamiento",
+  "folder": "Compas_Magnetico",
+  "name": "Compás magnético",
+  "brand": "",
+  "model": "",
+  "serial": "",
+  "owner": "Capitán"
+ },
+ {
+  "category": "02_Navegacion_y_Posicionamiento",
+  "folder": "Cursor de trap y carta electrónica",
+  "name": "Plotter / carta electrónica",
+  "brand": "Simrad",
+  "model": "NSS12 evo3S",
+  "serial": "",
+  "owner": "Capitán"
+ },
+ {
+  "category": "02_Navegacion_y_Posicionamiento",
+  "folder": "DMS_ECDIS",
+  "name": "DMS / ECDIS",
+  "brand": "",
+  "model": "",
+  "serial": "",
+  "owner": "Capitán"
+ },
+ {
+  "category": "02_Navegacion_y_Posicionamiento",
+  "folder": "Ecosonda",
+  "name": "Ecosonda",
+  "brand": "Simrad",
+  "model": "NSS12 evo3S",
+  "serial": "",
+  "owner": "Capitán"
+ },
+ {
+  "category": "02_Navegacion_y_Posicionamiento",
+  "folder": "GPS",
+  "name": "GPS",
+  "brand": "Simrad",
+  "model": "NSS12 evo3S",
+  "serial": "",
+  "owner": "Capitán"
+ },
+ {
+  "category": "02_Navegacion_y_Posicionamiento",
+  "folder": "Luces_de_Navegacion",
+  "name": "Luces de navegación BB/EB",
+  "brand": "",
+  "model": "",
+  "serial": "",
+  "owner": "Capitán"
+ },
+ {
+  "category": "02_Navegacion_y_Posicionamiento",
+  "folder": "Pitos",
+  "name": "Pitos BB/EB",
+  "brand": "",
+  "model": "",
+  "serial": "",
+  "owner": "Capitán"
+ },
+ {
+  "category": "02_Navegacion_y_Posicionamiento",
+  "folder": "Radar",
+  "name": "Radar",
+  "brand": "",
+  "model": "",
+  "serial": "",
+  "owner": "Capitán"
+ },
+ {
+  "category": "03_Comunicaciones_GMDSS",
+  "folder": "MF-HF_DSC_ICOM",
+  "name": "Radio MF/HF DSC",
+  "brand": "ICOM",
+  "model": "IC-M803",
+  "serial": "11001962",
+  "owner": "Capitán"
+ },
+ {
+  "category": "03_Comunicaciones_GMDSS",
+  "folder": "NAVTEX",
+  "name": "NAVTEX",
+  "brand": "",
+  "model": "NX300",
+  "serial": "",
+  "owner": "Capitán"
+ },
+ {
+  "category": "03_Comunicaciones_GMDSS",
+  "folder": "Radios_Bidireccional 1",
+  "name": "Radio bidireccional 1",
+  "brand": "",
+  "model": "SR-203",
+  "serial": "04335521",
+  "owner": "Capitán"
+ },
+ {
+  "category": "03_Comunicaciones_GMDSS",
+  "folder": "Radio bidireccional 2 b",
+  "name": "Radio bidireccional 2",
+  "brand": "",
+  "model": "SR-203",
+  "serial": "04713422",
+  "owner": "Capitán"
+ },
+ {
+  "category": "03_Comunicaciones_GMDSS",
+  "folder": "VHF_DSC_SIMRAD",
+  "name": "Radio VHF DSC",
+  "brand": "Simrad",
+  "model": "HS100",
+  "serial": "2207H30170212",
+  "owner": "Capitán"
+ },
+ {
+  "category": "03_Comunicaciones_GMDSS",
+  "folder": "VHF_DSC_AIS-SIMRAD",
+  "name": "Radio VHF DSC / AIS",
+  "brand": "Simrad",
+  "model": "RS-40",
+  "serial": "",
+  "owner": "Capitán"
+ },
+ {
+  "category": "03_Comunicaciones_GMDSS",
+  "folder": "VHF_DSC_ICOM",
+  "name": "Radio VHF DSC",
+  "brand": "ICOM",
+  "model": "",
+  "serial": "",
+  "owner": "Capitán"
+ },
+ {
+  "category": "03_Comunicaciones_GMDSS",
+  "folder": "VHF_Portatiles_Bar",
+  "name": "Radio portátil bar",
+  "brand": "Atlantis",
+  "model": "275",
+  "serial": "661Z",
+  "owner": "Barman"
+ },
+ {
+  "category": "03_Comunicaciones_GMDSS",
+  "folder": "VHF_Portatiles_Cabinas",
+  "name": "Radio portátil cabinas",
+  "brand": "Atlantis",
+  "model": "275",
+  "serial": "661Z",
+  "owner": "Capitán"
+ },
+ {
+  "category": "03_Comunicaciones_GMDSS",
+  "folder": "VHF_Portatiles_Cocina",
+  "name": "Radio portátil cocina",
+  "brand": "Atlantis",
+  "model": "275",
+  "serial": "661Z",
+  "owner": "Cocinero"
+ },
+ {
+  "category": "03_Comunicaciones_GMDSS",
+  "folder": "VHF_Portatiles_Cubierta_01",
+  "name": "Radio portátil timonel 1",
+  "brand": "ICOM",
+  "model": "IC-M25",
+  "serial": "51003538",
+  "owner": "Timonel 1"
+ },
+ {
+  "category": "03_Comunicaciones_GMDSS",
+  "folder": "VHF_Portatiles_Cubierta_02",
+  "name": "Radio portátil timonel 2",
+  "brand": "ICOM",
+  "model": "IC-M25",
+  "serial": "51003538",
+  "owner": "Timonel 2"
+ },
+ {
+  "category": "03_Comunicaciones_GMDSS",
+  "folder": "VHF_Portatiles_Dir_Crucero",
+  "name": "Radio portátil director(a) de crucero",
+  "brand": "Atlantis",
+  "model": "275",
+  "serial": "661Z",
+  "owner": "Director(a) de crucero"
+ },
+ {
+  "category": "03_Comunicaciones_GMDSS",
+  "folder": "VHF_Portatiles_Guia",
+  "name": "Radio portátil guía",
+  "brand": "ICOM",
+  "model": "IC-M25",
+  "serial": "51003538",
+  "owner": "Guía naturalista"
+ },
+ {
+  "category": "03_Comunicaciones_GMDSS",
+  "folder": "VHF_Portatiles_Maquinas",
+  "name": "Radio portátil máquinas",
+  "brand": "Atlantis",
+  "model": "275",
+  "serial": "661Z",
+  "owner": "Marinero de máquinas"
+ },
+ {
+  "category": "04_Salvamento_y_Seguridad",
+  "folder": "AIS_Transponder_Tipo_A",
+  "name": "AIS transponder clase A",
+  "brand": "",
+  "model": "A200",
+  "serial": "",
+  "owner": "Capitán"
+ },
+ {
+  "category": "04_Salvamento_y_Seguridad",
+  "folder": "Alarma_General",
+  "name": "Alarma general",
+  "brand": "",
+  "model": "",
+  "serial": "",
+  "owner": "Capitán"
+ },
+ {
+  "category": "04_Salvamento_y_Seguridad",
+  "folder": "Aro_Salvavidas",
+  "name": "Aros salvavidas (8 u)",
+  "brand": "",
+  "model": "SOLAS",
+  "serial": "",
+  "owner": "Timonel 1"
+ },
+ {
+  "category": "04_Salvamento_y_Seguridad",
+  "folder": "Balsas_Salvavidas 1",
+  "name": "Balsa salvavidas 1 (20 pax)",
+  "brand": "",
+  "model": "SOLAS",
+  "serial": "A0920164",
+  "owner": "Timonel 1"
+ },
+ {
+  "category": "04_Salvamento_y_Seguridad",
+  "folder": "Balanza Salvavidas 2",
+  "name": "Balsa salvavidas 2 (25 pax)",
+  "brand": "",
+  "model": "SOLAS",
+  "serial": "A0925241",
+  "owner": "Timonel 1"
+ },
+ {
+  "category": "04_Salvamento_y_Seguridad",
+  "folder": "Bote_Desembarco_01",
+  "name": "Bote de desembarco 1",
+  "brand": "",
+  "model": "C-14",
+  "serial": "",
+  "owner": "Timonel 1"
+ },
+ {
+  "category": "04_Salvamento_y_Seguridad",
+  "folder": "Bote_Desembarco_02",
+  "name": "Bote de desembarco 2",
+  "brand": "",
+  "model": "C-14",
+  "serial": "",
+  "owner": "Timonel 2"
+ },
+ {
+  "category": "04_Salvamento_y_Seguridad",
+  "folder": "Candado_Hidrostatico",
+  "name": "Candado hidrostático BB/EB",
+  "brand": "",
+  "model": "",
+  "serial": "",
+  "owner": "Timonel 1"
+ },
+ {
+  "category": "04_Salvamento_y_Seguridad",
+  "folder": "Chalecos_Salvavidas",
+  "name": "Chalecos salvavidas (30 u)",
+  "brand": "",
+  "model": "8830A USA",
+  "serial": "160.055/184/0",
+  "owner": "Timonel 1"
+ },
+ {
+  "category": "04_Salvamento_y_Seguridad",
+  "folder": "Cilindro de escape rápido",
+  "name": "Cilindro de escape rápido",
+  "brand": "",
+  "model": "",
+  "serial": "19714",
+  "owner": "Timonel 1"
+ },
+ {
+  "category": "04_Salvamento_y_Seguridad",
+  "folder": "Detector_Humo_y_Calor",
+  "name": "Detectores de humo y calor (17 u)",
+  "brand": "",
+  "model": "D7050",
+  "serial": "",
+  "owner": "Timonel 1"
+ },
+ {
+  "category": "04_Salvamento_y_Seguridad",
+  "folder": "EPIRB",
+  "name": "EPIRB",
+  "brand": "",
+  "model": "RLB-38",
+  "serial": "2134",
+  "owner": "Timonel 1"
+ },
+ {
+  "category": "04_Salvamento_y_Seguridad",
+  "folder": "Equipo de respiración autonima 1",
+  "name": "Equipo de respiración autónoma 1",
+  "brand": "",
+  "model": "",
+  "serial": "401405",
+  "owner": "Timonel 1"
+ },
+ {
+  "category": "04_Salvamento_y_Seguridad",
+  "folder": "Equipo de respiración autonima 2",
+  "name": "Equipo de respiración autónoma 2",
+  "brand": "",
+  "model": "",
+  "serial": "258106",
+  "owner": "Timonel 1"
+ },
+ {
+  "category": "04_Salvamento_y_Seguridad",
+  "folder": "SART",
+  "name": "SART",
+  "brand": "",
+  "model": "Pathfinder 3",
+  "serial": "20678",
+  "owner": "Timonel 1"
+ },
+ {
+  "category": "04_Salvamento_y_Seguridad",
+  "folder": "Señales_Pirotecnicas",
+  "name": "Señales pirotécnicas",
+  "brand": "",
+  "model": "",
+  "serial": "",
+  "owner": "Timonel 1"
+ },
+ {
+  "category": "04_Salvamento_y_Seguridad",
+  "folder": "Traje de bombero",
+  "name": "Traje de bombero",
+  "brand": "",
+  "model": "",
+  "serial": "",
+  "owner": "Timonel 1"
+ },
+ {
+  "category": "05_Contra_Incendio",
+  "folder": "Banco_CO2",
+  "name": "Banco de CO2",
+  "brand": "",
+  "model": "",
+  "serial": "003-004 (EB) / 001-002 (BB)",
+  "owner": "Jefe de Máquinas"
+ },
+ {
+  "category": "05_Contra_Incendio",
+  "folder": "Bomba_Contra_Incendio_Estacionaria",
+  "name": "Bomba contra incendio estacionaria",
+  "brand": "",
+  "model": "",
+  "serial": "",
+  "owner": "Jefe de Máquinas"
+ },
+ {
+  "category": "05_Contra_Incendio",
+  "folder": "Corte_Combustible_Rapido",
+  "name": "Corte rápido de combustible",
+  "brand": "",
+  "model": "",
+  "serial": "",
+  "owner": "Jefe de Máquinas"
+ },
+ {
+  "category": "06_Sistemas_Hidraulicos_y_Fluidos",
+  "folder": "Alarma_de_Sentina",
+  "name": "Alarma de sentina",
+  "brand": "",
+  "model": "220 V",
+  "serial": "",
+  "owner": "Jefe de Máquinas"
+ },
+ {
+  "category": "06_Sistemas_Hidraulicos_y_Fluidos",
+  "folder": "Bomba_de_Agua",
+  "name": "Bomba de agua",
+  "brand": "",
+  "model": "220 V",
+  "serial": "",
+  "owner": "Jefe de Máquinas"
+ },
+ {
+  "category": "06_Sistemas_Hidraulicos_y_Fluidos",
+  "folder": "Bomba_de_Sentina",
+  "name": "Bomba de achique / sentina",
+  "brand": "",
+  "model": "220 V",
+  "serial": "",
+  "owner": "Jefe de Máquinas"
+ },
+ {
+  "category": "06_Sistemas_Hidraulicos_y_Fluidos",
+  "folder": "Calentadores_de_Agua",
+  "name": "Calentadores de agua",
+  "brand": "",
+  "model": "220 V",
+  "serial": "",
+  "owner": "Jefe de Máquinas"
+ },
+ {
+  "category": "06_Sistemas_Hidraulicos_y_Fluidos",
+  "folder": "Desalinizadora",
+  "name": "Desalinizadora BB y EB",
+  "brand": "",
+  "model": "M10XKSTSNECB (BB) / D10KSTSNECB (EB)",
+  "serial": "184553 (BB) / 273017 (EB)",
+  "owner": "Jefe de Máquinas"
+ },
+ {
+  "category": "06_Sistemas_Hidraulicos_y_Fluidos",
+  "folder": "Filtro_De_Separador_Centina",
+  "name": "Filtro separador de sentina",
+  "brand": "",
+  "model": "",
+  "serial": "",
+  "owner": "Jefe de Máquinas"
+ },
+ {
+  "category": "06_Sistemas_Hidraulicos_y_Fluidos",
+  "folder": "Planta_de_Tratamiento",
+  "name": "Planta de tratamiento",
+  "brand": "",
+  "model": "640012",
+  "serial": "TW HMX",
+  "owner": "Jefe de Máquinas"
+ },
+ {
+  "category": "07_Electricidad_y_Energia",
+  "folder": "Banco_Baterias_Servicios",
+  "name": "Banco de baterías de servicios",
+  "brand": "",
+  "model": "",
+  "serial": "",
+  "owner": "Jefe de Máquinas"
+ },
+ {
+  "category": "08_Casco_Cubierta_y_Estructura",
+  "folder": "Ancla y cadena",
+  "name": "Ancla y cadena",
+  "brand": "",
+  "model": "",
+  "serial": "",
+  "owner": "Timonel 1"
+ },
+ {
+  "category": "08_Casco_Cubierta_y_Estructura",
+  "folder": "Casco_Obra_Muerta",
+  "name": "Casco obra muerta",
+  "brand": "",
+  "model": "",
+  "serial": "",
+  "owner": "Timonel 1"
+ },
+ {
+  "category": "08_Casco_Cubierta_y_Estructura",
+  "folder": "Casco_Obra_Viva",
+  "name": "Casco obra viva",
+  "brand": "",
+  "model": "",
+  "serial": "",
+  "owner": "Timonel 1"
+ },
+ {
+  "category": "08_Casco_Cubierta_y_Estructura",
+  "folder": "Cubierta_01_02_03",
+  "name": "Cubiertas 100/200/300",
+  "brand": "",
+  "model": "",
+  "serial": "",
+  "owner": "Timonel 1"
+ },
+ {
+  "category": "08_Casco_Cubierta_y_Estructura",
+  "folder": "Pescantes_y_Calzos_de_Pangas",
+  "name": "Pescantes y calzos de pangas",
+  "brand": "",
+  "model": "",
+  "serial": "",
+  "owner": "Timonel 1"
+ },
+ {
+  "category": "08_Casco_Cubierta_y_Estructura",
+  "folder": "Puertas_Estancas",
+  "name": "Puertas estancas",
+  "brand": "",
+  "model": "",
+  "serial": "",
+  "owner": "Jefe de Máquinas"
+ },
+ {
+  "category": "08_Casco_Cubierta_y_Estructura",
+  "folder": "Ventanas_y_Claraboyas",
+  "name": "Ventanas y claraboyas",
+  "brand": "",
+  "model": "",
+  "serial": "",
+  "owner": "Timonel 1"
+ },
+ {
+  "category": "08_Casco_Cubierta_y_Estructura",
+  "folder": "Winche_de_Proa",
+  "name": "Winche de proa",
+  "brand": "",
+  "model": "",
+  "serial": "",
+  "owner": "Jefe de Máquinas"
+ },
+ {
+  "category": "09_Habitabilidad_y_Climatizacion",
+  "folder": "Aire_Acondicionado",
+  "name": "Aire acondicionado",
+  "brand": "",
+  "model": "",
+  "serial": "",
+  "owner": "Jefe de Máquinas"
+ },
+ {
+  "category": "09_Habitabilidad_y_Climatizacion",
+  "folder": "Ducto_Extractor_Cocina",
+  "name": "Ducto extractor de cocina",
+  "brand": "",
+  "model": "110 V",
+  "serial": "",
+  "owner": "Jefe de Máquinas"
+ },
+ {
+  "category": "10_Cocina_y_Servicios",
+  "folder": "Triturador_de_Alimentos",
+  "name": "Triturador de alimentos",
+  "brand": "",
+  "model": "1 HP 110 V",
+  "serial": "",
+  "owner": "Jefe de Máquinas"
+ },
+ {
+  "category": "11_Sistemas_Criticos_Emergencia",
+  "folder": "Banco_Baterias_GMDSS",
+  "name": "Banco de baterías GMDSS",
+  "brand": "",
+  "model": "12/3000/120-50 2x120 V",
+  "serial": "HQ22096NHAH",
+  "owner": "Jefe de Máquinas"
+ },
+ {
+  "category": "11_Sistemas_Criticos_Emergencia",
+  "folder": "Bomba_Contra_Incendio_Portatil",
+  "name": "Bomba contra incendio portátil",
+  "brand": "",
+  "model": "",
+  "serial": "",
+  "owner": "Jefe de Máquinas"
+ },
+ {
+  "category": "11_Sistemas_Criticos_Emergencia",
+  "folder": "Gobierno_de_Emergencia",
+  "name": "Gobierno de emergencia",
+  "brand": "",
+  "model": "",
+  "serial": "",
+  "owner": "Jefe de Máquinas"
+ },
+ {
+  "category": "12_Desalinización",
+  "folder": "Desalinizadora_Babor",
+  "name": "Desalinizadora babor",
+  "brand": "",
+  "model": "",
+  "serial": "",
+  "owner": "Jefe de Máquinas"
+ },
+ {
+  "category": "12_Desalinización",
+  "folder": "Desalinizadora_Estribor",
+  "name": "Desalinizadora estribor",
+  "brand": "",
+  "model": "",
+  "serial": "",
+  "owner": "Jefe de Máquinas"
+ }
+]
