@@ -10,15 +10,14 @@ import { contificoStatus, issueInvoice } from "../services/contifico.service";
 import { logEvent } from "../services/audit.service";
 import { badRequest, conflict, forbidden, notFound } from "../errors/httpError";
 
-/** Paula cobra; Dirección solo si administración la designó como cajera. */
+/** Cobra la directora (guía auditada 27-oct-2026) o la dueña. */
 async function assertCanCollect(userId: string, role: string) {
-  if (role === "admin") return;
+  if (role === "duena") return;
   if (role === "direccion") {
-    const user = await User.findById(userId).select("isCashier");
-    if (user?.isCashier) return;
-    throw forbidden("Solo cobra administración o una persona de Dirección designada como cajera");
+    const user = await User.findById(userId).select("active");
+    if (user?.active) return;
   }
-  throw forbidden();
+  throw forbidden("Los cobros los registra la directora o la dueña");
 }
 
 /**
@@ -29,11 +28,12 @@ export async function collectCabin(req: Request, res: Response, next: NextFuncti
   try {
     await assertCanCollect(req.auth!.sub, req.auth!.role);
 
-    const { cruiseId, cabinNumber, method, cashConfirmed, billing } = req.body as {
+    const { cruiseId, cabinNumber, method, cashConfirmed, billing, reference } = req.body as {
       cruiseId?: string;
       cabinNumber?: number;
       method?: PaymentMethod;
       cashConfirmed?: boolean;
+      reference?: string;
       billing?: { name?: string; idNumber?: string; email?: string; country?: string };
     };
     if (!cruiseId || !cabinNumber || !method) {
@@ -42,6 +42,9 @@ export async function collectCabin(req: Request, res: Response, next: NextFuncti
     if (!PAYMENT_METHODS.includes(method)) throw badRequest("Método de pago inválido");
     if (method === "efectivo" && !cashConfirmed) {
       throw badRequest("Con efectivo debes confirmar la recaudación en caja");
+    }
+    if (method === "transferencia" && !reference?.trim()) {
+      throw badRequest("Indica la referencia de la transferencia");
     }
 
     const summary = await buildCabinAccount(cruiseId, cabinNumber);
@@ -73,6 +76,7 @@ export async function collectCabin(req: Request, res: Response, next: NextFuncti
       courtesyTotal: summary.courtesyTotal,
       total: summary.total,
       method,
+      reference: reference?.trim() ?? "",
       cashConfirmed: Boolean(cashConfirmed),
       billing: finalBilling,
       collectedBy: req.auth!.sub,
