@@ -1,0 +1,448 @@
+import { NextFunction, Request, Response } from "express";
+import mongoose, { Types } from "mongoose";
+import { chargeableQty, IOrder, Order } from "../models/order.model";
+import { Cruise } from "../models/cruise.model";
+import { Product } from "../models/product.model";
+import { Account } from "../models/account.model";
+import { Device } from "../models/device.model";
+import {
+  appliedFor,
+  costOf,
+  deltasFromApplied,
+  moveStock,
+  onboardAvailability,
+} from "../services/inventory.service";
+import { chargesChanged } from "../services/account.service";
+import { logEvent } from "../services/audit.service";
+import { badRequest, conflict, forbidden, HttpError, notFound } from "../errors/httpError";
+import { startOfDayEcuador } from "../utils/dates";
+import { round2 } from "../utils/units";
+
+/**
+ * Consumo directo del bar (guía auditada 27-oct-2026): elegir cabina y tocar
+ * la bebida registra lo servido, carga el precio a la cabina y descuenta
+ * los ingredientes a bordo, todo en una sola transacción. Si falta un
+ * insumo no se guarda nada. Cada toque lleva su `idempotencyKey`: los
+ * reintentos sin señal nunca duplican.
+ */
+
+const LEADS = new Set(["duena", "admin", "direccion"]);
+
+function isLead(role: string) {
+  return LEADS.has(role);
+}
+
+/** Totales de la cabina para la barra inferior del bar. */
+async function cabinSummary(cruiseId: Types.ObjectId | string, cabinNumber: number, userId: string) {
+  const [orders, account] = await Promise.all([
+    Order.find({ cruise: cruiseId, cabinNumber, status: { $in: ["entregada", "pendiente"] } })
+      .populate("createdBy", "name")
+      .sort({ createdAt: -1 })
+      .limit(400),
+    Account.findOne({ cruise: cruiseId, cabinNumber }).select("status"),
+  ]);
+  const today = startOfDayEcuador();
+  let trip = 0;
+  let todayTotal = 0;
+  for (const order of orders) {
+    trip += order.total;
+    if ((order.createdAt as Date) >= today) todayTotal += order.total;
+  }
+  const accountStatus = account?.status ?? "abierta";
+  const last = orders.find((o) => !o.undo) ?? null;
+  const lastItem = last?.items[0];
+  return {
+    cabinNumber,
+    tripTotal: round2(trip),
+    todayTotal: round2(todayTotal),
+    accountStatus,
+    last: last
+      ? {
+          orderId: last._id.toString(),
+          name: lastItem?.name ?? "",
+          qty: lastItem ? chargeableQty(lastItem) : 0,
+          courtesy: Boolean(lastItem?.courtesy),
+          total: last.total,
+          at: last.clientAt ?? last.createdAt,
+          by: (last.createdBy as unknown as { name?: string })?.name ?? "",
+          canUndo:
+            accountStatus === "abierta" &&
+            !last.payment &&
+            (last.createdBy as unknown as { _id: Types.ObjectId })?._id?.toString() === userId,
+        }
+      : null,
+  };
+}
+
+export async function createConsumption(req: Request, res: Response, next: NextFunction) {
+  try {
+    const { cruiseId, cabinNumber, productId, qty, courtesy, idempotencyKey, clientAt } =
+      req.body as {
+        cruiseId?: string;
+        cabinNumber?: number;
+        productId?: string;
+        qty?: number;
+        courtesy?: boolean;
+        idempotencyKey?: string;
+        clientAt?: string;
+      };
+    if (!cruiseId || !cabinNumber || !productId) {
+      throw badRequest("Salida, cabina y bebida son obligatorias");
+    }
+    if (!idempotencyKey) throw badRequest("Falta el identificador del registro");
+    const units = qty ?? 1;
+    if (!Number.isInteger(units) || units < 1 || units > 50) throw badRequest("Cantidad inválida");
+
+    const existing = await Order.findOne({ idempotencyKey });
+    if (existing) {
+      res.status(200).json({
+        order: existing,
+        duplicated: true,
+        summary: await cabinSummary(existing.cruise, existing.cabinNumber, req.auth!.sub),
+      });
+      return;
+    }
+
+    const cruise = await Cruise.findById(cruiseId);
+    if (!cruise) throw notFound("Salida no encontrada");
+    if (cruise.status === "planificado") {
+      throw badRequest("La salida está programada: la directora debe iniciar el crucero");
+    }
+    const cabin = cruise.cabins.find((c) => c.number === cabinNumber);
+    if (!cabin) throw badRequest("Cabina inválida para esta salida");
+    if (!cabin.passengers.length) throw badRequest(`La cabina ${cabinNumber} está vacía`);
+
+    const product = await Product.findOne({ _id: productId, active: true });
+    if (!product) throw badRequest("Esa bebida no está activa");
+    if (product.kind === "fisico" && !product.sellable) {
+      throw badRequest(`${product.name} es un insumo y no se vende solo`);
+    }
+
+    const applied = await appliedFor(product);
+    const cost = costOf(applied);
+    const late = cruise.status === "cerrado";
+    const item = {
+      product: product._id,
+      name: product.name,
+      qty: units,
+      unitPrice: product.price,
+      courtesy: Boolean(courtesy) && isLead(req.auth!.role),
+      deliveredQty: late ? 0 : units,
+      cancelledQty: 0,
+      annulledQty: 0,
+      applied,
+      unitCost: cost.unitCost,
+      costComplete: cost.complete,
+    };
+    const at = clientAt ? new Date(clientAt) : new Date();
+
+    let order: (IOrder & { _id: Types.ObjectId }) | null = null;
+    try {
+      await mongoose.connection.transaction(async (session) => {
+        const doc = new Order({
+          cruise: cruise._id,
+          cabinNumber,
+          items: [item],
+          status: late ? "retenida" : "entregada",
+          total: late || item.courtesy ? 0 : round2(units * product.price),
+          createdBy: req.auth!.sub,
+          idempotencyKey,
+          source: "directo",
+          clientAt: Number.isNaN(at.getTime()) ? null : at,
+          deliveries: late
+            ? []
+            : [{ key: idempotencyKey, items: [{ index: 0, qty: units }], by: req.auth!.sub, at: new Date() }],
+        });
+        await doc.save({ session });
+        if (!late) {
+          await moveStock({
+            session,
+            guard: true,
+            type: "venta",
+            location: "abordo",
+            deltas: new Map(
+              [...deltasFromApplied(applied, units)].map(([id, q]) => [id, -q] as [string, number]),
+            ),
+            userId: req.auth!.sub,
+            cruise: cruise._id,
+            order: doc._id,
+            reason: `Consumo cabina ${cabinNumber}`,
+          });
+        }
+        order = doc;
+      });
+    } catch (err) {
+      if ((err as { code?: number }).code === 11000) {
+        const dup = await Order.findOne({ idempotencyKey });
+        if (dup) {
+          res.status(200).json({
+            order: dup,
+            duplicated: true,
+            summary: await cabinSummary(dup.cruise, dup.cabinNumber, req.auth!.sub),
+          });
+          return;
+        }
+      }
+      throw err;
+    }
+    const saved = order as unknown as IOrder & { _id: Types.ObjectId };
+
+    if (late) {
+      await logEvent(req.auth, {
+        kind: "consumo",
+        title: `Consumo retenido · cabina ${cabinNumber}`,
+        detail: `${units}× ${product.name} · llegó con la salida finalizada; lo revisa la directora`,
+        cruise: cruise._id,
+        cabinNumber,
+      });
+      res.status(202).json({ order: saved, held: true });
+      return;
+    }
+
+    await chargesChanged(cruise._id, cabinNumber, req.auth!.sub, `Consumo: ${units}× ${product.name}`);
+    await logEvent(req.auth, {
+      kind: "consumo",
+      title: `Consumo · cabina ${cabinNumber}`,
+      detail: `${units}× ${product.name}${item.courtesy ? " (cortesía)" : ""}`,
+      amount: saved.total,
+      cruise: cruise._id,
+      cabinNumber,
+    });
+
+    res.status(201).json({
+      order: saved,
+      summary: await cabinSummary(cruise._id, cabinNumber, req.auth!.sub),
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
+/** Revierte cargo y stock de una orden directa dentro de una transacción. */
+async function reverseOrder(order: IOrder & { _id: Types.ObjectId }, userId: string, reason: string) {
+  await mongoose.connection.transaction(async (session) => {
+    const fresh = await Order.findById(order._id).session(session);
+    if (!fresh) throw notFound("Consumo no encontrado");
+    if (fresh.undo) throw conflict("Este consumo ya se deshizo");
+    const item = fresh.items[0]!;
+    const units = chargeableQty(item);
+    if (units <= 0) throw conflict("No queda nada que deshacer");
+    const delivered = Math.min(units, item.deliveredQty - item.annulledQty);
+    item.annulledQty += units;
+    fresh.undo = { by: new Types.ObjectId(userId), at: new Date(), reason };
+    fresh.total = 0;
+    fresh.status = "cancelada";
+    await fresh.save({ session });
+    if (delivered > 0 && item.applied.length) {
+      await moveStock({
+        session,
+        guard: false,
+        type: "reverso",
+        location: "abordo",
+        deltas: deltasFromApplied(item.applied, delivered),
+        userId,
+        cruise: fresh.cruise,
+        order: fresh._id,
+        reason: `Deshacer: ${reason}`,
+      });
+    }
+  });
+}
+
+/**
+ * Deshacer un error: solo quien lo registró (o la directora) y solo con la
+ * cuenta abierta. Devuelve el cargo y los ingredientes con reverso auditable.
+ */
+export async function undoConsumption(req: Request, res: Response, next: NextFunction) {
+  try {
+    const reason = (req.body?.reason as string | undefined)?.trim() || "Registro por error";
+    const order = await Order.findById(req.params.id);
+    if (!order) throw notFound("Consumo no encontrado");
+    if (order.payment) throw conflict("La cuenta ya se cobró: corrígelo con un reverso autorizado");
+    if (order.status === "retenida") throw conflict("Este consumo está retenido para revisión");
+
+    const own = order.createdBy.toString() === req.auth!.sub;
+    if (!own && !isLead(req.auth!.role)) {
+      throw forbidden("Solo puedes deshacer lo que registraste tú");
+    }
+    const account = await Account.findOne({ cruise: order.cruise, cabinNumber: order.cabinNumber });
+    if (account && account.status !== "abierta") {
+      throw conflict("La cuenta está en revisión o aprobada: pídele a la directora que la reabra");
+    }
+
+    await reverseOrder(order, req.auth!.sub, reason);
+    await chargesChanged(order.cruise, order.cabinNumber, req.auth!.sub, `Deshacer: ${reason}`);
+    await logEvent(req.auth, {
+      kind: "consumo",
+      title: `Consumo deshecho · cabina ${order.cabinNumber}`,
+      detail: `${order.items[0]?.qty ?? 0}× ${order.items[0]?.name ?? ""} · ${reason}`,
+      cruise: order.cruise,
+      cabinNumber: order.cabinNumber,
+    });
+
+    res.json({
+      order: await Order.findById(order._id),
+      summary: await cabinSummary(order.cruise, order.cabinNumber, req.auth!.sub),
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
+/**
+ * Bonificar una bebida que sí se consumió: deja de cobrarse pero conserva la
+ * salida de ingredientes. Solo directora o dueña, con motivo.
+ */
+export async function bonifyConsumption(req: Request, res: Response, next: NextFunction) {
+  try {
+    const reason = (req.body?.reason as string | undefined)?.trim();
+    if (!reason) throw badRequest("El motivo de la bonificación es obligatorio");
+    const order = await Order.findById(req.params.id);
+    if (!order) throw notFound("Consumo no encontrado");
+    if (order.payment) throw conflict("La cuenta ya se cobró");
+    if (order.status !== "entregada") throw conflict("Solo se bonifica un consumo servido");
+    const item = order.items[0]!;
+    if (item.courtesy) throw conflict("Ya es cortesía");
+    item.courtesy = true;
+    order.total = 0;
+    order.cancellations.push({ items: [], reason: `Bonificado: ${reason}`, by: req.auth!.sub as never, at: new Date() });
+    await order.save();
+
+    await chargesChanged(order.cruise, order.cabinNumber, req.auth!.sub, `Bonificación: ${reason}`);
+    await logEvent(req.auth, {
+      kind: "consumo",
+      title: `Bonificado · cabina ${order.cabinNumber}`,
+      detail: `${item.qty}× ${item.name} · ${reason}`,
+      cruise: order.cruise,
+      cabinNumber: order.cabinNumber,
+    });
+    res.json({ order });
+  } catch (err) {
+    next(err);
+  }
+}
+
+/**
+ * Envío tardío: la directora acepta (se carga en su salida original y
+ * descuenta stock) o rechaza con motivo. Nunca pasa al viaje nuevo.
+ */
+export async function reviewHeld(req: Request, res: Response, next: NextFunction) {
+  try {
+    const { decision, reason } = req.body as { decision?: "aceptar" | "rechazar"; reason?: string };
+    if (decision !== "aceptar" && decision !== "rechazar") throw badRequest("Decisión inválida");
+    if (!reason?.trim()) throw badRequest("El motivo es obligatorio");
+
+    const order = await Order.findById(req.params.id);
+    if (!order) throw notFound("Consumo no encontrado");
+    if (order.status !== "retenida") throw conflict("Este consumo ya fue revisado");
+    const item = order.items[0]!;
+
+    await mongoose.connection.transaction(async (session) => {
+      const fresh = await Order.findOne({ _id: order._id, status: "retenida" }).session(session);
+      if (!fresh) throw conflict("Este consumo ya fue revisado");
+      const line = fresh.items[0]!;
+      fresh.heldReview = {
+        by: new Types.ObjectId(req.auth!.sub),
+        at: new Date(),
+        decision: decision === "aceptar" ? "aceptado" : "rechazado",
+        reason: reason.trim(),
+      };
+      if (decision === "aceptar") {
+        line.deliveredQty = line.qty;
+        fresh.status = "entregada";
+        fresh.total = line.courtesy ? 0 : round2(line.qty * line.unitPrice);
+        fresh.deliveries.push({
+          key: `${fresh.idempotencyKey}-aceptado`,
+          items: [{ index: 0, qty: line.qty }],
+          by: req.auth!.sub as never,
+          at: new Date(),
+        });
+        await fresh.save({ session });
+        await moveStock({
+          session,
+          guard: true,
+          type: "venta",
+          location: "abordo",
+          deltas: new Map(
+            [...deltasFromApplied(line.applied, line.qty)].map(([id, q]) => [id, -q] as [string, number]),
+          ),
+          userId: req.auth!.sub,
+          cruise: fresh.cruise,
+          order: fresh._id,
+          reason: `Consumo tardío aceptado · cabina ${fresh.cabinNumber}`,
+        });
+      } else {
+        line.cancelledQty = line.qty;
+        fresh.status = "cancelada";
+        fresh.total = 0;
+        await fresh.save({ session });
+      }
+    });
+
+    if (decision === "aceptar") {
+      await chargesChanged(order.cruise, order.cabinNumber, req.auth!.sub, `Consumo tardío aceptado: ${reason.trim()}`);
+    }
+    await logEvent(req.auth, {
+      kind: "consumo",
+      title: `Consumo tardío ${decision === "aceptar" ? "aceptado" : "rechazado"} · cabina ${order.cabinNumber}`,
+      detail: `${item.qty}× ${item.name} · ${reason.trim()}`,
+      cruise: order.cruise,
+      cabinNumber: order.cabinNumber,
+    });
+    res.json({ order: await Order.findById(order._id) });
+  } catch (err) {
+    if (err instanceof HttpError) return next(err);
+    next(err);
+  }
+}
+
+/** Barra inferior del bar: último consumo y totales hoy / viaje. */
+export async function getCabinSummary(req: Request, res: Response, next: NextFunction) {
+  try {
+    const { cruiseId, cabinNumber } = req.params;
+    res.json({ summary: await cabinSummary(String(cruiseId), Number(cabinNumber), req.auth!.sub) });
+  } catch (err) {
+    next(err);
+  }
+}
+
+/** Qué bebidas se pueden servir ahora con el stock a bordo. */
+export async function availability(_req: Request, res: Response, next: NextFunction) {
+  try {
+    res.json({ availability: await onboardAvailability() });
+  } catch (err) {
+    next(err);
+  }
+}
+
+/** Cada tablet avisa sus envíos sin confirmar y su última sincronización. */
+export async function heartbeat(req: Request, res: Response, next: NextFunction) {
+  try {
+    const { deviceId, label, pending, lastSyncAt, cruiseId } = req.body as {
+      deviceId?: string;
+      label?: string;
+      pending?: number;
+      lastSyncAt?: string | null;
+      cruiseId?: string | null;
+    };
+    if (!deviceId) throw badRequest("Falta el identificador del equipo");
+    await Device.updateOne(
+      { deviceId },
+      {
+        $set: {
+          label: label ?? "",
+          user: req.auth!.sub,
+          userName: req.auth!.name,
+          cruise: cruiseId && Types.ObjectId.isValid(cruiseId) ? cruiseId : null,
+          pending: Math.max(0, Number(pending) || 0),
+          lastSyncAt: lastSyncAt ? new Date(lastSyncAt) : null,
+          lastSeenAt: new Date(),
+        },
+      },
+      { upsert: true },
+    );
+    res.json({ ok: true, serverTime: new Date() });
+  } catch (err) {
+    next(err);
+  }
+}
