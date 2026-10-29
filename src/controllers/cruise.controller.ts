@@ -2,11 +2,17 @@ import { NextFunction, Request, Response } from "express";
 import {
   cabinDisplayName,
   Cruise,
-  CRUISE_STATUSES,
   CruiseStatus,
   IPassenger,
 } from "../models/cruise.model";
 import { CycleSettings, DEFAULT_LEGS, ICycleLeg } from "../models/cycleSettings.model";
+import { Product } from "../models/product.model";
+import { Order } from "../models/order.model";
+import { Payment } from "../models/payment.model";
+import { Account } from "../models/account.model";
+import { Device } from "../models/device.model";
+import { onboardAvailability } from "../services/inventory.service";
+import { round2 } from "../utils/units";
 import { logEvent } from "../services/audit.service";
 import { badRequest, conflict, notFound } from "../errors/httpError";
 import { addDaysKey, ecuadorDateTime } from "../utils/dates";
@@ -187,27 +193,258 @@ export async function updateCruise(req: Request, res: Response, next: NextFuncti
     };
     const cruise = await Cruise.findById(req.params.id);
     if (!cruise) throw notFound("Salida no encontrada");
+    if (status !== undefined && status !== cruise.status) {
+      throw badRequest("Usa Iniciar crucero o Finalizar crucero para cambiar el estado");
+    }
 
     if (name !== undefined) cruise.name = name;
     if (notes !== undefined) cruise.notes = notes;
-    if (status !== undefined && status !== cruise.status) {
-      if (!CRUISE_STATUSES.includes(status)) throw badRequest("Estado inválido");
-      if (cruise.status === "cerrado") throw conflict("Una salida cerrada no se reabre");
-      if (status === "abordo") {
-        const other = await Cruise.findOne({ status: "abordo", _id: { $ne: cruise._id } });
-        if (other) throw conflict(`Cierra primero la salida ${other.code || other.name}`);
-      }
-      cruise.status = status;
-      if (status === "cerrado") cruise.endDate = cruise.endDate ?? new Date();
-      await logEvent(req.auth, {
-        kind: "salida",
-        title: `Salida ${cruise.code || cruise.name} · ${status === "abordo" ? "a bordo" : status}`,
-        cruise: cruise._id,
-      });
-    }
-
     await cruise.save();
     res.json({ cruise });
+  } catch (err) {
+    next(err);
+  }
+}
+
+function normalizeName(value: string) {
+  return value.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/\s+/g, " ").trim();
+}
+
+/** Problemas que impiden iniciar (bloquean) y avisos que no bloquean. */
+async function startReview(cruise: InstanceType<typeof Cruise>) {
+  const blockers: string[] = [];
+  const occupied = cruise.cabins.filter((c) => c.passengers.length);
+  if (!occupied.length) blockers.push("No hay pasajeros registrados en ninguna cabina");
+
+  const seen = new Map<string, number>();
+  for (const cabin of occupied) {
+    if (!cabin.passengers.some((p) => p.isPayer)) blockers.push(`Cabina ${cabin.number}: falta el pagador`);
+    if (cabin.passengers.length > cabin.capacity) {
+      blockers.push(`Cabina ${cabin.number}: ${cabin.passengers.length} pasajeros y capacidad ${cabin.capacity}`);
+    }
+    for (const p of cabin.passengers) {
+      const key = p.idNumber ? `id:${p.idNumber.replace(/\s|-/g, "").toLowerCase()}` : `n:${normalizeName(p.name)}`;
+      const other = seen.get(key);
+      if (other !== undefined) blockers.push(`${p.name} aparece en las cabinas ${other} y ${cabin.number}`);
+      else seen.set(key, cabin.number);
+    }
+  }
+
+  const other = await Cruise.findOne({ status: "abordo", _id: { $ne: cruise._id } }).select("code name");
+  if (other) blockers.push(`La salida ${other.code || other.name} sigue en curso: finalízala primero`);
+
+  // Avisos de stock: no bloquean el crucero, el bar ve "no disponible" por producto.
+  const availability = await onboardAvailability();
+  const sellable = await Product.find({ active: true, sellable: true, kind: { $ne: "servicio" } }).select("name");
+  const unavailable = sellable
+    .filter((p) => availability[p._id.toString()]?.available === false)
+    .map((p) => `${p.name} (falta ${availability[p._id.toString()]!.missing})`);
+  const low = await Product.find({
+    kind: "fisico",
+    active: true,
+    lowStockThreshold: { $gt: 0 },
+    $expr: { $lte: ["$onboardStock", "$lowStockThreshold"] },
+  }).select("name onboardStock stockUnit");
+
+  return {
+    blockers,
+    warnings: {
+      unavailable,
+      low: low.map((p) => `${p.name}: ${p.onboardStock} ${p.stockUnit} a bordo`),
+    },
+    occupancy: {
+      cabins: cruise.cabins.length,
+      occupied: occupied.length,
+      passengers: occupied.reduce((s, c) => s + c.passengers.length, 0),
+      empty: cruise.cabins.filter((c) => !c.passengers.length).map((c) => c.number),
+    },
+  };
+}
+
+/** Resumen previo a Iniciar crucero: ruta, fechas, ocupación, bloqueos y avisos. */
+export async function startCheck(req: Request, res: Response, next: NextFunction) {
+  try {
+    const cruise = await Cruise.findById(req.params.id);
+    if (!cruise) throw notFound("Salida no encontrada");
+    res.json({ cruise, ...(await startReview(cruise)) });
+  } catch (err) {
+    next(err);
+  }
+}
+
+/**
+ * Iniciar crucero: Programada pasa a En curso una sola vez (update
+ * condicional + índice único de salida en curso). No crea compras ni toca stock.
+ */
+export async function startCruise(req: Request, res: Response, next: NextFunction) {
+  try {
+    const cruise = await Cruise.findById(req.params.id);
+    if (!cruise) throw notFound("Salida no encontrada");
+    if (cruise.status === "abordo") {
+      res.json({ cruise, duplicated: true });
+      return;
+    }
+    if (cruise.status !== "planificado") throw conflict("Una salida finalizada no se reinicia");
+    const review = await startReview(cruise);
+    if (review.blockers.length) throw badRequest(review.blockers.join(" · "));
+
+    let started;
+    try {
+      started = await Cruise.findOneAndUpdate(
+        { _id: cruise._id, status: "planificado" },
+        { $set: { status: "abordo", startedAt: new Date(), startedBy: req.auth!.sub } },
+        { new: true },
+      );
+    } catch (err) {
+      if ((err as { code?: number }).code === 11000) throw conflict("Ya hay otra salida en curso");
+      throw err;
+    }
+    if (!started) {
+      const fresh = await Cruise.findById(cruise._id);
+      res.json({ cruise: fresh, duplicated: true });
+      return;
+    }
+
+    await logEvent(req.auth, {
+      kind: "salida",
+      title: `Crucero iniciado · ${started.code || started.name}`,
+      detail: `${review.occupancy.passengers} pasajeros en ${review.occupancy.occupied} cabinas`,
+      cruise: started._id,
+    });
+    res.json({ cruise: started, warnings: review.warnings });
+  } catch (err) {
+    next(err);
+  }
+}
+
+const SILENT_DEVICE_MS = 10 * 60 * 1000;
+
+/** Resumen de cierre: cuentas por cabina, envíos pendientes y equipos. */
+async function finishReview(cruise: InstanceType<typeof Cruise>) {
+  const [orders, payments, accounts, devices, held] = await Promise.all([
+    Order.find({ cruise: cruise._id, status: { $in: ["entregada", "pendiente"] } }).select(
+      "cabinNumber total payment",
+    ),
+    Payment.find({ cruise: cruise._id, status: "vigente" }).select("cabinNumber total"),
+    Account.find({ cruise: cruise._id }).select("cabinNumber status"),
+    Device.find({ $or: [{ cruise: cruise._id }, { pending: { $gt: 0 } }] }),
+    Order.countDocuments({ cruise: cruise._id, status: "retenida" }),
+  ]);
+
+  const cabins = cruise.cabins.map((cabin) => {
+    const charges = orders.filter((o) => o.cabinNumber === cabin.number);
+    const consumed = round2(charges.reduce((s, o) => s + o.total, 0));
+    const paid = round2(
+      payments.filter((p) => p.cabinNumber === cabin.number).reduce((s, p) => s + p.total, 0),
+    );
+    const status = accounts.find((a) => a.cabinNumber === cabin.number)?.status ?? "abierta";
+    return {
+      number: cabin.number,
+      guestName: cabin.guestName,
+      passengers: cabin.passengers.length,
+      consumed,
+      paid,
+      due: round2(consumed - paid),
+      accountStatus: charges.length ? status : "sin_consumos",
+    };
+  });
+
+  const now = Date.now();
+  const deviceRows = devices.map((d) => ({
+    deviceId: d.deviceId,
+    label: d.label || d.userName || "Tableta",
+    userName: d.userName,
+    pending: d.pending,
+    lastSyncAt: d.lastSyncAt,
+    lastSeenAt: d.lastSeenAt,
+    silent: now - d.lastSeenAt.getTime() > SILENT_DEVICE_MS,
+  }));
+  const issues: string[] = [];
+  for (const d of deviceRows) {
+    if (d.pending > 0) issues.push(`${d.label}: ${d.pending} envío(s) sin confirmar`);
+    else if (d.silent && d.lastSeenAt.getTime() > now - 24 * 3600 * 1000) {
+      issues.push(`${d.label} no responde desde ${d.lastSeenAt.toISOString()}`);
+    }
+  }
+
+  const totals = cabins.reduce(
+    (t, c) => ({ consumed: t.consumed + c.consumed, paid: t.paid + c.paid, due: t.due + c.due }),
+    { consumed: 0, paid: 0, due: 0 },
+  );
+  const finance =
+    totals.due <= 0.005 && totals.consumed > 0
+      ? "liquidada"
+      : cabins.some((c) => c.accountStatus === "abierta" || c.accountStatus === "en_revision")
+        ? "por_revisar"
+        : "por_cobrar";
+
+  return {
+    cabins,
+    devices: deviceRows,
+    issues,
+    held,
+    finance,
+    totals: { consumed: round2(totals.consumed), paid: round2(totals.paid), due: round2(totals.due) },
+  };
+}
+
+export async function finishCheck(req: Request, res: Response, next: NextFunction) {
+  try {
+    const cruise = await Cruise.findById(req.params.id);
+    if (!cruise) throw notFound("Salida no encontrada");
+    res.json({ cruise, ...(await finishReview(cruise)) });
+  } catch (err) {
+    next(err);
+  }
+}
+
+/**
+ * Finalizar crucero: En curso pasa a Finalizada y se bloquean nuevos
+ * consumos (los tardíos quedan retenidos para revisión). Si hay equipos con
+ * envíos pendientes o sin responder, el cierre excepcional exige motivo.
+ * Las cuentas pendientes conservan su saldo: finalizar no las marca pagadas.
+ */
+export async function finishCruise(req: Request, res: Response, next: NextFunction) {
+  try {
+    const reason = (req.body?.reason as string | undefined)?.trim() ?? "";
+    const cruise = await Cruise.findById(req.params.id);
+    if (!cruise) throw notFound("Salida no encontrada");
+    if (cruise.status === "cerrado") {
+      res.json({ cruise, duplicated: true });
+      return;
+    }
+    if (cruise.status !== "abordo") throw conflict("Solo se finaliza una salida en curso");
+    const review = await finishReview(cruise);
+    if (review.issues.length && !reason) {
+      throw badRequest(`Cierre excepcional: indica el motivo (${review.issues.join(" · ")})`);
+    }
+
+    const closed = await Cruise.findOneAndUpdate(
+      { _id: cruise._id, status: "abordo" },
+      {
+        $set: {
+          status: "cerrado",
+          closedAt: new Date(),
+          closedBy: req.auth!.sub,
+          closeReason: reason,
+        },
+      },
+      { new: true },
+    );
+    if (!closed) {
+      res.json({ cruise: await Cruise.findById(cruise._id), duplicated: true });
+      return;
+    }
+
+    await logEvent(req.auth, {
+      kind: "salida",
+      title: `Crucero finalizado · ${closed.code || closed.name}`,
+      detail: `Consumos ${review.totals.consumed} · cobrado ${review.totals.paid} · por cobrar ${review.totals.due}${
+        reason ? ` · cierre excepcional: ${reason}` : ""
+      }`,
+      cruise: closed._id,
+    });
+    res.json({ cruise: closed, summary: review });
   } catch (err) {
     next(err);
   }
@@ -237,6 +474,29 @@ export async function updatePassengers(req: Request, res: Response, next: NextFu
         phone: p.phone?.trim() ?? "",
         isPayer: Boolean(p.isPayer),
       }));
+    const { capacity } = req.body as { capacity?: number };
+    if (capacity !== undefined) {
+      if (!Number.isInteger(capacity) || capacity < 1 || capacity > 6) throw badRequest("Capacidad inválida");
+      cabin.capacity = capacity;
+    }
+    if (clean.length > cabin.capacity) {
+      throw badRequest(`La cabina ${cabinNumber} admite ${cabin.capacity} pasajero(s)`);
+    }
+    // Sin duplicados dentro de la salida (misma identificación o mismo nombre).
+    const keyOf = (p: { name: string; idNumber: string }) =>
+      p.idNumber ? `id:${p.idNumber.replace(/\s|-/g, "").toLowerCase()}` : `n:${normalizeName(p.name)}`;
+    const keys = new Set<string>();
+    for (const p of clean) {
+      const k = keyOf(p);
+      if (keys.has(k)) throw badRequest(`${p.name} está repetido en la cabina`);
+      keys.add(k);
+    }
+    for (const other of cruise.cabins) {
+      if (other.number === cabinNumber) continue;
+      const dup = other.passengers.find((p) => keys.has(keyOf(p)));
+      if (dup) throw badRequest(`${dup.name} ya está registrado en la cabina ${other.number}`);
+    }
+
     // Siempre hay exactamente un pagador si hay pasajeros.
     if (clean.length && !clean.some((p) => p.isPayer)) clean[0]!.isPayer = true;
     let payerSeen = false;
