@@ -2,9 +2,11 @@ import fs from "fs";
 import path from "path";
 import crypto from "crypto";
 import axios from "axios";
-import { PDFDocument, PDFPage, StandardFonts, rgb } from "pdf-lib";
+import { AnnotationFlags, PDFDocument, PDFPage, PDFSignature, StandardFonts, rgb } from "pdf-lib";
 import { IIsmRecord } from "../models/ismRecord.model";
 import { SignatureStage } from "../models/ismRecord.model";
+import { hashContent, ismSchema, signatureIsValid } from "./ismSchema.service";
+import { appendGuidedAnnex } from "./ismAnnex.service";
 
 /**
  * Definiciones de los registros ISM: se generan desde los PDF oficiales de
@@ -23,6 +25,8 @@ export interface IsmFieldDef {
   multiline?: boolean;
   fontSize?: number;
   default?: string | boolean;
+  /** Dato conocido que se muestra como referencia (p. ej. caducidades del R-28); no es respuesta. */
+  reference?: string;
   maxLength?: number;
   onValue?: string;
   stage?: SignatureStage;
@@ -138,14 +142,17 @@ export function buildFileName(
   return `${base}${clean ? `_${clean}` : ""}.pdf`;
 }
 
-/** Huella del contenido: datos del formulario + firmas existentes. */
-export function hashRecord(record: Pick<IIsmRecord, "code" | "data" | "signatures" | "recordDate">) {
+/** Huella del archivo: contenido (datos, respuestas, contexto) + firmas existentes. */
+export function hashRecord(
+  record: Pick<IIsmRecord, "code" | "data" | "signatures" | "recordDate" | "answers" | "context">,
+) {
   const payload = JSON.stringify({
     code: record.code,
     recordDate: new Date(record.recordDate).toISOString(),
     data: Object.keys(record.data ?? {})
       .sort()
       .map((k) => [k, record.data[k]]),
+    content: hashContent(record),
     signatures: (record.signatures ?? []).map((s) => [s.field, s.signerName, s.signedAt, s.image.length]),
   });
   return crypto.createHash("sha256").update(payload).digest("hex");
@@ -199,7 +206,9 @@ export async function renderRecordPdf(record: IIsmRecord): Promise<Uint8Array> {
   const pdf = await PDFDocument.load(template);
   const form = pdf.getForm();
   const font = await pdf.embedFont(StandardFonts.Helvetica);
+  const bold = await pdf.embedFont(StandardFonts.HelveticaBold);
   const pages = pdf.getPages();
+  const currentHash = hashContent(record);
 
   for (const f of def.fields) {
     const value = record.data?.[f.name];
@@ -219,6 +228,23 @@ export async function renderRecordPdf(record: IIsmRecord): Promise<Uint8Array> {
     }
   }
 
+  // Los recuadros de firma del formato se reemplazan por la firma dibujada
+  // (si no, los visores muestran su marca "SIGN").
+  // Se ocultan y se sacan del formulario sin borrarlos: borrar sus objetos
+  // (removeField o flatten) deja referencias rotas en el PDF archivado.
+  for (const field of form.getFields()) {
+    if (!(field instanceof PDFSignature)) continue;
+    try {
+      for (const widget of field.acroField.getWidgets()) {
+        widget.setFlagTo(AnnotationFlags.Hidden, true);
+        widget.setFlagTo(AnnotationFlags.Print, false);
+      }
+      form.acroForm.removeField(field.acroField);
+    } catch {
+      // Se deja como está.
+    }
+  }
+
   try {
     form.updateFieldAppearances(font);
   } catch {
@@ -227,6 +253,8 @@ export async function renderRecordPdf(record: IIsmRecord): Promise<Uint8Array> {
 
   // Firmas dibujadas con el dedo, en su recuadro.
   for (const sig of record.signatures ?? []) {
+    // Una firma hecha antes de que cambiaran los datos ya no vale.
+    if (!signatureIsValid(sig, currentHash)) continue;
     const f = def.fields.find((x) => x.name === sig.field);
     const page = f ? pages[f.page] : undefined;
     if (!f || !page) continue;
@@ -260,6 +288,21 @@ export async function renderRecordPdf(record: IIsmRecord): Promise<Uint8Array> {
     page.drawImage(embedded, { x: r.x + (r.w - w) / 2, y: r.y + (r.h - h) / 2, width: w, height: h });
   }
 
+  // Registros guiados: página anexa con novedades, "no aplica" y responsable.
+  const schema = record.schemaVersion ? ismSchema(record.code, record.schemaVersion) : null;
+  if (schema) {
+    await appendGuidedAnnex(pdf, template, schema, record, {
+      font,
+      bold,
+      safe: winAnsi,
+      loadImage: imageBytes,
+      stamp: (date) => {
+        const t = galapagosParts(date);
+        return `${pad(t.d)}/${pad(t.m)}/${t.y} ${pad(t.hh)}:${pad(t.mm)} (hora Galápagos)`;
+      },
+    });
+  }
+
   if (record.status === "archivado") {
     try {
       form.flatten();
@@ -267,7 +310,7 @@ export async function renderRecordPdf(record: IIsmRecord): Promise<Uint8Array> {
       for (const field of form.getFields()) field.enableReadOnly();
     }
   } else {
-    for (const page of pages) {
+    for (const page of pdf.getPages()) {
       const { width, height } = page.getSize();
       page.drawText("BORRADOR · REGISTRO AUN NO ARCHIVADO", {
         x: width / 2 - 120,
