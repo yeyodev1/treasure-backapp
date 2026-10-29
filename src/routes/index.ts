@@ -100,6 +100,7 @@ export default function routerApi(app: Application) {
   router.post("/payments/collect", requireAuth, LEAD, payments.collectCabin);
   router.get("/payments", requireAuth, LEAD, payments.listPayments);
   router.post("/payments/:id/retry-invoice", requireAuth, ADMIN, payments.retryInvoice);
+  router.get("/contifico", requireAuth, ADMIN, payments.contificoInfo);
   router.post("/payments/:id/reverse", requireAuth, ADMIN, payments.reversePayment);
 
   // Inventario en unidad base (ml, unidad…)
