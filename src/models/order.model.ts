@@ -6,6 +6,17 @@ import mongoose, { Schema, Types } from "mongoose";
  * puede cancelar con motivo (no toca stock); lo entregado solo se anula
  * por solicitud a Dirección, y devolver stock lo decide Paula.
  */
+/** Ingrediente aplicado en la venta: editar la receta mañana no cambia ventas pasadas. */
+export interface IAppliedIngredient {
+  product: Types.ObjectId;
+  name: string;
+  /** Cantidad por unidad vendida, en unidad base del insumo. */
+  qty: number;
+  stockUnit: string;
+  /** Costo por unidad base al momento de la venta (0 = sin costo). */
+  unitCost: number;
+}
+
 export interface IOrderItem {
   product: Types.ObjectId;
   name: string;
@@ -15,6 +26,11 @@ export interface IOrderItem {
   deliveredQty: number;
   cancelledQty: number;
   annulledQty: number;
+  /** Receta (o envase) aplicada al registrar: base de descuentos y reversos. */
+  applied: IAppliedIngredient[];
+  /** Costo de una unidad vendida y si todos sus insumos tenían costo. */
+  unitCost: number;
+  costComplete: boolean;
 }
 
 export interface IOrderDelivery {
@@ -48,7 +64,11 @@ export interface IOrderAnnulment {
   restocked: boolean;
 }
 
-export const ORDER_STATUSES = ["pendiente", "entregada", "cancelada"] as const;
+/**
+ * retenida: consumo enviado cuando la salida ya estaba finalizada. Queda en
+ * su salida original, sin cargo ni stock, hasta que la directora lo revise.
+ */
+export const ORDER_STATUSES = ["pendiente", "entregada", "cancelada", "retenida"] as const;
 export type OrderStatus = (typeof ORDER_STATUSES)[number];
 
 export interface IOrder {
@@ -65,6 +85,14 @@ export interface IOrder {
   deliveries: IOrderDelivery[];
   cancellations: IOrderCancellation[];
   annulments: IOrderAnnulment[];
+  /** directo: un toque en el bar (cargo + stock juntos). pedido: flujo v3 de dos pasos. */
+  source: "directo" | "pedido";
+  /** Momento en que se tocó la bebida en la tablet (puede llegar después sin señal). */
+  clientAt: Date | null;
+  /** Deshacer de quien lo registró, con reverso auditable. */
+  undo: { by: Types.ObjectId; at: Date; reason: string } | null;
+  /** Revisión de un consumo retenido (envío tardío). */
+  heldReview: { by: Types.ObjectId; at: Date; decision: "aceptado" | "rechazado"; reason: string } | null;
   createdAt?: Date;
   updatedAt?: Date;
 }
@@ -84,6 +112,23 @@ const orderItemSchema = new Schema<IOrderItem>(
     deliveredQty: { type: Number, default: 0, min: 0 },
     cancelledQty: { type: Number, default: 0, min: 0 },
     annulledQty: { type: Number, default: 0, min: 0 },
+    applied: {
+      type: [
+        new Schema(
+          {
+            product: { type: Schema.Types.ObjectId, ref: "Product", required: true },
+            name: { type: String, default: "" },
+            qty: { type: Number, required: true, min: 0 },
+            stockUnit: { type: String, default: "" },
+            unitCost: { type: Number, default: 0 },
+          },
+          { _id: false },
+        ),
+      ],
+      default: [],
+    },
+    unitCost: { type: Number, default: 0 },
+    costComplete: { type: Boolean, default: false },
   },
   { _id: false },
 );
@@ -134,6 +179,31 @@ const orderSchema = new Schema<IOrder>(
     deliveries: { type: [deliverySchema], default: [] },
     cancellations: { type: [cancellationSchema], default: [] },
     annulments: { type: [annulmentSchema], default: [] },
+    source: { type: String, enum: ["directo", "pedido"], default: "pedido" },
+    clientAt: { type: Date, default: null },
+    undo: {
+      type: new Schema(
+        {
+          by: { type: Schema.Types.ObjectId, ref: "User", required: true },
+          at: { type: Date, required: true },
+          reason: { type: String, default: "" },
+        },
+        { _id: false },
+      ),
+      default: null,
+    },
+    heldReview: {
+      type: new Schema(
+        {
+          by: { type: Schema.Types.ObjectId, ref: "User", required: true },
+          at: { type: Date, required: true },
+          decision: { type: String, enum: ["aceptado", "rechazado"], required: true },
+          reason: { type: String, default: "" },
+        },
+        { _id: false },
+      ),
+      default: null,
+    },
   },
   // Dos entregas simultáneas del mismo pedido: la segunda falla en vez de duplicar.
   { timestamps: true, optimisticConcurrency: true },
@@ -158,6 +228,7 @@ export function chargeableQty(item: IOrderItem): number {
 
 /** Recalcula total y estado tras cualquier entrega, cancelación o anulación. */
 export function recomputeOrder(order: IOrder): void {
+  if (order.status === "retenida") return;
   let total = 0;
   let anyPending = false;
   let anyLive = false;
