@@ -1,0 +1,84 @@
+{
+  "code": "R-14",
+  "version": 1,
+  "template": "R-14.pdf",
+  "templateEdition": "Edición 00 · Vigencia 01-05-2025",
+  "title": "Preparar el zarpe",
+  "officialTitle": "R-14 Lista de chequeo previo al zarpe y rondas de seguridad",
+  "vessel": "Y/P Treasure of Galápagos I",
+  "notice": "Completar este chequeo no autoriza el zarpe. La decisión de zarpar es del Capitán, que revisa y firma este registro.",
+  "context": {
+    "activityDate": { "label": "Fecha de la actividad", "pdfField": "Text Field 1069", "required": true },
+    "activityTime": { "label": "Hora de la actividad", "pdfField": "Text Field 1070", "required": true },
+    "place": {
+      "label": "Lugar",
+      "pdfField": "Text Field 1071",
+      "required": true,
+      "suggestions": ["Baltra", "Puerto Ayora", "San Cristóbal", "Navegando"]
+    }
+  },
+  "sections": [
+    {
+      "id": "ronda",
+      "title": "Ronda de seguridad de cubierta",
+      "officialTitle": "RONDA DE SEGURIDAD DE CUBIERTA",
+      "hint": "Recorre la cubierta y las áreas interiores. En navegación se hace cada 2 horas y en puerto cada 4 horas.",
+      "items": [
+        { "id": "ronda.drizas", "n": "01", "official": "Estiba de drizas y tiras sobre la cubierta principal y cubierta 01", "prompt": "¿Las drizas y tiras están estibadas en la cubierta principal y en la cubierta 01?", "si": "Check Box 63", "no": "Check Box 64", "allowNa": true },
+        { "id": "ronda.balsas", "n": "02", "official": "Verificar que se encuentren aseguradas las balsas salvavidas en la cubierta 02", "prompt": "¿Las balsas salvavidas de la cubierta 02 están aseguradas?", "si": "Check Box 99", "no": "Check Box 100", "allowNa": true },
+        { "id": "ronda.pangas", "n": "03", "official": "Chequeo que las pangas se encuentren trincadas y aseguradas", "prompt": "¿Las pangas están trincadas y aseguradas?", "si": "Check Box 101", "no": "Check Box 102", "allowNa": true },
+        { "id": "ronda.fondeo", "n": "04", "official": "Chequeo del Sistema de Fondeo y ancla.", "prompt": "¿El sistema de fondeo y el ancla están en buen estado?", "si": "Check Box 103", "no": "Check Box 104", "allowNa": true },
+        { "id": "ronda.interiores", "n": "05", "official": "Verificación y estiba de áreas interiores, bar, comedor, salón y cocina.", "prompt": "¿Las áreas interiores (bar, comedor, salón y cocina) están verificadas y estibadas?", "si": "Check Box 105", "no": "Check Box 106", "allowNa": true },
+        { "id": "ronda.popa_puente", "n": "06", "official": "Chequeo de área de popa y puente de gobierno", "prompt": "¿El área de popa y el puente de gobierno están revisados y en orden?", "si": "Check Box 107", "no": "Check Box 108", "allowNa": true },
+        { "id": "ronda.escotillas", "n": "07", "official": "Chequeo de escotillas, puertas estancas y claraboyas, cerradas en navegación", "prompt": "¿Las escotillas, puertas estancas y claraboyas están cerradas para navegar?", "si": "Check Box 109", "no": "Check Box 1010", "allowNa": true },
+        { "id": "ronda.equipos", "n": "08", "official": "Chequeo de equipos en funcionamiento en todas las áreas de la embarcación.", "prompt": "¿Los equipos funcionan bien en todas las áreas de la embarcación?", "si": "Check Box 1011", "no": "Check Box 1012", "allowNa": true }
+      ]
+    },
+    {
+      "id": "zarpe",
+      "title": "Previo al zarpe",
+      "officialTitle": "LISTA DE CHEQUEO DE CUBIERTA PREVIO AL ZARPE",
+      "hint": "Antes de soltar amarras o levar el ancla.",
+      "items": [
+        { "id": "zarpe.personal", "n": "01", "official": "Se verifica que todo el personal este abordo y sin novedad.", "prompt": "¿Todo el personal está a bordo y sin novedad?", "si": "Check Box 1013", "no": "Check Box 1014", "allowNa": true },
+        { "id": "zarpe.pangas", "n": "02", "official": "Pangas trincadas y aseguradas sobre cubierta en caso de remolque, verificar que los motores se encuentren con el seguro puesto y amarradas a la nave", "prompt": "¿Las pangas están trincadas y aseguradas (o, si van a remolque, con el seguro de los motores puesto y amarradas a la nave)?", "si": "Check Box 1015", "no": "Check Box 1016", "allowNa": true },
+        { "id": "zarpe.navegacion", "n": "03", "official": "Equipos de navegación en correcto funcionamiento (Radar, GPS, Navtex, Sonda, Indicador de ángulo de caña, AIS, VDR)", "prompt": "¿Los equipos de navegación funcionan bien (radar, GPS, Navtex, sonda, indicador de ángulo de caña, AIS y VDR)?", "si": "Check Box 1017", "no": "Check Box 1018", "allowNa": true },
+        { "id": "zarpe.comunicaciones", "n": "04", "official": "Chequeo del estado operativo de los equipos de comunicaciones.", "prompt": "¿Los equipos de comunicaciones están operativos?", "si": "Check Box 1019", "no": "Check Box 1020", "allowNa": true },
+        { "id": "zarpe.maquinas", "n": "05", "official": "Maquinas en funcionamiento, chequeo de controles de máquinas operativos", "prompt": "¿Las máquinas están en funcionamiento y sus controles operativos?", "si": "Check Box 1021", "no": "Check Box 1022", "allowNa": true },
+        { "id": "zarpe.gobierno", "n": "06", "official": "Sistema de gobierno principal y auxiliar operativos", "prompt": "¿El sistema de gobierno principal y el auxiliar están operativos?", "si": "Check Box 1023", "no": "Check Box 1024", "allowNa": true },
+        { "id": "zarpe.luces", "n": "07", "official": "Luces de navegación en servicio y luces de emergencia operativos", "prompt": "¿Las luces de navegación están en servicio y las de emergencia operativas?", "si": "Check Box 1025", "no": "Check Box 1026", "allowNa": true },
+        { "id": "zarpe.cartas", "n": "08", "official": "Cartas Náuticas listas de acuerdo al plan de viaje", "prompt": "¿Las cartas náuticas están listas según el plan de viaje?", "si": "Check Box 1027", "no": "Check Box 1028", "allowNa": true },
+        { "id": "zarpe.capitania", "n": "09", "official": "Reporte a la Capitanía del puerto respectivo y solicitud de zarpe", "prompt": "¿Se reportó a la Capitanía del puerto y se solicitó el zarpe?", "si": "Check Box 1029", "no": "Check Box 1030", "allowNa": true }
+      ]
+    },
+    {
+      "id": "arribo",
+      "title": "Previo al arribo",
+      "officialTitle": "LISTA DE CHEQUEO PREVIO AL ARRIBO",
+      "hint": "Antes de recalar en el puerto o bahía de destino.",
+      "items": [
+        { "id": "arribo.punto_fondeo", "n": "01", "official": "Verificar que el punto de fondeo sea de acuerdo con el Plan de Viaje", "prompt": "¿El punto de fondeo coincide con el plan de viaje?", "si": "Check Box 1031", "no": "Check Box 1032", "allowNa": true },
+        { "id": "arribo.llamar_capitan", "n": "02", "official": "Llamar al Capitán con la debida anticipación para la recalada al puerto o bahía.", "prompt": "¿Se llamó al Capitán con anticipación para la recalada?", "si": "Check Box 1033", "no": "Check Box 1034", "allowNa": true },
+        { "id": "arribo.equipos", "n": "03", "official": "Verificación de estado operativo de equipos de navegación y comunicaciones", "prompt": "¿Los equipos de navegación y comunicaciones están operativos?", "si": "Check Box 1035", "no": "Check Box 1036", "allowNa": true },
+        { "id": "arribo.clima", "n": "04", "official": "Chequeo de condiciones climáticas y estados de viento, corriente y marea", "prompt": "¿Se revisaron el clima, el viento, la corriente y la marea?", "si": "Check Box 1037", "no": "Check Box 1038", "allowNa": true },
+        { "id": "arribo.radar", "n": "05", "official": "Radar en la escala adecuada para realizar la recalada.", "prompt": "¿El radar está en la escala adecuada para la recalada?", "si": "Check Box 1039", "no": "Check Box 1040", "allowNa": true },
+        { "id": "arribo.fondeo", "n": "06", "official": "Verificar el estado del sistema de fondeo, ancla y cadena lista para el fondeo", "prompt": "¿El sistema de fondeo, el ancla y la cadena están listos para fondear?", "si": "Check Box 1041", "no": "Check Box 1042", "allowNa": true },
+        { "id": "arribo.comunicacion_maniobra", "n": "07", "official": "Chequeo de comunicaciones con personal encargado de maniobra de fondeo y con el personal de máquinas.", "prompt": "¿Hay comunicación con el personal de la maniobra de fondeo y con máquinas?", "si": "Check Box 1043", "no": "Check Box 1044", "allowNa": true },
+        { "id": "arribo.orden_fondeo", "n": "08", "official": "Orden de fondeo, alistamiento de máquinas y ancla lista para cobrar.", "prompt": "¿Se dio la orden de fondeo, con las máquinas alistadas y el ancla lista para cobrar?", "si": "Check Box 1045", "no": "Check Box 1046", "allowNa": true }
+      ]
+    },
+    {
+      "id": "fondeado",
+      "title": "Buque fondeado",
+      "officialTitle": "LISTA DE CHEQUEO BUQUE FONDEADO",
+      "hint": "Mientras el barco está fondeado.",
+      "items": [
+        { "id": "fondeado.maquinas", "n": "01", "official": "Chequeo de máquinas listas para operar en cualquier circunstancia", "prompt": "¿Las máquinas están listas para operar en cualquier circunstancia?", "si": "Check Box 1047", "no": "Check Box 1048", "allowNa": true },
+        { "id": "fondeado.posicion", "n": "02", "official": "Chequeo de la posición, marcación y distancia para asegurarse que no garree la nave.", "prompt": "¿Se revisaron la posición, la marcación y la distancia para asegurar que la nave no garree?", "si": "Check Box 1049", "no": "Check Box 1050", "allowNa": true },
+        { "id": "fondeado.radar", "n": "03", "official": "Radar en stand by, en caso de ser necesario, mantener vigilancia por radar.", "prompt": "¿El radar está en stand by (o en vigilancia, si hace falta)?", "si": "Check Box 1051", "no": "Check Box 1052", "allowNa": true },
+        { "id": "fondeado.marcas_luces", "n": "04", "official": "Chequeo de marcas diurnas y luces de fondeo, respectivamente", "prompt": "¿Están puestas las marcas diurnas o las luces de fondeo, según corresponda?", "si": "Check Box 1053", "no": "Check Box 1054", "allowNa": true },
+        { "id": "fondeado.supervision", "n": "05", "official": "Supervisión de las operaciones normales de la nave.", "prompt": "¿Se supervisan las operaciones normales de la nave?", "si": "Check Box 1055", "no": "Check Box 1056", "allowNa": true }
+      ]
+    }
+  ]
+}
