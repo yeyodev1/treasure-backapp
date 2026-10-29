@@ -6,6 +6,9 @@ import mongoose, { Schema, Types } from "mongoose";
  */
 export const AUDIT_KINDS = [
   "pedido",
+  "consumo",
+  "requerimiento",
+  "compra",
   "entrega",
   "cancelacion",
   "anulacion",
