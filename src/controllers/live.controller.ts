@@ -24,11 +24,11 @@ export async function livePulse(req: Request, res: Response, next: NextFunction)
       AuditEvent.find(since ? { createdAt: { $gt: since } } : {})
         .sort({ createdAt: -1 })
         .limit(50),
-      Order.find({ createdAt: { $gte: dayStart }, status: { $ne: "cancelada" } }).select(
+      Order.find({ createdAt: { $gte: dayStart }, status: { $nin: ["cancelada", "retenida"] } }).select(
         "total",
       ),
       cruise
-        ? Order.find({ cruise: cruise._id, payment: null, status: { $ne: "cancelada" } })
+        ? Order.find({ cruise: cruise._id, payment: null, status: { $nin: ["cancelada", "retenida"] } })
         : Promise.resolve([]),
       cruise ? Account.countDocuments({ cruise: cruise._id, status: "en_revision" }) : 0,
       Order.countDocuments({ "annulments.status": "pendiente" }),
