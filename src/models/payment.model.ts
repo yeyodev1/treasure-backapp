@@ -37,6 +37,8 @@ export interface IPayment {
   courtesyTotal: number;
   total: number;
   method: PaymentMethod;
+  /** Referencia del pago: voucher, número de transferencia… */
+  reference: string;
   /** Confirmación de que el efectivo entró a caja (exigencia de la administración). */
   cashConfirmed: boolean;
   billing: IBillingInfo;
@@ -77,6 +79,7 @@ const paymentSchema = new Schema<IPayment>(
     courtesyTotal: { type: Number, default: 0, min: 0 },
     total: { type: Number, required: true, min: 0 },
     method: { type: String, enum: PAYMENT_METHODS, required: true },
+    reference: { type: String, default: "", trim: true },
     cashConfirmed: { type: Boolean, default: false },
     billing: { type: billingSchema, default: () => ({}) },
     invoiceStatus: { type: String, enum: INVOICE_STATUSES, default: "pendiente" },
