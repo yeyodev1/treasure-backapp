@@ -8,7 +8,8 @@ import mongoose, { Schema, Types } from "mongoose";
 export const PAYMENT_METHODS = ["efectivo", "tarjeta", "transferencia", "online"] as const;
 export type PaymentMethod = (typeof PAYMENT_METHODS)[number];
 
-export const INVOICE_STATUSES = ["pendiente", "emitida", "error", "no_aplica"] as const;
+/** emitiendo: hay una emisión en curso (evita facturar dos veces con doble clic). */
+export const INVOICE_STATUSES = ["pendiente", "emitiendo", "emitida", "error", "no_aplica"] as const;
 export type InvoiceStatus = (typeof INVOICE_STATUSES)[number];
 
 export interface IBillingInfo {
@@ -40,7 +41,12 @@ export interface IPayment {
   cashConfirmed: boolean;
   billing: IBillingInfo;
   invoiceStatus: InvoiceStatus;
+  /** Id del documento en Contífico. */
   invoiceId: string;
+  /** Número de factura (001-100-000000783). */
+  invoiceNumber: string;
+  /** PDF (RIDE) de la factura en Contífico. */
+  invoiceUrl: string;
   invoiceError: string;
   collectedBy: Types.ObjectId;
   createdAt?: Date;
@@ -75,6 +81,8 @@ const paymentSchema = new Schema<IPayment>(
     billing: { type: billingSchema, default: () => ({}) },
     invoiceStatus: { type: String, enum: INVOICE_STATUSES, default: "pendiente" },
     invoiceId: { type: String, default: "" },
+    invoiceNumber: { type: String, default: "" },
+    invoiceUrl: { type: String, default: "" },
     invoiceError: { type: String, default: "" },
     collectedBy: { type: Schema.Types.ObjectId, ref: "User", required: true },
   },
