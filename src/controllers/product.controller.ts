@@ -1,4 +1,5 @@
 import { NextFunction, Request, Response } from "express";
+import { isOwner } from "../utils/roles";
 import { Types } from "mongoose";
 import { IProduct, Product, PRODUCT_CATEGORIES, ProductCategory } from "../models/product.model";
 import { suggestedPrice } from "../services/inventory.service";
@@ -55,7 +56,7 @@ async function validateRecipe(recipe: Array<{ product: string; qty: number }>) {
 
 /** Solo administración (Paula) cambia precios; queda historial con autor. */
 function applyPrice(product: IProduct, price: number, req: Request) {
-  if (req.auth!.role !== "admin") throw forbidden("Solo administración cambia precios");
+  if (!isOwner(req.auth!.role)) throw forbidden("Solo la dueña cambia precios");
   if (!(price >= 0)) throw badRequest("Precio inválido");
   if (product.price !== price) {
     product.priceHistory.push({ price, changedBy: req.auth!.sub as never, at: new Date() });
@@ -188,7 +189,7 @@ export async function updateProduct(req: Request, res: Response, next: NextFunct
       changes.push(body.active ? "activado" : "desactivado");
     }
     if (body.contificoId !== undefined && body.contificoId !== product.contificoId) {
-      if (req.auth!.role !== "admin") throw forbidden("Solo administración vincula con Contífico");
+      if (!isOwner(req.auth!.role)) throw forbidden("Solo la dueña vincula con Contífico");
       if (body.contificoId) {
         const match = (await contificoProducts()).find((p) => p.id === body.contificoId);
         if (!match) throw badRequest("Ese producto no existe en Contífico");
