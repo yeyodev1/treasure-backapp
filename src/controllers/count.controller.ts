@@ -1,4 +1,5 @@
 import { NextFunction, Request, Response } from "express";
+import { isOwner } from "../utils/roles";
 import { Types } from "mongoose";
 import { StockCount } from "../models/stockCount.model";
 import { Product } from "../models/product.model";
@@ -95,7 +96,7 @@ export async function saveCount(req: Request, res: Response, next: NextFunction)
     const count = await StockCount.findById(req.params.id);
     if (!count) throw notFound("Conteo no encontrado");
     if (count.status !== "borrador" && count.status !== "rechazado") {
-      throw conflict("Este conteo ya fue enviado a Paula y no se puede editar");
+      throw conflict("Este conteo ya fue enviado a la dueña y no se puede editar");
     }
 
     const byProduct = new Map((lines ?? []).map((l) => [l.product, l]));
@@ -140,7 +141,7 @@ export async function submitCount(req: Request, res: Response, next: NextFunctio
 
     await logEvent(req.auth, {
       kind: "conteo",
-      title: `Conteo ${count.code} enviado a Paula`,
+      title: `Conteo ${count.code} enviado a la dueña`,
       detail: `${counted.length} producto(s) contados`,
       cruise: count.cruise,
     });
@@ -157,7 +158,7 @@ export async function submitCount(req: Request, res: Response, next: NextFunctio
  */
 export async function approveCount(req: Request, res: Response, next: NextFunction) {
   try {
-    if (req.auth!.role !== "admin") throw forbidden("Solo Paula (administración) aprueba ajustes");
+    if (!isOwner(req.auth!.role)) throw forbidden("El ajuste lo autoriza la dueña");
 
     const count = await StockCount.findOneAndUpdate(
       { _id: req.params.id, status: "enviado" },
@@ -197,7 +198,7 @@ export async function approveCount(req: Request, res: Response, next: NextFuncti
 
 export async function rejectCount(req: Request, res: Response, next: NextFunction) {
   try {
-    if (req.auth!.role !== "admin") throw forbidden("Solo Paula (administración) revisa conteos");
+    if (!isOwner(req.auth!.role)) throw forbidden("Los conteos los revisa la dueña");
     const { note } = req.body as { note?: string };
     if (!note?.trim()) throw badRequest("Indica qué debe revisarse");
 
