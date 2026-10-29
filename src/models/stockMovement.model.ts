@@ -10,7 +10,8 @@ export const MOVEMENT_TYPES = [
   "venta", // consumo por bebida entregada
   "merma", // rotura o pérdida reportada en el momento
   "ajuste", // diferencia aprobada por Paula (conteo físico o ajuste manual)
-  "compra", // ingreso a bodega con proveedor y documento
+  "compra", // recepción física de una compra (factura sin recepción no mueve stock)
+  "reverso", // deshacer un consumo registrado por error (devuelve lo descontado)
   "devolucion", // anulación aprobada por Paula con regreso al stock
   "migracion", // saldo trasladado desde el modelo anterior
 ] as const;
@@ -29,6 +30,10 @@ export interface IStockMovement {
   supplier: string;
   document: string;
   unitCost: number;
+  /** Une las dos patas de un traslado (bodega −, a bordo +). */
+  transferId: string;
+  requisition: Types.ObjectId | null;
+  purchase: Types.ObjectId | null;
   /** Movimientos previos a la v3 están en unidades antiguas (no en ml). */
   legacy: boolean;
   user: Types.ObjectId;
@@ -49,6 +54,9 @@ const stockMovementSchema = new Schema<IStockMovement>(
     supplier: { type: String, default: "" },
     document: { type: String, default: "" },
     unitCost: { type: Number, default: 0 },
+    transferId: { type: String, default: "" },
+    requisition: { type: Schema.Types.ObjectId, ref: "Requisition", default: null },
+    purchase: { type: Schema.Types.ObjectId, ref: "Purchase", default: null },
     legacy: { type: Boolean, default: false },
     user: { type: Schema.Types.ObjectId, ref: "User", required: true },
   },
