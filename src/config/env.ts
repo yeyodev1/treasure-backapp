@@ -22,10 +22,22 @@ export const env = {
     .filter(Boolean),
   /** URL pública del frontend: se usa para armar los links de cuenta (QR). */
   PUBLIC_APP_URL: process.env.PUBLIC_APP_URL ?? "http://localhost:5173",
-  /** Credenciales de Contífico: quedan vacías hasta que la clienta contrate el plan con API. */
+  /**
+   * Contífico (facturación electrónica SRI). La API key de sincronización va
+   * en el header Authorization; el API token es el "pos" de cada documento.
+   */
   CONTIFICO_API_KEY: process.env.CONTIFICO_API_KEY ?? "",
   CONTIFICO_API_TOKEN: process.env.CONTIFICO_API_TOKEN ?? "",
-  CONTIFICO_POS_ID: process.env.CONTIFICO_POS_ID ?? "",
+  CONTIFICO_BASE_URL:
+    process.env.CONTIFICO_BASE_URL ?? "https://api.contifico.com/sistema/api/v1",
+  /** Establecimiento y punto de emisión de las facturas del bar (001-100 …). */
+  CONTIFICO_SERIE: process.env.CONTIFICO_SERIE ?? "001-100",
+  /** Cuenta bancaria de Contífico a la que entran las transferencias. */
+  CONTIFICO_BANK_ACCOUNT_ID: process.env.CONTIFICO_BANK_ACCOUNT_ID ?? "",
+  /** Procesador del datáfono (D Datafast, M Medianet…). Vacío: el cobro con tarjeta se registra en Contífico a mano. */
+  CONTIFICO_CARD_PROCESSOR: process.env.CONTIFICO_CARD_PROCESSOR ?? "",
+  /** Producto genérico para cócteles creados en el bar que no existen en Contífico. */
+  CONTIFICO_GENERIC_PRODUCT_ID: process.env.CONTIFICO_GENERIC_PRODUCT_ID ?? "",
   RESEND_API_KEY: process.env.RESEND_API_KEY ?? "",
   EMAIL_FROM: process.env.EMAIL_FROM ?? "Treasure <no-reply@bakano.ec>",
   /** Archivos y fotos (logos, recursos, comprobantes). */
