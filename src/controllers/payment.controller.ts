@@ -6,7 +6,7 @@ import { Cruise } from "../models/cruise.model";
 import { User } from "../models/user.model";
 import { Account } from "../models/account.model";
 import { buildCabinAccount, ensureAccount } from "../services/account.service";
-import { emitInvoice } from "../services/contifico.service";
+import { contificoStatus, issueInvoice } from "../services/contifico.service";
 import { logEvent } from "../services/audit.service";
 import { badRequest, conflict, forbidden, notFound } from "../errors/httpError";
 
@@ -99,11 +99,7 @@ export async function collectCabin(req: Request, res: Response, next: NextFuncti
     });
     await account.save();
 
-    const invoice = await emitInvoice(payment);
-    payment.invoiceStatus = invoice.status;
-    payment.invoiceId = invoice.invoiceId;
-    payment.invoiceError = invoice.error;
-    await payment.save();
+    const invoiced = (await issueInvoice(payment._id)) ?? payment;
 
     await logEvent(req.auth, {
       kind: "cobro",
@@ -114,7 +110,7 @@ export async function collectCabin(req: Request, res: Response, next: NextFuncti
       cabinNumber,
     });
 
-    res.status(201).json({ payment });
+    res.status(201).json({ payment: invoiced });
   } catch (err) {
     next(err);
   }
@@ -219,14 +215,30 @@ export async function retryInvoice(req: Request, res: Response, next: NextFuncti
     if (!payment) throw notFound("Pago no encontrado");
     if (payment.status === "reversado") throw badRequest("El cobro fue reversado");
     if (payment.invoiceStatus === "emitida") throw badRequest("La factura ya fue emitida");
+    if (payment.invoiceStatus === "emitiendo") throw conflict("La factura se está emitiendo");
 
-    const invoice = await emitInvoice(payment);
-    payment.invoiceStatus = invoice.status;
-    payment.invoiceId = invoice.invoiceId;
-    payment.invoiceError = invoice.error;
-    await payment.save();
+    const invoiced = await issueInvoice(payment._id);
+    if (invoiced?.invoiceStatus === "emitida") {
+      await logEvent(req.auth, {
+        kind: "cobro",
+        title: `Factura emitida · cabina ${invoiced.cabinNumber}`,
+        detail: invoiced.invoiceNumber,
+        amount: invoiced.total,
+        cruise: invoiced.cruise,
+        cabinNumber: invoiced.cabinNumber,
+      });
+    }
 
-    res.json({ payment });
+    res.json({ payment: invoiced });
+  } catch (err) {
+    next(err);
+  }
+}
+
+/** Estado de Contífico y su catálogo, para vincular productos. */
+export async function contificoInfo(_req: Request, res: Response, next: NextFunction) {
+  try {
+    res.json(await contificoStatus());
   } catch (err) {
     next(err);
   }
