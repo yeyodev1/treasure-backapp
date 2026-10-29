@@ -66,6 +66,9 @@ export interface IProduct {
 
   isCustom: boolean;
   active: boolean;
+  /** Costo por unidad base (promedio ponderado de las recepciones). 0 = sin costo. */
+  costPerUnit: number;
+  costUpdatedAt: Date | null;
   /** Producto equivalente en Contífico (para facturar). Vacío = sin vincular. */
   contificoId: string;
   contificoCode: string;
@@ -111,6 +114,8 @@ const productSchema = new Schema<IProduct>(
     recipe: { type: [recipeItemSchema], default: [] },
     isCustom: { type: Boolean, default: false },
     active: { type: Boolean, default: true },
+    costPerUnit: { type: Number, default: 0, min: 0 },
+    costUpdatedAt: { type: Date, default: null },
     contificoId: { type: String, default: "" },
     contificoCode: { type: String, default: "" },
     priceHistory: { type: [priceChangeSchema], default: [] },
