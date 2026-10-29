@@ -15,25 +15,32 @@ import * as live from "../controllers/live.controller";
 import * as uploads from "../controllers/upload.controller";
 import * as publicCtrl from "../controllers/public.controller";
 import * as ism from "../controllers/ism.controller";
+import * as consumptions from "../controllers/consumption.controller";
+import * as supply from "../controllers/supply.controller";
 
 /**
- * Permisos por rol (se validan siempre en el servidor):
- * - admin (Paula): todo; único que cambia precios, aprueba conteos,
- *   ajusta stock, devuelve stock en anulaciones y reversa cobros.
- * - direccion: prepara salidas y pasajeros, aprueba/devuelve cuentas,
- *   revisa anulaciones; cobra solo si está designada como cajera.
- * - bartender: registra, entrega y cancela sus pedidos; envía cuentas a revisión.
- * - bodega: inventario, compras, cargas y conteos.
+ * Permisos por rol (guía auditada 27-oct-2026; se validan en el servidor):
+ * - duena (Paula): toda la operación y finanzas. Única que cambia precios,
+ *   autoriza ajustes y conteos, devuelve stock en anulaciones y reversa
+ *   cobros. `requireRole` siempre la deja pasar.
+ * - admin (administradora): conteo físico y diferencias, compras y recepciones.
+ * - direccion (directora): pasajeros, cabinas, inicio/fin del crucero,
+ *   aprobación de cuentas y de abastecimiento, cobros.
+ * - bartender: consumos y requerimientos.
+ * - bodega: compras, recepciones, cargas al barco y conteos en tierra.
  */
 export default function routerApi(app: Application) {
   const router = Router();
   app.use("/api", router);
 
   const ALL = requireRole("admin", "direccion", "bartender", "bodega");
-  const BAR = requireRole("admin", "direccion", "bartender");
+  const BAR = requireRole("direccion", "bartender");
 
   const LEAD = requireRole("admin", "direccion");
-  const ADMIN = requireRole("admin");
+  const OWNER = requireRole("duena");
+  const DIRECTOR = requireRole("direccion");
+  const WAREHOUSE = requireRole("admin", "bodega");
+  const COUNTERS = requireRole("admin", "bodega", "direccion");
   // Registros ISM: toda la tripulación llena; las etapas se validan en el controlador.
   const CREW = requireRole(
     "admin",
@@ -47,6 +54,7 @@ export default function routerApi(app: Application) {
   // Autenticación
   router.post("/auth/login", auth.login);
   router.get("/auth/me", requireAuth, auth.me);
+  router.post("/auth/refresh", requireAuth, auth.refresh);
 
   // Pública (pasajero vía QR, sin sesión)
   router.get("/public/account/:token", publicCtrl.publicAccount);
@@ -55,9 +63,9 @@ export default function routerApi(app: Application) {
   router.post("/uploads", requireAuth, CREW, upload.single("file"), uploads.uploadFile);
 
   // Equipo
-  router.get("/users", requireAuth, ADMIN, users.listUsers);
-  router.post("/users", requireAuth, ADMIN, users.createUser);
-  router.patch("/users/:id", requireAuth, ADMIN, users.updateUser);
+  router.get("/users", requireAuth, OWNER, users.listUsers);
+  router.post("/users", requireAuth, OWNER, users.createUser);
+  router.patch("/users/:id", requireAuth, OWNER, users.updateUser);
 
   // Catálogo (el precio solo lo cambia administración: se valida en el controlador)
   router.get("/products", requireAuth, ALL, products.listProducts);
@@ -75,6 +83,35 @@ export default function routerApi(app: Application) {
   router.get("/cruises/:id", requireAuth, ALL, cruises.getCruise);
   router.patch("/cruises/:id", requireAuth, LEAD, cruises.updateCruise);
   router.put("/cruises/:id/cabins/:cabinNumber/passengers", requireAuth, LEAD, cruises.updatePassengers);
+  router.get("/cruises/:id/start-check", requireAuth, LEAD, cruises.startCheck);
+  router.post("/cruises/:id/start", requireAuth, DIRECTOR, cruises.startCruise);
+  router.get("/cruises/:id/finish-check", requireAuth, LEAD, cruises.finishCheck);
+  router.post("/cruises/:id/finish", requireAuth, DIRECTOR, cruises.finishCruise);
+
+  // Consumo directo: un toque registra lo servido, el cargo y el stock
+  router.post("/consumptions", requireAuth, BAR, consumptions.createConsumption);
+  router.post("/consumptions/:id/undo", requireAuth, BAR, consumptions.undoConsumption);
+  router.post("/consumptions/:id/bonify", requireAuth, DIRECTOR, consumptions.bonifyConsumption);
+  router.post("/consumptions/:id/held-review", requireAuth, DIRECTOR, consumptions.reviewHeld);
+  router.get(
+    "/consumptions/summary/:cruiseId/:cabinNumber",
+    requireAuth,
+    BAR,
+    consumptions.getCabinSummary,
+  );
+  router.get("/consumptions/availability", requireAuth, ALL, consumptions.availability);
+  router.post("/devices/heartbeat", requireAuth, ALL, consumptions.heartbeat);
+
+  // Requerimientos del bar y compras en dos pasos (factura → recepción)
+  router.get("/requisitions", requireAuth, ALL, supply.listRequisitions);
+  router.post("/requisitions", requireAuth, ALL, supply.createRequisition);
+  router.post("/requisitions/:id/review", requireAuth, DIRECTOR, supply.reviewRequisition);
+  router.post("/requisitions/:id/receive", requireAuth, WAREHOUSE, supply.receiveRequisition);
+  router.post("/requisitions/:id/resolve", requireAuth, WAREHOUSE, supply.resolveRequisition);
+  router.get("/purchases", requireAuth, requireRole("admin", "bodega", "direccion"), supply.listPurchases);
+  router.post("/purchases", requireAuth, WAREHOUSE, supply.createPurchase);
+  router.post("/purchases/:id/receive", requireAuth, WAREHOUSE, supply.receivePurchase);
+  router.post("/purchases/:id/cancel", requireAuth, WAREHOUSE, supply.cancelPurchase);
 
   // Pedidos: registrar → entregar → cancelar pendiente / anular entregado
   router.post("/orders", requireAuth, BAR, orders.createOrder);
@@ -93,27 +130,21 @@ export default function routerApi(app: Application) {
   router.get("/accounts/:cruiseId", requireAuth, BAR, accounts.cruiseAccounts);
   router.get("/accounts/:cruiseId/:cabinNumber", requireAuth, BAR, orders.cabinAccount);
   router.post("/accounts/:cruiseId/:cabinNumber/submit", requireAuth, BAR, accounts.submitForReview);
-  router.post("/accounts/:cruiseId/:cabinNumber/approve", requireAuth, LEAD, accounts.approveAccount);
-  router.post("/accounts/:cruiseId/:cabinNumber/return", requireAuth, LEAD, accounts.returnAccount);
+  router.post("/accounts/:cruiseId/:cabinNumber/approve", requireAuth, DIRECTOR, accounts.approveAccount);
+  router.post("/accounts/:cruiseId/:cabinNumber/return", requireAuth, DIRECTOR, accounts.returnAccount);
 
   // Cobros (cajero validado en el controlador) y reverso autorizado
-  router.post("/payments/collect", requireAuth, LEAD, payments.collectCabin);
+  router.post("/payments/collect", requireAuth, DIRECTOR, payments.collectCabin);
   router.get("/payments", requireAuth, LEAD, payments.listPayments);
-  router.post("/payments/:id/retry-invoice", requireAuth, ADMIN, payments.retryInvoice);
-  router.get("/contifico", requireAuth, ADMIN, payments.contificoInfo);
-  router.post("/payments/:id/reverse", requireAuth, ADMIN, payments.reversePayment);
+  router.post("/payments/:id/retry-invoice", requireAuth, DIRECTOR, payments.retryInvoice);
+  router.get("/contifico", requireAuth, OWNER, payments.contificoInfo);
+  router.post("/payments/:id/reverse", requireAuth, OWNER, payments.reversePayment);
 
   // Inventario en unidad base (ml, unidad…)
   router.get("/inventory/stock", requireAuth, ALL, inventory.stockByLocation);
   router.get("/inventory/product/:productId", requireAuth, ALL, inventory.productStock);
   router.post("/inventory/waste", requireAuth, ALL, inventory.registerWaste);
-  router.post("/inventory/adjust", requireAuth, ADMIN, inventory.adjustStock);
-  router.post(
-    "/inventory/purchase",
-    requireAuth,
-    requireRole("admin", "bodega"),
-    inventory.warehousePurchase,
-  );
+  router.post("/inventory/adjust", requireAuth, OWNER, inventory.adjustStock);
   router.post(
     "/inventory/transfer",
     requireAuth,
@@ -122,25 +153,28 @@ export default function routerApi(app: Application) {
   );
   router.get("/inventory/movements", requireAuth, ALL, inventory.listMovements);
 
-  // Conteos físicos: todos cuentan, solo administración aprueba
-  router.get("/counts", requireAuth, ALL, counts.listCounts);
-  router.post("/counts", requireAuth, ALL, counts.createCount);
-  router.get("/counts/:id", requireAuth, ALL, counts.getCount);
-  router.patch("/counts/:id", requireAuth, ALL, counts.saveCount);
-  router.post("/counts/:id/submit", requireAuth, ALL, counts.submitCount);
-  router.post("/counts/:id/approve", requireAuth, ADMIN, counts.approveCount);
-  router.post("/counts/:id/reject", requireAuth, ADMIN, counts.rejectCount);
+  // Conteos físicos: la administradora cuenta y documenta; la dueña autoriza
+  router.get("/counts", requireAuth, COUNTERS, counts.listCounts);
+  router.post("/counts", requireAuth, COUNTERS, counts.createCount);
+  router.get("/counts/:id", requireAuth, COUNTERS, counts.getCount);
+  router.patch("/counts/:id", requireAuth, COUNTERS, counts.saveCount);
+  router.post("/counts/:id/submit", requireAuth, COUNTERS, counts.submitCount);
+  router.post("/counts/:id/approve", requireAuth, OWNER, counts.approveCount);
+  router.post("/counts/:id/reject", requireAuth, OWNER, counts.rejectCount);
 
   // Registros ISM (registros.teseturis.app)
   router.get("/ism/catalog", requireAuth, CREW, ism.catalog);
   router.get("/ism/summary", requireAuth, CREW, ism.summary);
   router.get("/ism/forms/:code", requireAuth, CREW, ism.formDefinition);
+  router.get("/ism/schemas/:code", requireAuth, CREW, ism.schemaDefinition);
+  router.get("/ism/schemas/:code/:version", requireAuth, CREW, ism.schemaDefinition);
   router.get("/ism/records", requireAuth, CREW, ism.listRecords);
   router.post("/ism/records", requireAuth, CREW, ism.createRecord);
   router.get("/ism/records/:id", requireAuth, CREW, ism.getRecord);
   router.patch("/ism/records/:id", requireAuth, CREW, ism.saveData);
   router.delete("/ism/records/:id", requireAuth, CREW, ism.discard);
   router.post("/ism/records/:id/signatures", requireAuth, CREW, ism.sign);
+  router.get("/ism/records/:id/signatures/:field/image", requireAuth, CREW, ism.signatureImage);
   router.delete("/ism/records/:id/signatures/:field", requireAuth, CREW, ism.removeSignature);
   router.post("/ism/records/:id/submit", requireAuth, CREW, ism.submit);
   router.post("/ism/records/:id/approve", requireAuth, CREW, ism.approve);
@@ -151,4 +185,5 @@ export default function routerApi(app: Application) {
   router.get("/live", requireAuth, LEAD, live.livePulse);
   router.get("/reports/sales", requireAuth, LEAD, reports.salesSummary);
   router.get("/reports/by-cruise", requireAuth, LEAD, reports.salesByCruise);
+  router.get("/reports/owner", requireAuth, OWNER, reports.ownerPanel);
 }
