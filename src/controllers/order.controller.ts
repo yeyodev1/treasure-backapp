@@ -3,7 +3,12 @@ import { Error as MongooseError } from "mongoose";
 import { IOrder, Order, pendingQty, recomputeOrder } from "../models/order.model";
 import { Cruise } from "../models/cruise.model";
 import { Product } from "../models/product.model";
-import { applyMovement, consumptionOf, mergeDeltas } from "../services/inventory.service";
+import {
+  applyMovement,
+  consumptionOf,
+  deltasFromApplied,
+  mergeDeltas,
+} from "../services/inventory.service";
 import { buildCabinAccount, chargesChanged } from "../services/account.service";
 import { logEvent } from "../services/audit.service";
 import { badRequest, conflict, forbidden, notFound } from "../errors/httpError";
@@ -88,7 +93,7 @@ export async function createOrder(req: Request, res: Response, next: NextFunctio
       active: true,
     });
     const productMap = new Map(products.map((p) => [p._id.toString(), p]));
-    const canCourtesy = req.auth!.role === "admin" || req.auth!.role === "direccion";
+    const canCourtesy = req.auth!.role === "duena" || req.auth!.role === "direccion";
 
     const orderItems = items.map((item) => {
       const product = productMap.get(item.productId);
@@ -321,8 +326,8 @@ export async function reviewAnnulment(req: Request, res: Response, next: NextFun
       note?: string;
     };
     if (decision !== "aprobar" && decision !== "rechazar") throw badRequest("Decisión inválida");
-    if (restock && req.auth!.role !== "admin") {
-      throw forbidden("Solo administración puede devolver stock");
+    if (restock && req.auth!.role !== "duena") {
+      throw forbidden("Solo la dueña puede devolver stock");
     }
 
     const order = await Order.findById(req.params.id);
@@ -359,7 +364,10 @@ export async function reviewAnnulment(req: Request, res: Response, next: NextFun
 
     if (decision === "aprobar") {
       if (restock) {
-        const deltas = await consumptionOf(item.product.toString(), annulment.qty);
+        // Se devuelve lo que salió según la receta aplicada en la venta.
+        const deltas = item.applied?.length
+          ? deltasFromApplied(item.applied, annulment.qty)
+          : await consumptionOf(item.product.toString(), annulment.qty);
         await applyMovement({
           type: "devolucion",
           location: "abordo",
