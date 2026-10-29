@@ -8,7 +8,7 @@ export function globalErrorHandler(
   _next: NextFunction,
 ) {
   if (err instanceof HttpError) {
-    res.status(err.status).json({ message: err.message });
+    res.status(err.status).json({ message: err.message, code: err.code, ...(err.data ?? {}) });
     return;
   }
 
