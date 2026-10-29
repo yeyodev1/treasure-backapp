@@ -243,7 +243,7 @@ function buildCobros(payment: IPayment & { _id: Types.ObjectId }, total: number)
         monto,
         fecha,
         cuenta_bancaria_id: env.CONTIFICO_BANK_ACCOUNT_ID,
-        numero_comprobante: `TRE${payment._id.toString().slice(-12)}`,
+        numero_comprobante: (payment.reference || `TRE${payment._id.toString().slice(-12)}`).slice(0, 15),
       },
     ];
   }
@@ -258,7 +258,11 @@ async function invoiceLines(payment: IPayment): Promise<DraftLine[]> {
   const orders = await Order.find({ _id: { $in: payment.orders } }).populate<{
     items: Array<{ product: IProduct & { _id: Types.ObjectId } }>;
   }>("items.product", "name contificoId");
-  const catalog = new Map((await contificoProducts()).map((p) => [p.id, p]));
+  const products = await contificoProducts();
+  const catalog = new Map(products.map((p) => [p.id, p]));
+  // Cócteles creados en el bar: producto genérico configurado o "CAUTOR" (Cóctel de autor).
+  const generic =
+    env.CONTIFICO_GENERIC_PRODUCT_ID || products.find((p) => p.codigo === "CAUTOR" && p.estado === "A")?.id || "";
 
   const lines: DraftLine[] = [];
   const unlinked = new Set<string>();
@@ -272,7 +276,7 @@ async function invoiceLines(payment: IPayment): Promise<DraftLine[]> {
 
       let productId = item.product?.contificoId || "";
       if (productId && !catalog.has(productId)) productId = "";
-      if (!productId) productId = env.CONTIFICO_GENERIC_PRODUCT_ID;
+      if (!productId) productId = generic;
       if (!productId || !catalog.has(productId)) {
         unlinked.add(item.name);
         continue;
