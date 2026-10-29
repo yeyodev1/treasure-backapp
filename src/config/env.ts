@@ -16,6 +16,8 @@ export const env = {
   MONGODB_URI: required("MONGODB_URI", "mongodb://127.0.0.1:27017/treasure"),
   JWT_SECRET: required("JWT_SECRET", "treasure-dev-secret-cambiar-en-produccion"),
   JWT_EXPIRES_IN: process.env.JWT_EXPIRES_IN ?? "12h",
+  /** Sesión de una tableta de confianza ("Mantener sesión en esta tableta"). */
+  JWT_REMEMBER_EXPIRES_IN: process.env.JWT_REMEMBER_EXPIRES_IN ?? "30d",
   CORS_ORIGINS: (process.env.CORS_ORIGINS ?? "")
     .split(",")
     .map((o) => o.trim())
