@@ -1,16 +1,20 @@
 /**
  * Roles del sistema.
- * Bar (reunión 21-oct-2026):
- * - admin:     Paula (administradora): todo, en el bar y en los registros ISM.
- * - direccion: dirección de crucero.
- * - bartender: toma pedidos en el bar desde la tablet.
- * - bodega:    inventario en tierra.
+ * Bar (reunión 21-oct-2026 y guía auditada 27-oct-2026):
+ * - duena:     Paula (dueña): toda la operación y finanzas; autoriza precios,
+ *              ajustes de inventario y reversos. Puede todo lo de los demás roles.
+ * - admin:     administradora: conteo físico, diferencias, compras y recepciones.
+ * - direccion: directora de crucero: pasajeros, cabinas, inicio/fin,
+ *              aprobación de cuentas y abastecimiento, cobros.
+ * - bartender: registra consumos y requerimientos desde la tablet.
+ * - bodega:    inventario en tierra (compras, recepciones, cargas).
  * Registros ISM (reunión 22-oct-2026 con Felipe):
  * - capitan:    revisa y firma los registros como Capitán.
  * - tripulante: timoneles, maquinistas y demás tripulación que llena registros.
  * - designada:  Persona Designada en oficina: recibe, firma y archiva.
  */
 export const USER_ROLES = [
+  "duena",
   "admin",
   "direccion",
   "bartender",
@@ -22,7 +26,8 @@ export const USER_ROLES = [
 export type UserRole = (typeof USER_ROLES)[number];
 
 export const ROLE_LABELS: Record<UserRole, string> = {
-  admin: "Administración",
+  duena: "Dueña",
+  admin: "Administradora",
   direccion: "Dirección de crucero",
   bartender: "Bartender",
   bodega: "Bodega",
@@ -58,3 +63,13 @@ export const POSITION_LABELS: Record<CrewPosition, string> = {
   CABIN: "Cabinas",
   DIR: "Director de Crucero",
 };
+
+/** La dueña puede todo; la administradora conserva lo operativo. */
+export function isOwner(role: string | undefined): boolean {
+  return role === "duena";
+}
+
+/** Dueña o administradora (antes "admin" lo era todo). */
+export function isManager(role: string | undefined): boolean {
+  return role === "duena" || role === "admin";
+}
