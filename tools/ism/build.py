@@ -12,6 +12,8 @@ import re
 import shutil
 import sys
 
+from defaults import clean as clean_defaults
+
 DEFS, CSV_PATH, OUT = sys.argv[1], sys.argv[2], sys.argv[3]
 os.makedirs(os.path.join(OUT, "defs"), exist_ok=True)
 
@@ -175,6 +177,8 @@ for code, (title, group, frequency) in META.items():
         f["label"] = label
         f.pop("raw", None)
         stages[stage] += 1
+
+    clean_defaults(code, src["fields"])
 
     definition = {
         "code": code,
