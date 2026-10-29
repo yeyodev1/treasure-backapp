@@ -111,7 +111,7 @@ export async function buildCabinAccount(
       cruise: cruiseId,
       cabinNumber,
       payment: null,
-      status: { $ne: "cancelada" },
+      status: { $nin: ["cancelada", "retenida"] },
     })
       .populate("createdBy", "name")
       .sort({ createdAt: 1 }),
