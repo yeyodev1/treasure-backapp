@@ -1,7 +1,13 @@
 import mongoose, { Schema, Types } from "mongoose";
 import crypto from "crypto";
 
+/** Programada → En curso → Finalizada (guía auditada 27-oct-2026). */
 export const CRUISE_STATUSES = ["planificado", "abordo", "cerrado"] as const;
+export const CRUISE_STATUS_LABELS = {
+  planificado: "Programada",
+  abordo: "En curso",
+  cerrado: "Finalizada",
+} as const;
 export type CruiseStatus = (typeof CRUISE_STATUSES)[number];
 
 /** Pasajero de una cabina (guía V3): la facturación recupera estos datos. */
@@ -23,6 +29,8 @@ export interface ICabin {
   guestName: string;
   /** Token del link público de la cuenta (QR): el pasajero lo abre en su celular. */
   accountToken: string;
+  /** Plazas de la cabina: no se registran más pasajeros que esto. */
+  capacity: number;
 }
 
 /**
@@ -40,6 +48,12 @@ export interface ICruise {
   status: CruiseStatus;
   cabins: ICabin[];
   notes: string;
+  startedAt: Date | null;
+  startedBy: Types.ObjectId | null;
+  closedAt: Date | null;
+  closedBy: Types.ObjectId | null;
+  /** Cierre excepcional (equipo sin responder o envíos pendientes). */
+  closeReason: string;
   createdBy?: Types.ObjectId;
   createdAt?: Date;
   updatedAt?: Date;
@@ -64,6 +78,7 @@ const cabinSchema = new Schema<ICabin>(
       type: String,
       default: () => crypto.randomBytes(12).toString("hex"),
     },
+    capacity: { type: Number, default: 2, min: 1, max: 6 },
   },
   { _id: false },
 );
@@ -80,6 +95,11 @@ const cruiseSchema = new Schema<ICruise>(
     status: { type: String, enum: CRUISE_STATUSES, default: "planificado" },
     cabins: { type: [cabinSchema], default: [] },
     notes: { type: String, default: "" },
+    startedAt: { type: Date, default: null },
+    startedBy: { type: Schema.Types.ObjectId, ref: "User", default: null },
+    closedAt: { type: Date, default: null },
+    closedBy: { type: Schema.Types.ObjectId, ref: "User", default: null },
+    closeReason: { type: String, default: "" },
     createdBy: { type: Schema.Types.ObjectId, ref: "User" },
   },
   { timestamps: true },
@@ -88,6 +108,11 @@ const cruiseSchema = new Schema<ICruise>(
 cruiseSchema.index({ status: 1, startDate: -1 });
 cruiseSchema.index({ "cabins.accountToken": 1 });
 cruiseSchema.index({ leg: 1, startDate: 1 });
+// Solo una salida en curso a la vez, garantizado por la base (doble toque o dos equipos).
+cruiseSchema.index(
+  { status: 1 },
+  { unique: true, partialFilterExpression: { status: "abordo" }, name: "una_salida_en_curso" },
+);
 
 /** Nombre visible de una cabina a partir de sus pasajeros. */
 export function cabinDisplayName(cabin: Pick<ICabin, "passengers">): string {
