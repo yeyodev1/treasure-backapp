@@ -66,6 +66,9 @@ export interface IProduct {
 
   isCustom: boolean;
   active: boolean;
+  /** Producto equivalente en Contífico (para facturar). Vacío = sin vincular. */
+  contificoId: string;
+  contificoCode: string;
   priceHistory: IPriceChange[];
   createdBy?: Types.ObjectId;
   createdAt?: Date;
@@ -108,6 +111,8 @@ const productSchema = new Schema<IProduct>(
     recipe: { type: [recipeItemSchema], default: [] },
     isCustom: { type: Boolean, default: false },
     active: { type: Boolean, default: true },
+    contificoId: { type: String, default: "" },
+    contificoCode: { type: String, default: "" },
     priceHistory: { type: [priceChangeSchema], default: [] },
     createdBy: { type: Schema.Types.ObjectId, ref: "User" },
   },
