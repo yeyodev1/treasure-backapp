@@ -3,6 +3,7 @@ import { Types } from "mongoose";
 import { IProduct, Product, PRODUCT_CATEGORIES, ProductCategory } from "../models/product.model";
 import { suggestedPrice } from "../services/inventory.service";
 import { logEvent } from "../services/audit.service";
+import { contificoProducts } from "../services/contifico.service";
 import { badRequest, forbidden, notFound } from "../errors/httpError";
 import { PRODUCT_KINDS, ProductKind, STOCK_UNITS, StockUnit } from "../utils/units";
 
@@ -38,6 +39,7 @@ interface ProductBody {
   servingPrice?: number;
   recipe?: Array<{ product: string; qty: number }>;
   active?: boolean;
+  contificoId?: string;
 }
 
 async function validateRecipe(recipe: Array<{ product: string; qty: number }>) {
@@ -184,6 +186,20 @@ export async function updateProduct(req: Request, res: Response, next: NextFunct
     if (body.active !== undefined && body.active !== product.active) {
       product.active = body.active;
       changes.push(body.active ? "activado" : "desactivado");
+    }
+    if (body.contificoId !== undefined && body.contificoId !== product.contificoId) {
+      if (req.auth!.role !== "admin") throw forbidden("Solo administración vincula con Contífico");
+      if (body.contificoId) {
+        const match = (await contificoProducts()).find((p) => p.id === body.contificoId);
+        if (!match) throw badRequest("Ese producto no existe en Contífico");
+        product.contificoId = match.id;
+        product.contificoCode = match.codigo;
+        changes.push(`Contífico ${match.codigo}`);
+      } else {
+        product.contificoId = "";
+        product.contificoCode = "";
+        changes.push("sin Contífico");
+      }
     }
 
     await product.save();
