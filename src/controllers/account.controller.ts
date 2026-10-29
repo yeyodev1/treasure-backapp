@@ -16,7 +16,7 @@ export async function cruiseAccounts(req: Request, res: Response, next: NextFunc
 
     const [accounts, orders] = await Promise.all([
       Account.find({ cruise: cruise._id }),
-      Order.find({ cruise: cruise._id, payment: null, status: { $ne: "cancelada" } }),
+      Order.find({ cruise: cruise._id, payment: null, status: { $nin: ["cancelada", "retenida"] } }),
     ]);
     const accountMap = new Map(accounts.map((a) => [a.cabinNumber, a]));
 
