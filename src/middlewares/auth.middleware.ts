@@ -8,6 +8,8 @@ export interface AuthPayload {
   sub: string;
   name: string;
   role: UserRole;
+  /** "Mantener sesión en esta tableta": la renovación conserva la duración larga. */
+  remember?: boolean;
 }
 
 declare global {
@@ -41,7 +43,8 @@ export function requireRole(...roles: UserRole[]) {
       next(unauthorized());
       return;
     }
-    if (!roles.includes(req.auth.role)) {
+    // La dueña puede todo lo que pueden los demás roles.
+    if (req.auth.role !== "duena" && !roles.includes(req.auth.role)) {
       next(forbidden());
       return;
     }
