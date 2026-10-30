@@ -41,6 +41,7 @@ import {
   IsmSigner,
 } from "../services/ismSchema.service";
 import { logEvent } from "../services/audit.service";
+import { freezeArchivedPdf, readArchivedPdf, tryFreezeArchivedPdf } from "../services/ismArchive.service";
 import { CREW_LIST_ROLES, PIN_RESET_WINDOW_MS, positionLabel, verifyPin } from "../services/ismCrew.service";
 import { notifyRole, notifyUsers } from "../services/ismNotify.service";
 import { badRequest, conflict, forbidden, notFound } from "../errors/httpError";
@@ -831,6 +832,7 @@ export async function approve(req: Request, res: Response, next: NextFunction) {
     }
 
     await saveOrConflict(record);
+    if (record.status === "archivado") await tryFreezeArchivedPdf(record);
     await logEvent(req.auth, {
       kind: "registro",
       title: `${record.code} · ${record.status === "archivado" ? "archivado" : "aprobado por el Capitán"}`,
@@ -955,6 +957,8 @@ export async function signStep(req: Request, res: Response, next: NextFunction) 
       pushEvent(record, req, "archivado");
     }
     await saveOrConflict(record);
+    // El PDF se genera una vez y queda congelado con su sha256.
+    if (record.status === "archivado") await tryFreezeArchivedPdf(record);
 
     await logEvent(req.auth, {
       kind: "registro",
@@ -1156,6 +1160,17 @@ export async function pdf(req: Request, res: Response, next: NextFunction) {
     const record = await IsmRecord.findById(req.params.id);
     if (!record) throw notFound("Registro no encontrado");
     assertCanView(record, req);
+    // Archivado: siempre el mismo archivo congelado (se genera en la primera descarga si es de antes).
+    if (record.status === "archivado") {
+      const frozen = await freezeArchivedPdf(record);
+      const bytes = await readArchivedPdf(frozen);
+      res.setHeader("Content-Type", "application/pdf");
+      res.setHeader("Content-Disposition", `inline; filename="${record.fileName}"`);
+      res.setHeader("X-Content-SHA256", frozen.sha256);
+      res.setHeader("Access-Control-Expose-Headers", "Content-Disposition, X-Content-SHA256");
+      res.send(bytes);
+      return;
+    }
     const bytes = await renderRecordPdf(record);
     res.setHeader("Content-Type", "application/pdf");
     res.setHeader("Content-Disposition", `inline; filename="${record.fileName}"`);

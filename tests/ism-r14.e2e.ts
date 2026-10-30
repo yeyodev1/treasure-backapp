@@ -323,6 +323,49 @@ async function main() {
     const fs = await import("fs");
     fs.writeFileSync(`${process.env.SAVE_PDF}/archivado.pdf`, Buffer.from(archBytes));
   }
+  // ---- PDF archivado congelado e historial de solo agregar (punto 3) ----
+  const crypto = await import("crypto");
+  const sha = (b: ArrayBuffer | Buffer) => crypto.createHash("sha256").update(Buffer.from(b as ArrayBuffer)).digest("hex");
+  const archDoc = await IsmRecord.findById(r1);
+  check("Al archivar se guarda el PDF con su sha256", Boolean(archDoc?.archivedPdf?.fileId) && archDoc?.archivedPdf?.sha256 === sha(archBytes), archDoc?.archivedPdf?.sha256);
+  check("La descarga trae la huella sha256", archPdf.headers.get("x-content-sha256") === archDoc?.archivedPdf?.sha256);
+  // Aunque algo cambie después (código, plantilla o un dato tocado en la base), se sirve el mismo archivo.
+  await IsmRecord.collection.updateOne({ _id: archDoc!._id }, { $set: { "context.place": "Otro lugar" } });
+  const again2 = await fetch(`${base}/ism/records/${r1}/pdf`, { headers: { Authorization: `Bearer ${tokens.cap}` } });
+  check("El PDF archivado es siempre el mismo archivo", sha(await again2.arrayBuffer()) === sha(archBytes));
+  // Registro archivado antes del cambio: se congela en la primera descarga.
+  const { default: mg } = await import("mongoose");
+  await IsmRecord.collection.updateOne({ _id: archDoc!._id }, { $set: { archivedPdf: null } });
+  const legacyPdf = await fetch(`${base}/ism/records/${r1}/pdf`, { headers: { Authorization: `Bearer ${tokens.des}` } });
+  const legacyBytes = await legacyPdf.arrayBuffer();
+  const legacyDoc = await IsmRecord.findById(r1);
+  const legacyAgain = await fetch(`${base}/ism/records/${r1}/pdf`, { headers: { Authorization: `Bearer ${tokens.des}` } });
+  check(
+    "Archivado de antes: se congela en la primera descarga",
+    Boolean(legacyDoc?.archivedPdf?.sha256) && legacyDoc?.archivedPdf?.sha256 === sha(legacyBytes) && sha(await legacyAgain.arrayBuffer()) === sha(legacyBytes),
+  );
+  check("Los archivos quedan en Mongo (GridFS)", (await mg.connection.db!.collection("ismPdf.files").countDocuments()) === 2);
+  // Historial: solo agregar.
+  const hDoc = await IsmRecord.findById(r1);
+  const hLen = hDoc!.history.length;
+  hDoc!.history[0]!.reason = "cambiado";
+  const editHist = await hDoc!.save().then(() => "guardó", (e: Error) => e.message);
+  const removeHist = await IsmRecord.findById(r1).then((d) => {
+    d!.history.splice(1, 1);
+    return d!.save().then(() => "guardó", (e: Error) => e.message);
+  });
+  const setHist = await IsmRecord.updateOne({ _id: r1 }, { $set: { "history.0.reason": "x" } }).then(() => "guardó", (e: Error) => e.message);
+  const pullHist = await IsmRecord.updateOne({ _id: r1 }, { $pull: { history: { action: "creado" } } }).then(() => "guardó", (e: Error) => e.message);
+  const unsetHist = await IsmRecord.updateOne({ _id: r1 }, { $unset: { history: 1 } }).then(() => "guardó", (e: Error) => e.message);
+  check("No se modifica ni borra una entrada del historial", [editHist, removeHist, setHist, pullHist, unsetHist].every((m) => m.includes("solo admite agregar")), [editHist, removeHist, setHist, pullHist, unsetHist]);
+  const pushHist = await IsmRecord.updateOne({ _id: r1 }, { $push: { history: { action: "nota", by: null, byName: "x", at: new Date(), reason: "", section: "" } } });
+  const appended = await IsmRecord.findById(r1).then((d) => {
+    d!.history.push({ action: "nota 2", by: null, byName: "x", at: new Date(), reason: "", section: "" });
+    return d!.save().then(() => "guardó", (e: Error) => e.message);
+  });
+  const hAfter = await IsmRecord.findById(r1);
+  check("Agregar eventos sí se puede ($push)", pushHist.modifiedCount === 1 && appended === "guardó" && hAfter!.history.length === hLen + 2 && hAfter!.history[0]!.reason !== "cambiado", [appended, hAfter!.history.length, hLen]);
+
   const archText = await pdfPages(archBytes);
   if (archText) {
     const annex = archText.slice(1).join("\n");

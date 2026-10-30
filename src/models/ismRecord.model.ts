@@ -119,6 +119,14 @@ export interface IIsmReturnInfo {
   at: Date;
 }
 
+/** PDF congelado al archivar (GridFS "ismPdf"): se sirve siempre el mismo archivo. */
+export interface IIsmArchivedPdf {
+  fileId: Types.ObjectId;
+  sha256: string;
+  size: number;
+  generatedAt: Date;
+}
+
 export interface IIsmRecord {
   code: string;
   title: string;
@@ -158,6 +166,8 @@ export interface IIsmRecord {
    * adelante). Quedan en el historial; nunca se imprimen.
    */
   annulledSignatures?: Array<IIsmSignature & { annulledAt: Date; annulReason: string }>;
+  /** PDF archivado congelado con su sha256 (auditoría 30-oct, punto 3). */
+  archivedPdf?: IIsmArchivedPdf | null;
   createdAt?: Date;
   updatedAt?: Date;
 }
@@ -256,9 +266,90 @@ const ismRecordSchema = new Schema<IIsmRecord>(
       ],
       default: undefined,
     },
+    archivedPdf: {
+      type: new Schema(
+        {
+          fileId: { type: Schema.Types.ObjectId, required: true },
+          sha256: { type: String, required: true },
+          size: { type: Number, default: 0 },
+          generatedAt: { type: Date, default: () => new Date() },
+        },
+        { _id: false },
+      ),
+      default: null,
+    },
   },
   { timestamps: true, minimize: false, optimisticConcurrency: true },
 );
+
+/**
+ * Historial de solo agregar (auditoría 30-oct, punto 3): ninguna entrada
+ * existente se modifica ni se borra. Al guardar un documento se compara con
+ * lo que se cargó; en las actualizaciones directas solo se acepta $push.
+ */
+const HISTORY_ERROR = "El historial del registro solo admite agregar eventos";
+const eventKey = (e: unknown) => {
+  const o = (e && typeof (e as { toObject?: () => unknown }).toObject === "function"
+    ? (e as { toObject: () => IIsmEvent }).toObject()
+    : e) as IIsmEvent;
+  return JSON.stringify([o?.action, o?.by?.toString() ?? null, o?.byName, o?.at ? new Date(o.at).toISOString() : null, o?.reason, o?.section ?? ""]);
+};
+
+ismRecordSchema.post("init", function (doc) {
+  if (doc.isSelected("history")) doc.$locals.historyKeys = (doc.history ?? []).map(eventKey);
+});
+
+ismRecordSchema.pre("save", function (next) {
+  const loaded = this.$locals.historyKeys as string[] | undefined;
+  if (this.isNew || !loaded || !this.isModified("history")) return next();
+  const now = (this.history ?? []).map(eventKey);
+  if (now.length < loaded.length || loaded.some((k, i) => now[i] !== k)) {
+    return next(new Error(HISTORY_ERROR));
+  }
+  next();
+});
+
+ismRecordSchema.post("save", function (doc) {
+  doc.$locals.historyKeys = (doc.history ?? []).map(eventKey);
+});
+
+function assertHistoryAppendOnly(update: unknown) {
+  if (!update || typeof update !== "object") return;
+  const touches = (key: string) => key === "history" || key.startsWith("history.");
+  for (const [op, value] of Object.entries(update as Record<string, unknown>)) {
+    if (!op.startsWith("$")) {
+      // Actualización sin operador: no puede tocar el historial.
+      if (touches(op)) throw new Error(HISTORY_ERROR);
+      continue;
+    }
+    if (!value || typeof value !== "object") continue;
+    for (const [key, v] of Object.entries(value as Record<string, unknown>)) {
+      if (!touches(key)) continue;
+      if (op !== "$push" || key !== "history") throw new Error(HISTORY_ERROR);
+      // $push simple o con $each, sin reordenar ni recortar.
+      if (v && typeof v === "object" && Object.keys(v).some((k) => k.startsWith("$") && k !== "$each")) {
+        throw new Error(HISTORY_ERROR);
+      }
+    }
+  }
+}
+
+for (const hook of ["updateOne", "updateMany", "findOneAndUpdate"] as const) {
+  ismRecordSchema.pre(hook, function (next) {
+    try {
+      assertHistoryAppendOnly(this.getUpdate());
+      next();
+    } catch (err) {
+      next(err as Error);
+    }
+  });
+}
+// Reemplazar el documento entero podría borrar el historial: no se permite.
+for (const hook of ["replaceOne", "findOneAndReplace"] as const) {
+  ismRecordSchema.pre(hook, function (next) {
+    next(new Error(HISTORY_ERROR));
+  });
+}
 
 ismRecordSchema.index({ code: 1, recordDate: -1 });
 ismRecordSchema.index({ status: 1, updatedAt: -1 });
