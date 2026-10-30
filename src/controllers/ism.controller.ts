@@ -46,8 +46,12 @@ const STATUS_LABEL: Record<IsmStatus, string> = {
   archivado: "Archivado",
 };
 
+/**
+ * La firma va atada al rol de quien firma (informe ISM 29-oct, falla 1):
+ * solo el Capitán firma como Capitán y solo la Persona Designada en oficina.
+ * Gerencia y Administración ven todo, pero no firman por otro rol.
+ */
 function canSignStage(role: string, stage: SignatureStage): boolean {
-  if (isManager(role)) return true;
   if (stage === "capitan") return role === "capitan";
   if (stage === "oficina") return role === "designada";
   return true;
@@ -486,7 +490,8 @@ export async function sign(req: Request, res: Response, next: NextFunction) {
       throw conflict("Esta firma no está habilitada en la etapa actual del registro");
     }
 
-    const name = (signerName?.trim() || req.auth!.name).slice(0, 120);
+    // Capitán y Persona Designada firman con el nombre de su propia cuenta.
+    const name = (slot.stage === "tripulacion" ? signerName?.trim() || req.auth!.name : req.auth!.name).slice(0, 120);
     record.signatures = record.signatures.filter((s) => s.field !== field) as never;
     record.signatures.push({
       field,
@@ -638,7 +643,7 @@ export async function approve(req: Request, res: Response, next: NextFunction) {
     }
 
     if (record.status === "por_capitan") {
-      if (!(role === "capitan" || isManager(role))) throw forbidden("Lo aprueba el Capitán");
+      if (role !== "capitan") throw forbidden("Solo el Capitán, desde su cuenta, firma este paso");
       const pending = missing(def, record, "capitan");
       if (pending.length) throw badRequest(`Falta firmar: ${pending.map((p) => p.label).join(", ")}`);
       record.status = "por_oficina";
@@ -646,8 +651,8 @@ export async function approve(req: Request, res: Response, next: NextFunction) {
       record.captainApprovedAt = new Date();
       pushEvent(record, req, "aprobado por el Capitán");
     } else if (record.status === "por_oficina") {
-      if (!(role === "designada" || isManager(role))) {
-        throw forbidden("Lo recibe y archiva la Persona Designada");
+      if (role !== "designada") {
+        throw forbidden("Solo la Persona Designada, desde su cuenta, archiva el registro");
       }
       const pending = missing(def, record, "oficina").filter((f) => f.label === "Persona Designada");
       if (pending.length) throw badRequest("Falta la firma de la Persona Designada");
@@ -687,8 +692,12 @@ export async function giveBack(req: Request, res: Response, next: NextFunction) 
     const record = await IsmRecord.findById(req.params.id);
     if (!record) throw notFound("Registro no encontrado");
     const role = req.auth!.role;
-    if (record.status === "por_capitan" && !(role === "capitan" || isManager(role))) throw forbidden();
-    if (record.status === "por_oficina" && !(role === "designada" || isManager(role))) throw forbidden();
+    if (record.status === "por_capitan" && role !== "capitan") {
+      throw forbidden("Solo el Capitán devuelve este registro");
+    }
+    if (record.status === "por_oficina" && role !== "designada") {
+      throw forbidden("Solo la Persona Designada devuelve este registro");
+    }
     if (record.status !== "por_capitan" && record.status !== "por_oficina") {
       throw conflict("Solo se devuelve un registro que está en revisión");
     }
