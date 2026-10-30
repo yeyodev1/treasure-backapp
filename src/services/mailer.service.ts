@@ -2,9 +2,9 @@ import { Resend } from "resend";
 import { env } from "../config/env";
 
 /**
- * Correo transaccional con Resend desde team@teseturis.app.
- * Configurado y listo, pero sin uso por ahora (decisión 22-oct-2026):
- * cuando toque enviar facturas/cuentas al pasajero se llama sendMail.
+ * Correo transaccional con Resend desde team@teseturis.app. Se usa para el
+ * resumen de la cuenta al pagador cuando la cuenta queda pagada.
+ * Sin RESEND_API_KEY (pruebas, ensayo) no se envía nada.
  */
 let client: Resend | null = null;
 
@@ -17,17 +17,28 @@ function getClient(): Resend {
   return client;
 }
 
-export async function sendMail(options: {
+export interface MailAttachment {
+  filename: string;
+  content: Buffer;
+}
+
+export interface MailOptions {
   to: string;
   subject: string;
   html: string;
-}): Promise<{ id: string }> {
-  if (!mailerConfigured()) throw new Error("Resend no está configurado");
+  text?: string;
+  attachments?: MailAttachment[];
+}
+
+export async function sendMail(options: MailOptions): Promise<{ id: string }> {
+  if (!mailerConfigured()) throw new Error("el envío de correos no está configurado");
   const { data, error } = await getClient().emails.send({
     from: env.EMAIL_FROM,
     to: options.to,
     subject: options.subject,
     html: options.html,
+    ...(options.text ? { text: options.text } : {}),
+    ...(options.attachments?.length ? { attachments: options.attachments } : {}),
   });
   if (error || !data) throw new Error(`Resend: ${error?.message ?? "sin respuesta"}`);
   return { id: data.id };

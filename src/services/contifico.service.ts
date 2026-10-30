@@ -231,27 +231,48 @@ function buildDetails(lines: DraftLine[]) {
   };
 }
 
-/** Lo cobrado en el barco entra como cobro de la factura cuando se puede identificar. */
-function buildCobros(payment: IPayment & { _id: Types.ObjectId }, total: number) {
+type CobroSource = Pick<IPayment, "method" | "reference" | "total" | "createdAt"> & { _id: Types.ObjectId };
+
+/** Un pago del barco → cobro de Contífico, cuando se puede identificar. */
+function cobroOf(payment: CobroSource) {
   const fecha = toContificoDate(payment.createdAt ?? new Date());
-  const monto = total;
-  if (payment.method === "efectivo") return [{ forma_cobro: "EF", monto, fecha }];
+  const monto = round2(payment.total);
+  if (payment.method === "efectivo") return { forma_cobro: "EF", monto, fecha };
   if (payment.method === "transferencia" && env.CONTIFICO_BANK_ACCOUNT_ID) {
-    return [
-      {
-        forma_cobro: "TRA",
-        monto,
-        fecha,
-        cuenta_bancaria_id: env.CONTIFICO_BANK_ACCOUNT_ID,
-        numero_comprobante: (payment.reference || `TRE${payment._id.toString().slice(-12)}`).slice(0, 15),
-      },
-    ];
+    return {
+      forma_cobro: "TRA",
+      monto,
+      fecha,
+      cuenta_bancaria_id: env.CONTIFICO_BANK_ACCOUNT_ID,
+      numero_comprobante: (payment.reference || `TRE${payment._id.toString().slice(-12)}`).slice(0, 15),
+    };
   }
   if ((payment.method === "tarjeta" || payment.method === "online") && env.CONTIFICO_CARD_PROCESSOR) {
-    return [{ forma_cobro: "TC", monto, fecha, tipo_ping: env.CONTIFICO_CARD_PROCESSOR }];
+    return { forma_cobro: "TC", monto, fecha, tipo_ping: env.CONTIFICO_CARD_PROCESSOR };
   }
-  // Sin datos para identificar el cobro: la factura queda por cobrar en Contífico.
-  return [];
+  // Sin datos para identificar el cobro: esa parte queda por cobrar en Contífico.
+  return null;
+}
+
+/**
+ * Pagos que cubre la factura: el que liquidó la cuenta y sus pagos
+ * parciales (uno por medio de pago). Un cobro antiguo es uno solo.
+ */
+async function invoicePayments(payment: IPayment & { _id: Types.ObjectId }): Promise<CobroSource[]> {
+  const group = await Payment.find({ settledBy: payment._id, status: "vigente" })
+    .select("method reference total createdAt")
+    .sort({ createdAt: 1 });
+  return group.length ? group : [payment];
+}
+
+/** Cobros de la factura: uno por cada pago identificable de la liquidación. */
+export async function invoiceCobros(payment: IPayment & { _id: Types.ObjectId }) {
+  return (await invoicePayments(payment)).map(cobroOf).filter((c) => c !== null);
+}
+
+/** Importe de la factura: el total de la cuenta liquidada (todos sus pagos). */
+export function invoiceAmount(payment: Pick<IPayment, "total" | "accountTotal">): number {
+  return payment.accountTotal ?? payment.total;
 }
 
 async function invoiceLines(payment: IPayment): Promise<DraftLine[]> {
@@ -353,11 +374,12 @@ async function emitInvoice(payment: IPayment & { _id: Types.ObjectId }): Promise
       return { status: "error", ...empty, error: "La cuenta no tiene consumos facturables" };
     }
     const totals = buildDetails(lines);
-    if (Math.abs(totals.total - payment.total) > 0.01) {
+    const expected = invoiceAmount(payment);
+    if (Math.abs(totals.total - expected) > 0.01) {
       return {
         status: "error",
         ...empty,
-        error: `Los consumos suman ${totals.total} y el cobro ${payment.total}: revisa la cuenta`,
+        error: `Los consumos suman ${totals.total} y el cobro ${expected}: revisa la cuenta`,
       };
     }
 
@@ -400,7 +422,7 @@ async function emitInvoice(payment: IPayment & { _id: Types.ObjectId }): Promise
       adicional1: marker,
       adicional2: "",
       detalles: totals.detalles,
-      cobros: buildCobros(payment, totals.total),
+      cobros: await invoiceCobros(payment),
     };
 
     let lastError = "";

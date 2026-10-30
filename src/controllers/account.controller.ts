@@ -22,16 +22,32 @@ export async function cruiseAccounts(req: Request, res: Response, next: NextFunc
     const [accounts, orders, payments] = await Promise.all([
       Account.find({ cruise: cruise._id }),
       Order.find({ cruise: cruise._id, status: { $nin: ["cancelada", "retenida"] } }),
-      Payment.find({ cruise: cruise._id, status: "vigente" }).select("cabinNumber total"),
+      Payment.find({ cruise: cruise._id, status: "vigente" }).select("cabinNumber total settled"),
     ]);
     const accountMap = new Map(accounts.map((a) => [a.cabinNumber, a]));
 
     const totals = new Map<
       number,
-      { total: number; orders: number; pending: number; consumed: number; paidOrders: number; paid: number }
+      {
+        total: number;
+        orders: number;
+        pending: number;
+        consumed: number;
+        paidOrders: number;
+        paid: number;
+        partialPaid: number;
+      }
     >();
     const entryOf = (cabin: number) => {
-      const entry = totals.get(cabin) ?? { total: 0, orders: 0, pending: 0, consumed: 0, paidOrders: 0, paid: 0 };
+      const entry = totals.get(cabin) ?? {
+        total: 0,
+        orders: 0,
+        pending: 0,
+        consumed: 0,
+        paidOrders: 0,
+        paid: 0,
+        partialPaid: 0,
+      };
       totals.set(cabin, entry);
       return entry;
     };
@@ -50,7 +66,12 @@ export async function cruiseAccounts(req: Request, res: Response, next: NextFunc
         entry.total += amount;
       }
     }
-    for (const payment of payments) entryOf(payment.cabinNumber).paid += payment.total;
+    for (const payment of payments) {
+      const entry = entryOf(payment.cabinNumber);
+      entry.paid += payment.total;
+      // Pago parcial: descuenta del saldo, la cuenta sigue abierta al cobro.
+      if (payment.settled === false) entry.partialPaid += payment.total;
+    }
 
     res.json({
       cabins: cruise.cabins.map((cabin) => {
@@ -68,7 +89,8 @@ export async function cruiseAccounts(req: Request, res: Response, next: NextFunc
           paidOrders: t?.paidOrders ?? 0,
           consumed: round2(t?.consumed ?? 0),
           paid: round2(t?.paid ?? 0),
-          due: round2(t?.total ?? 0),
+          partialPaid: round2(t?.partialPaid ?? 0),
+          due: round2(Math.max(0, (t?.total ?? 0) - (t?.partialPaid ?? 0))),
         };
       }),
     });

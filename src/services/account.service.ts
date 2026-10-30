@@ -32,9 +32,13 @@ export interface AccountPayment {
   createdAt: Date;
   method: string;
   total: number;
+  /** false: pago parcial de una cuenta que aún tiene saldo. */
+  settled: boolean;
   invoiceStatus: string;
   invoiceNumber: string;
   invoiceError: string;
+  /** Resumen por correo (solo el pago que liquida la cuenta). */
+  summaryEmail: { status: string; to: string; sentAt: Date | null; error: string };
 }
 
 export interface AccountSummary {
@@ -51,15 +55,20 @@ export interface AccountSummary {
   orders: AccountOrder[];
   subtotal: number;
   courtesyTotal: number;
-  /** Saldo abierto (lo que falta cobrar). */
+  /** Consumos abiertos (lo que se aprueba). El saldo es `due`. */
   total: number;
+  /** Pagos parciales recibidos sobre los consumos abiertos. */
+  partialPaid: number;
   /**
    * Consumos ya pagados: la cuenta pagada conserva sus productos e
    * historial (checklist 29-oct, 01).
    */
   paidOrders: AccountOrder[];
   payments: AccountPayment[];
-  /** Cuenta completa: consumos (sin cortesías) = pagado + por cobrar. */
+  /**
+   * Cuenta completa: consumos (sin cortesías) = pagado + por cobrar.
+   * due = consumos abiertos − pagos parciales (nunca negativo).
+   */
   consumed: number;
   paid: number;
   due: number;
@@ -103,7 +112,7 @@ export async function chargesChanged(
     history.push({
       action: "invalidada",
       version: nextVersion,
-      reason: `La aprobación quedó sin efecto: ${reason}`,
+      reason: `Aprobación anulada: ${reason}`,
       by: userId ? new Types.ObjectId(userId) : null,
       at: new Date(),
     });
@@ -217,6 +226,9 @@ export async function buildCabinAccount(
   const version = account?.version ?? 1;
   const total = round2(subtotal);
   const paid = round2(payments.reduce((s, p) => s + p.total, 0));
+  const partialPaid = round2(
+    payments.filter((p) => p.settled === false).reduce((s, p) => s + p.total, 0),
+  );
 
   return {
     cabinNumber,
@@ -235,19 +247,27 @@ export async function buildCabinAccount(
     subtotal: total,
     courtesyTotal: round2(courtesyTotal),
     total,
+    partialPaid,
     paidOrders,
     payments: payments.map((p) => ({
       id: p._id.toString(),
       createdAt: p.createdAt as Date,
       method: p.method,
       total: p.total,
+      settled: p.settled !== false,
       invoiceStatus: p.invoiceStatus,
       invoiceNumber: p.invoiceNumber,
       invoiceError: p.invoiceError,
+      summaryEmail: {
+        status: p.summaryEmail?.status ?? "no_aplica",
+        to: p.summaryEmail?.to ?? "",
+        sentAt: p.summaryEmail?.sentAt ?? null,
+        error: p.summaryEmail?.error ?? "",
+      },
     })),
     consumed: round2(paidTotal + subtotal),
     paid,
-    due: total,
+    due: round2(Math.max(0, total - partialPaid)),
     courtesyAll: round2(courtesyAll),
     history: (account?.history ?? []).map((h) => ({
       action: h.action,

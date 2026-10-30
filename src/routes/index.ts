@@ -140,6 +140,8 @@ export default function routerApi(app: Application) {
   router.post("/payments/collect", requireAuth, DIRECTOR, payments.collectCabin);
   router.get("/payments", requireAuth, LEAD, payments.listPayments);
   router.post("/payments/:id/retry-invoice", requireAuth, DIRECTOR, payments.retryInvoice);
+  // Resumen de la cuenta pagada al pagador (Resend); reenvío manual.
+  router.post("/payments/:id/resend-summary", requireAuth, DIRECTOR, payments.resendSummary);
   router.get("/contifico", requireAuth, OWNER, payments.contificoInfo);
   router.post("/payments/:id/reverse", requireAuth, OWNER, payments.reversePayment);
 

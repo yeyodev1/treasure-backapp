@@ -96,7 +96,17 @@ export async function ownerReport(query: OwnerReportQuery) {
   const byProduct = new Map<string, { qty: number; total: number; courtesyQty: number }>();
   const pendingByCabin = new Map<
     string,
-    { cruiseId: string; cruise: string; cabin: number; amount: number; orders: number; oldest: Date; previous: boolean }
+    {
+      cruiseId: string;
+      cruise: string;
+      cabin: number;
+      amount: number;
+      orders: number;
+      oldest: Date;
+      previous: boolean;
+      /** Parte del saldo que viene de antes del periodo. */
+      before: number;
+    }
   >();
   let periodOrders = 0;
 
@@ -180,13 +190,50 @@ export async function ownerReport(query: OwnerReportQuery) {
         orders: 0,
         oldest: createdAt,
         previous: false,
+        before: 0,
       };
       p.amount += orderAmount;
       p.orders += 1;
-      if (!counts) p.previous = true;
+      if (!counts) {
+        p.previous = true;
+        p.before += orderAmount;
+      }
       if (createdAt < p.oldest) p.oldest = createdAt;
       pendingByCabin.set(key, p);
     }
+  }
+
+  // Pagos parciales recibidos hasta el corte cuya cuenta no estaba liquidada
+  // al corte: bajan el saldo de su cabina (primero lo más antiguo).
+  const partials = await Payment.find({
+    status: "vigente",
+    invoiceStatus: "parcial",
+    createdAt: { $lte: cut },
+    ...(cruise ? { cruise: cruise._id } : {}),
+  })
+    .select("cruise cabinNumber total settledBy")
+    .lean();
+  const liquidatedAt = new Map(
+    (
+      await Payment.find({ _id: { $in: partials.map((p) => p.settledBy).filter(Boolean) }, status: "vigente" })
+        .select("createdAt")
+        .lean()
+    ).map((p) => [p._id.toString(), p.createdAt as Date]),
+  );
+  for (const partial of partials) {
+    const settledAt = partial.settledBy ? liquidatedAt.get(partial.settledBy.toString()) : undefined;
+    if (settledAt && settledAt <= cut) continue;
+    const entry = pendingByCabin.get(`${partial.cruise.toString()}-${partial.cabinNumber}`);
+    if (!entry) continue;
+    const applied = Math.min(entry.amount, partial.total);
+    const fromBefore = Math.min(entry.before, applied);
+    entry.before -= fromBefore;
+    entry.amount -= applied;
+    pendingBefore -= fromBefore;
+    pendingPeriod -= applied - fromBefore;
+  }
+  for (const [key, entry] of pendingByCabin) {
+    if (round2(entry.amount) <= 0) pendingByCabin.delete(key);
   }
 
   // ---- Pagos: según su fecha de pago, hasta el corte
@@ -400,7 +447,7 @@ export async function ownerReport(query: OwnerReportQuery) {
         invoiceStatus: p.invoiceStatus,
       })),
       pending: pendingCabins
-        .map((p) => ({ ...p, amount: round2(p.amount) }))
+        .map(({ before: _before, ...p }) => ({ ...p, amount: round2(p.amount) }))
         .sort((a, b) => b.amount - a.amount),
       cost: [...costByProduct.values()]
         .map((c) => ({ name: c.name, qty: c.qty, cost: c.complete ? round2(c.cost) : null }))

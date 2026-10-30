@@ -47,12 +47,12 @@ export const PAYMENT_METHOD_EN: Record<string, string> = {
 };
 
 const money = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" });
-const usd = (v: number) => money.format(round2(v));
+export const usd = (v: number) => money.format(round2(v));
 
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
 /** "Oct 29, 2026" (y "· 21:30") en hora de Galápagos, sin depender del ICU del servidor. */
-function dateEn(date: Date, withTime = false): string {
+export function dateEn(date: Date, withTime = false): string {
   const local = new Date(date.getTime() - 6 * 60 * 60 * 1000);
   const pad = (n: number) => String(n).padStart(2, "0");
   const day = `${MONTHS[local.getUTCMonth()]} ${pad(local.getUTCDate())}, ${local.getUTCFullYear()}`;
@@ -81,6 +81,9 @@ export interface ProformaLine {
 export interface ProformaData {
   cruise: string;
   route: string;
+  /** Fechas del crucero (inicio y fin, si lo tiene). */
+  startDate: Date | null;
+  endDate: Date | null;
   cabin: number;
   billTo: string;
   date: Date;
@@ -109,7 +112,9 @@ function linesOf(orders: AccountOrder[]): ProformaLine[] {
 
 /** Datos de la prefactura: toda la cuenta (pagada y abierta), pagos y saldo. */
 export async function proformaData(cruiseId: string, cabinNumber: number): Promise<ProformaData> {
-  const cruise = await Cruise.findById(cruiseId).select("code name routeFrom routeTo cabins");
+  const cruise = await Cruise.findById(cruiseId).select(
+    "code name routeFrom routeTo startDate endDate cabins",
+  );
   const cabin = cruise?.cabins.find((c) => c.number === cabinNumber);
   if (!cruise || !cabin) throw notFound("Cuenta no encontrada");
 
@@ -125,6 +130,8 @@ export async function proformaData(cruiseId: string, cabinNumber: number): Promi
   return {
     cruise: cruise.code || cruise.name,
     route: cruise.routeFrom && cruise.routeTo ? `${cruise.routeFrom} - ${cruise.routeTo}` : "",
+    startDate: cruise.startDate ?? null,
+    endDate: cruise.endDate ?? null,
     cabin: cabinNumber,
     billTo: lastPayment?.billing?.name || payer?.name || cabin.guestName || `Cabin ${cabinNumber}`,
     date: new Date(),

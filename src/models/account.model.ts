@@ -4,6 +4,8 @@ import mongoose, { Schema, Types } from "mongoose";
  * Cuenta de una cabina en una salida (guía V3, pantalla 02):
  * abierta → en_revision (Bar envía) → aprobada (Dirección) → cobrada.
  * Cualquier cambio de un cargo sube la versión e invalida la aprobación.
+ * Con pagos parciales la cuenta sigue "aprobada" hasta que el saldo llega a
+ * cero; recién entonces pasa a "cobrada" (Pagada).
  */
 export const ACCOUNT_STATUSES = ["abierta", "en_revision", "aprobada", "cobrada"] as const;
 export type AccountStatus = (typeof ACCOUNT_STATUSES)[number];
@@ -16,7 +18,10 @@ export const ACCOUNT_ACTIONS = [
   "devuelta",
   "invalidada",
   "cobrada",
+  "pago_parcial",
   "reversada",
+  "correo_enviado",
+  "correo_no_enviado",
 ] as const;
 export type AccountAction = (typeof ACCOUNT_ACTIONS)[number];
 

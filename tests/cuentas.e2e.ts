@@ -6,6 +6,8 @@
  *
  * Caso del ensayo: A-001 cabina 2 con 2 Coca Cola + 1 Gin Tonic = $27,50,
  * cobrada; compras CP-001 recibida parcial $84 y CP-002 $18.
+ * P05: cabina 4 ($21) pagada en partes ($10 + $5 + $6) con resumen por
+ * correo a un transporte de prueba (nunca se envía un correo real).
  */
 import { MongoMemoryReplSet } from "mongodb-memory-server";
 import { AddressInfo } from "net";
@@ -22,6 +24,9 @@ async function main() {
   process.env.MONGODB_URI = repl.getUri("treasure");
   process.env.CONTIFICO_API_KEY = "";
   process.env.CONTIFICO_API_TOKEN = "";
+  process.env.RESEND_API_KEY = "";
+  process.env.CONTIFICO_BANK_ACCOUNT_ID = "";
+  process.env.CONTIFICO_CARD_PROCESSOR = "";
 
   const mongoose = (await import("mongoose")).default;
   const { createApp } = await import("../src/app");
@@ -91,6 +96,9 @@ async function main() {
     passengers: [{ name: "Ana Pérez", isPayer: true, country: "USA" }],
   });
   await api("dir", "PUT", `/cruises/${cruiseId}/cabins/3/passengers`, { passengers: [{ name: "Marta", isPayer: true }] });
+  await api("dir", "PUT", `/cruises/${cruiseId}/cabins/4/passengers`, {
+    passengers: [{ name: "John Smith", isPayer: true, email: "pax4@example.com", idNumber: "P444", country: "USA" }],
+  });
   await api("dir", "POST", `/cruises/${cruiseId}/start`);
 
   for (const [i, pid] of [coke, coke, ginTonic].entries()) {
@@ -262,6 +270,156 @@ async function main() {
   );
   const forbidden = await api("dir", "GET", `/reports/owner?cruiseId=${cruiseId}`);
   check("El resumen solo lo ve Gerencia", forbidden.status === 403);
+
+
+  // ---- P05: pagos parciales combinando medios; la cuenta se paga al llegar a cero
+  const mail = await import("../src/services/accountEmail.service");
+  const sent: any[] = [];
+  mail.setMailTransport(async (options) => {
+    sent.push(options);
+    return { id: `stub-${sent.length}` };
+  });
+  await api("bar", "POST", "/consumptions", { cruiseId, cabinNumber: 4, productId: coke, idempotencyKey: "c4-0" });
+  await api("bar", "POST", "/consumptions", { cruiseId, cabinNumber: 4, productId: ginTonic, idempotencyKey: "c4-1" });
+  await api("bar", "POST", `/accounts/${cruiseId}/4/submit`);
+  await api("dir", "POST", `/accounts/${cruiseId}/4/approve`);
+  const acc4 = (await api("dir", "GET", `/accounts/${cruiseId}/4`)).data.account;
+  check("Cabina 4 aprobada por $21", acc4.status === "aprobada" && acc4.due === 21 && acc4.readyToCollect, acc4.due);
+  const collect4 = (body: Record<string, unknown>) =>
+    api("dir", "POST", "/payments/collect", { cruiseId, cabinNumber: 4, ...body });
+
+  const zero = await collect4({ method: "efectivo", cashConfirmed: true, amount: 0 });
+  check("Monto 0: Introduce una cantidad mayor que cero.", zero.status === 400 && zero.data.message === "Introduce una cantidad mayor que cero.", zero.data.message);
+  const over = await collect4({ method: "efectivo", cashConfirmed: true, amount: 25 });
+  check("Monto mayor que el saldo: rechazado con el saldo", over.status === 400 && /\$21\.00/.test(over.data.message), over.data.message);
+
+  const part1 = await collect4({ method: "efectivo", cashConfirmed: true, amount: 10, expectedDue: 21 });
+  check(
+    "Pago parcial $10 en efectivo: saldo $11, sin factura propia",
+    part1.status === 201 && part1.data.settled === false && part1.data.due === 11 && part1.data.payment.invoiceStatus === "parcial",
+    { status: part1.status, due: part1.data.due },
+  );
+  const after1 = (await api("dir", "GET", `/accounts/${cruiseId}/4`)).data.account;
+  check(
+    "Con saldo la cuenta sigue aprobada: pagado $10, por cobrar $11",
+    after1.status === "aprobada" && after1.paid === 10 && after1.due === 11 && after1.partialPaid === 10 && after1.readyToCollect &&
+      after1.history.some((h: any) => h.action === "pago_parcial"),
+    { status: after1.status, paid: after1.paid, due: after1.due },
+  );
+  const again = await collect4({ method: "efectivo", cashConfirmed: true, amount: 10, expectedDue: 21 });
+  check("Segundo clic con el saldo anterior: no registra otro pago", again.status === 409 && (await Payment.countDocuments({ cruise: cruiseId, cabinNumber: 4 })) === 1, again.data.message);
+  const [c1, c2] = await Promise.all([
+    collect4({ method: "tarjeta", amount: 5, expectedDue: 11 }),
+    collect4({ method: "tarjeta", amount: 5, expectedDue: 11 }),
+  ]);
+  check("Doble clic simultáneo en un pago parcial: uno solo", [c1.status, c2.status].sort().join() === "201,409", [c1.status, c2.status]);
+  const retryPartial = await api("dir", "POST", `/payments/${part1.data.payment._id}/retry-invoice`);
+  check("Un pago parcial no se factura solo", retryPartial.status === 400, retryPartial.data.message);
+
+  const last = await collect4({ method: "transferencia", reference: "TR-44", amount: 6, expectedDue: 6 });
+  check("Último pago $6 por transferencia: saldo $0", last.status === 201 && last.data.settled === true && last.data.due === 0, last.data);
+  const paid4 = (await api("dir", "GET", `/accounts/${cruiseId}/4`)).data.account;
+  check(
+    "Cuenta Pagada con 3 pagos conservados: $10 + $5 + $6 = $21",
+    paid4.status === "cobrada" && paid4.paid === 21 && paid4.due === 0 && paid4.consumed === 21 && paid4.payments.length === 3 &&
+      paid4.payments.map((p: any) => p.method).join() === "efectivo,tarjeta,transferencia" && paid4.paidOrders.length === 2,
+    { status: paid4.status, paid: paid4.paid, methods: paid4.payments.map((p: any) => p.method) },
+  );
+  const group = await Payment.find({ cruise: cruiseId, cabinNumber: 4 }).sort({ createdAt: 1 });
+  const liquidator = group[2]!;
+  check(
+    "Una factura por el total al liquidar: el último pago lleva $21 y los parciales van dentro",
+    liquidator.invoiceStatus === "pendiente" && liquidator.accountTotal === 21 &&
+      group.every((p) => p.settled && p.settledBy?.equals(liquidator._id)) &&
+      group.slice(0, 2).every((p) => p.invoiceStatus === "parcial"),
+    group.map((p) => [p.total, p.invoiceStatus, p.settled]),
+  );
+  const { invoiceCobros, invoiceAmount } = await import("../src/services/contifico.service");
+  const cobros = await invoiceCobros(liquidator as any);
+  check(
+    "Factura (sin llamar a Contífico): importe $21 y un cobro por pago identificable",
+    invoiceAmount(liquidator) === 21 &&
+      cobros[0]!.forma_cobro === "EF" && cobros[0]!.monto === 10 &&
+      // Sin procesador ni cuenta bancaria, tarjeta y transferencia quedan por cobrar en Contífico.
+      cobros.length === 1,
+    cobros,
+  );
+  const row4 = (await api("dir", "GET", `/accounts/${cruiseId}`)).data.cabins.find((r: any) => r.cabinNumber === 4);
+  check("Lista de cuentas: cabina 4 pagada $21, saldo $0", row4.status === "cobrada" && row4.paid === 21 && row4.due === 0, row4);
+  const pre4 = await proformaData(cruiseId, 4);
+  const pub4 = (await api("anon", "GET", `/public/account/${(await Cruise.findById(cruiseId))!.cabins.find((c) => c.number === 4)!.accountToken}`)).data;
+  check(
+    "Prefactura y QR listan los 3 pagos y saldo $0",
+    pre4.payments.length === 3 && pre4.paid === 21 && pre4.balance === 0 && pub4.account.payments.length === 3 && pub4.account.due === 0,
+    { pre: pre4.payments.length, pub: pub4.account.payments.length },
+  );
+
+  // ---- Resumen por correo al pagador (transporte de prueba)
+  const m = sent[0];
+  check(
+    "Al quedar Pagada se envía un solo resumen al pagador",
+    sent.length === 1 && m.to === "pax4@example.com" && m.subject === "Your onboard account · Treasure of Galápagos · Cabin 4",
+    sent.map((x) => x.to),
+  );
+  check(
+    "Resumen: saludo, productos, total, pagos, saldo $0.00 y nota",
+    /Dear John Smith/.test(m.html) && /Coca Cola/.test(m.html) && /\$21\.00/.test(m.html) && /Payments received/.test(m.html) &&
+      /Bank transfer/.test(m.html) && /Balance due/.test(m.html) && /\$0\.00/.test(m.html) &&
+      /not a tax invoice/.test(m.html) && /brand\/seal-pine\.png/.test(m.html),
+  );
+  check(
+    "Resumen: adjunta la prefactura en PDF",
+    m.attachments?.length === 1 && /\.pdf$/.test(m.attachments[0].filename) && m.attachments[0].content.subarray(0, 4).toString() === "%PDF",
+  );
+  const sentPay = await Payment.findById(liquidator._id);
+  check(
+    "Envío guardado en el pago que liquida",
+    sentPay!.summaryEmail.status === "enviado" && sentPay!.summaryEmail.to === "pax4@example.com" && Boolean(sentPay!.summaryEmail.sentAt),
+    sentPay!.summaryEmail,
+  );
+  const auto = await mail.sendAccountSummary(liquidator._id, null);
+  check("El envío automático no se repite para la misma liquidación", auto.status === "omitido" && sent.length === 1);
+  const resend = await api("dir", "POST", `/payments/${liquidator._id}/resend-summary`);
+  check("Reenviar resumen por correo (Dirección)", resend.status === 200 && resend.data.email.status === "enviado" && sent.length === 2, resend.data);
+  const barResend = await api("bar", "POST", `/payments/${liquidator._id}/resend-summary`);
+  check("El bar no reenvía el resumen", barResend.status === 403);
+  mail.setMailTransport(async () => {
+    throw new Error("Resend: servicio caído");
+  });
+  const failed = await api("duena", "POST", `/payments/${liquidator._id}/resend-summary`);
+  const failedAcc = (await api("dir", "GET", `/accounts/${cruiseId}/4`)).data.account;
+  check(
+    "Si el correo falla: queda 'Correo no enviado: causa' en la cuenta",
+    failed.status === 200 && failed.data.email.status === "error" &&
+      failedAcc.history.some((h: any) => h.action === "correo_no_enviado" && h.reason === "Correo no enviado: Resend: servicio caído") &&
+      failedAcc.payments[2].summaryEmail.status === "error",
+    failed.data.email,
+  );
+  mail.setMailTransport(null);
+  const unconfigured = await api("dir", "POST", `/payments/${liquidator._id}/resend-summary`);
+  check(
+    "Sin RESEND_API_KEY no se envía nada real",
+    unconfigured.data.email?.status === "error" && /no está configurado/.test(unconfigured.data.email.error),
+    unconfigured.data.email,
+  );
+
+  // ---- Reversos con pagos parciales
+  const revPartial = await api("duena", "POST", `/payments/${group[0]!._id}/reverse`, { reason: "Prueba" });
+  check("Un parcial de una cuenta pagada se reversa después del pago final", revPartial.status === 409, revPartial.data.message);
+  const revLast = await api("duena", "POST", `/payments/${liquidator._id}/reverse`, { reason: "Transferencia no llegó" });
+  const reopened = (await api("dir", "GET", `/accounts/${cruiseId}/4`)).data.account;
+  check(
+    "Reversar el pago final reabre la cuenta con saldo $6 y conserva los parciales",
+    revLast.status === 200 && reopened.status === "abierta" && reopened.due === 6 && reopened.partialPaid === 15 && reopened.paid === 15,
+    { status: reopened.status, due: reopened.due, partial: reopened.partialPaid },
+  );
+  const report4 = (await api("duena", "GET", `/reports/owner?cruiseId=${cruiseId}`)).data;
+  const pend4 = report4.details.pending.find((p: any) => p.cabin === 4);
+  check(
+    "Resumen del negocio: por cobrar de la cabina 4 descuenta los pagos parciales",
+    pend4?.amount === 6 && sum(report4.details.pending, "amount") === report4.pendingCollection,
+    { pend4, total: report4.pendingCollection },
+  );
 
   server.close();
   await mongoose.disconnect();
