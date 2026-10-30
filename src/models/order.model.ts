@@ -4,7 +4,7 @@ import mongoose, { Schema, Types } from "mongoose";
  * Pedido del bar (guía V3): se registra, luego se entrega total o
  * parcialmente. El stock se descuenta solo al entregar. Lo pendiente se
  * puede cancelar con motivo (no toca stock); lo entregado solo se anula
- * por solicitud a Dirección, y devolver stock lo decide Paula.
+ * por solicitud a Dirección, y devolver stock lo decide Gerencia.
  */
 /** Ingrediente aplicado en la venta: editar la receta mañana no cambia ventas pasadas. */
 export interface IAppliedIngredient {
@@ -66,7 +66,7 @@ export interface IOrderAnnulment {
 
 /**
  * retenida: consumo enviado cuando la salida ya estaba finalizada. Queda en
- * su salida original, sin cargo ni stock, hasta que la directora lo revise.
+ * su salida original, sin cargo ni stock, hasta que Dirección de crucero lo revise.
  */
 export const ORDER_STATUSES = ["pendiente", "entregada", "cancelada", "retenida"] as const;
 export type OrderStatus = (typeof ORDER_STATUSES)[number];
