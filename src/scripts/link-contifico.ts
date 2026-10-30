@@ -28,6 +28,7 @@ const CODES: Record<string, string> = {
   "Inca Cola": "IC",
   Sprite: "SP",
   // Servicios (crear en Contífico si no existen: DESC, y CAUTOR para cócteles de autor)
+  Descorche: "DESC",
   "Corkage Fee (descorche)": "DESC",
   // Cócteles
   Baileys: "BAY",
