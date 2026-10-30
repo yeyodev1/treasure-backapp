@@ -7,7 +7,7 @@ import { Cruise } from "../models/cruise.model";
 import { moveStock } from "../services/inventory.service";
 import { logEvent } from "../services/audit.service";
 import { badRequest, notFound } from "../errors/httpError";
-import { STOCK_LOCATIONS, StockLocation } from "../utils/units";
+import { isPositiveQty, QTY_POSITIVE_ERROR, STOCK_LOCATIONS, StockLocation } from "../utils/units";
 
 function parseLocation(value: unknown, fallback: StockLocation = "abordo"): StockLocation {
   if (value === undefined) return fallback;
@@ -59,7 +59,8 @@ export async function registerWaste(req: Request, res: Response, next: NextFunct
       key?: string;
     };
     const location = parseLocation(req.body.location);
-    if (!productId || !qty || qty <= 0) throw badRequest("Producto y cantidad son obligatorios");
+    if (!productId) throw badRequest("Elige el producto");
+    if (!isPositiveQty(qty)) throw badRequest(QTY_POSITIVE_ERROR);
     if (!reason?.trim()) throw badRequest("La merma necesita un motivo");
     // La misma clave (reintento sin señal) nunca registra dos mermas.
     if (key && (await StockMovement.exists({ type: "merma", transferId: key }))) {
@@ -96,7 +97,7 @@ export async function registerWaste(req: Request, res: Response, next: NextFunct
   }
 }
 
-/** Ajuste manual: lo autoriza la dueña; nunca deja el stock bajo cero. */
+/** Ajuste manual: solo Gerencia; nunca deja el stock bajo cero. */
 export async function adjustStock(req: Request, res: Response, next: NextFunction) {
   try {
     const { productId, qty, reason } = req.body as {
@@ -157,7 +158,7 @@ export async function transferToBoard(req: Request, res: Response, next: NextFun
     for (const item of items) {
       const product = map.get(item.productId);
       if (!product || product.kind !== "fisico") throw badRequest("Hay productos inválidos");
-      if (!(item.qty > 0)) throw badRequest("Las cantidades deben ser mayores a cero");
+      if (!isPositiveQty(item.qty)) throw badRequest(`${product.name}: ${QTY_POSITIVE_ERROR.toLowerCase()}`);
       deltas.set(item.productId, (deltas.get(item.productId) ?? 0) + item.qty);
     }
     const cruise = await activeCruiseId();
