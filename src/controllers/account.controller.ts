@@ -146,32 +146,48 @@ export async function submitForReview(req: Request, res: Response, next: NextFun
   }
 }
 
-/** Dirección aprueba la versión vigente; el cobro queda habilitado. */
+/**
+ * Dirección de crucero o Gerencia aprueban la versión vigente y el cobro
+ * queda habilitado. Pueden aprobar una cuenta en revisión o, sin pasar por
+ * "Enviar a revisión", una cuenta abierta (Modificar / Aprobar en la misma
+ * pantalla). La toma es atómica: dos toques no aprueban dos veces.
+ */
 export async function approveAccount(req: Request, res: Response, next: NextFunction) {
   try {
     const { cruiseId, cabinNumber } = params(req);
     const summary = await buildCabinAccount(cruiseId, cabinNumber);
+    if (!summary.orders.length) throw badRequest("La cabina no tiene consumos por aprobar");
     if (summary.pendingDeliveries > 0) throw badRequest("Hay bebidas sin entregar en esta cuenta");
     if (summary.pendingAnnulments > 0) {
       throw badRequest("Resuelve primero las solicitudes de anulación pendientes");
     }
 
-    const account = await ensureAccount(cruiseId, cabinNumber);
-    if (account.status !== "en_revision") {
-      throw conflict("Solo se aprueba una cuenta que está en revisión");
+    const current = await ensureAccount(cruiseId, cabinNumber);
+    if (current.status !== "en_revision" && current.status !== "abierta") {
+      throw conflict("La cuenta ya está aprobada o pagada");
     }
-
-    account.status = "aprobada";
-    account.approvedVersion = account.version;
-    account.approvedTotal = summary.total;
-    account.history.push({
-      action: "aprobada",
-      version: account.version,
-      reason: "",
-      by: new Types.ObjectId(req.auth!.sub),
-      at: new Date(),
-    });
-    await account.save();
+    // Versión leída junto con el total: si un cargo cambió entre medio, no se aprueba.
+    if (current.version !== summary.version) {
+      throw conflict("La cuenta cambió mientras la revisabas: vuelve a revisarla");
+    }
+    const direct = current.status === "abierta";
+    const account = await Account.findOneAndUpdate(
+      { _id: current._id, status: current.status, version: summary.version },
+      {
+        $set: { status: "aprobada", approvedVersion: summary.version, approvedTotal: summary.total },
+        $push: {
+          history: {
+            action: "aprobada",
+            version: summary.version,
+            reason: direct ? "Aprobada sin envío a revisión" : "",
+            by: new Types.ObjectId(req.auth!.sub),
+            at: new Date(),
+          },
+        },
+      },
+      { new: true },
+    );
+    if (!account) throw conflict("La cuenta cambió mientras la revisabas: vuelve a revisarla");
 
     await logEvent(req.auth, {
       kind: "cuenta",

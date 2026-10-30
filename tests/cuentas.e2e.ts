@@ -99,6 +99,9 @@ async function main() {
   await api("dir", "PUT", `/cruises/${cruiseId}/cabins/4/passengers`, {
     passengers: [{ name: "John Smith", isPayer: true, email: "pax4@example.com", idNumber: "P444", country: "USA" }],
   });
+  await api("dir", "PUT", `/cruises/${cruiseId}/cabins/5/passengers`, {
+    passengers: [{ name: "Lea Roy", isPayer: true, idNumber: "P555" }],
+  });
   await api("dir", "POST", `/cruises/${cruiseId}/start`);
 
   for (const [i, pid] of [coke, coke, ginTonic].entries()) {
@@ -420,6 +423,64 @@ async function main() {
     pend4?.amount === 6 && sum(report4.details.pending, "amount") === report4.pendingCollection,
     { pend4, total: report4.pendingCollection },
   );
+
+
+  // ---- Modificar / Aprobar en la misma cuenta: retiro con motivo, cortesía, aprobar y cobrar
+  for (const [i, pid] of [coke, coke, ginTonic].entries()) {
+    await api("bar", "POST", "/consumptions", { cruiseId, cabinNumber: 5, productId: pid, idempotencyKey: `c5-${i}` });
+  }
+  const barApprove = await api("bar", "POST", `/accounts/${cruiseId}/5/approve`);
+  check("El bar no aprueba", barApprove.status === 403);
+  let acc5 = (await api("dir", "GET", `/accounts/${cruiseId}/5`)).data.account;
+  check("Cabina 5 abierta con $27,50", acc5.status === "abierta" && acc5.due === 27.5, acc5.due);
+  const cokeOrders = acc5.orders.filter((o: any) => o.items[0].name === "Coca Cola");
+  const { StockMovement: SM } = await import("../src/models/stockMovement.model");
+  const movesBefore = await SM.countDocuments({});
+  const retire = await api("dir", "POST", `/consumptions/${cokeOrders[0].id}/undo`, { reason: "El pasajero dice que no la pidió" });
+  acc5 = (await api("dir", "GET", `/accounts/${cruiseId}/5`)).data.account;
+  const retireEvent = acc5.history.find((h: any) => h.action === "cargo_cambiado" && /Consumo retirado/.test(h.reason));
+  check(
+    "Retirar (no se sirvió): total $21 al instante y registro con quién, qué y motivo",
+    retire.status === 200 && acc5.due === 21 && retireEvent?.reason === "Consumo retirado (no se sirvió): 1× Coca Cola · El pasajero dice que no la pidió" &&
+      retireEvent.by === "Dirección" && Boolean(retireEvent.at),
+    { due: acc5.due, retireEvent },
+  );
+  check("Retirar lo no servido devuelve ingredientes (reverso de stock)", (await SM.countDocuments({})) > movesBefore);
+  const movesServed = await SM.countDocuments({});
+  const courtesy = await api("dir", "POST", `/consumptions/${cokeOrders[1].id}/bonify`, { reason: "Retirado por reclamo (se sirvió): Compensación al pasajero" });
+  acc5 = (await api("dir", "GET", `/accounts/${cruiseId}/5`)).data.account;
+  check(
+    "Retirar lo servido = cortesía: total $14,50, stock sigue descontado, queda en historial",
+    courtesy.status === 200 && acc5.due === 14.5 && acc5.courtesyTotal === 6.5 && (await SM.countDocuments({})) === movesServed &&
+      acc5.history.some((h: any) => h.reason === "Cortesía: 1× Coca Cola · Retirado por reclamo (se sirvió): Compensación al pasajero"),
+    { due: acc5.due, courtesy: acc5.courtesyTotal },
+  );
+  const approveDirect = await api("dir", "POST", `/accounts/${cruiseId}/5/approve`);
+  const approvedEvent = approveDirect.data.account?.history.at(-1);
+  check(
+    "Aprobar desde abierta en un toque: lista para cobrar y 'Aprobada' con quién",
+    approveDirect.status === 200 && approveDirect.data.account.status === "aprobada" && approveDirect.data.account.readyToCollect &&
+      approvedEvent.action === "aprobada" && approvedEvent.by === "Dirección",
+    approveDirect.data.message ?? approvedEvent,
+  );
+  const twice = await api("dir", "POST", `/accounts/${cruiseId}/5/approve`);
+  check("Aprobar dos veces: la segunda se rechaza", twice.status === 409);
+  const barCollect = await api("bar", "POST", "/payments/collect", { cruiseId, cabinNumber: 5, method: "efectivo", cashConfirmed: true });
+  check("El bar no cobra", barCollect.status === 403);
+  await api("bar", "POST", "/consumptions", { cruiseId, cabinNumber: 5, productId: coke, idempotencyKey: "c5-late" });
+  acc5 = (await api("dir", "GET", `/accounts/${cruiseId}/5`)).data.account;
+  check(
+    "Un cargo nuevo tras aprobar anula la aprobación",
+    acc5.status === "abierta" && !acc5.readyToCollect && acc5.due === 21 &&
+      acc5.history.some((h: any) => h.action === "invalidada" && /^Aprobación anulada: Consumo/.test(h.reason)),
+    { status: acc5.status, due: acc5.due },
+  );
+  const stale = await api("dir", "POST", "/payments/collect", { cruiseId, cabinNumber: 5, method: "efectivo", cashConfirmed: true });
+  check("Sin nueva aprobación no se cobra", stale.status === 409);
+  await api("dir", "POST", `/accounts/${cruiseId}/5/approve`);
+  const pay5 = await api("dir", "POST", "/payments/collect", { cruiseId, cabinNumber: 5, method: "efectivo", cashConfirmed: true, expectedDue: 21 });
+  acc5 = (await api("dir", "GET", `/accounts/${cruiseId}/5`)).data.account;
+  check("Aprobar → Cobrar en el mismo flujo: Pagada", pay5.status === 201 && acc5.status === "cobrada" && acc5.paid === 21 && acc5.due === 0, pay5.data.message);
 
   server.close();
   await mongoose.disconnect();

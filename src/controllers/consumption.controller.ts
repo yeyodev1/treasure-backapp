@@ -274,7 +274,13 @@ export async function undoConsumption(req: Request, res: Response, next: NextFun
     }
 
     await reverseOrder(order, req.auth!.sub, reason);
-    await chargesChanged(order.cruise, order.cabinNumber, req.auth!.sub, `Deshacer: ${reason}`);
+    const what = `${order.items[0]?.qty ?? 0}× ${order.items[0]?.name ?? ""}`;
+    await chargesChanged(
+      order.cruise,
+      order.cabinNumber,
+      req.auth!.sub,
+      isLead(req.auth!.role) ? `Consumo retirado (no se sirvió): ${what} · ${reason}` : `Deshacer: ${what} · ${reason}`,
+    );
     await logEvent(req.auth, {
       kind: "consumo",
       title: `Registro por error deshecho · cabina ${order.cabinNumber}`,
@@ -311,7 +317,7 @@ export async function bonifyConsumption(req: Request, res: Response, next: NextF
     order.cancellations.push({ items: [], reason: `Cortesía: ${reason}`, by: req.auth!.sub as never, at: new Date() });
     await order.save();
 
-    await chargesChanged(order.cruise, order.cabinNumber, req.auth!.sub, `Cortesía: ${reason}`);
+    await chargesChanged(order.cruise, order.cabinNumber, req.auth!.sub, `Cortesía: ${item.qty}× ${item.name} · ${reason}`);
     await logEvent(req.auth, {
       kind: "consumo",
       title: `Cortesía · cabina ${order.cabinNumber}`,
