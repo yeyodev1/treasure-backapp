@@ -33,10 +33,10 @@ async function main() {
   await Promise.all(Object.values(mongoose.models).map((m) => m.init()));
 
   const hash = await bcrypt.hash("x", 4);
-  // El usuario de Administración se llama como la dueña real: el nombre no da permisos.
+  // El usuario de Administración se llama como el rol de Gerencia: el nombre no da permisos.
   const people: Record<string, [string, string]> = {
     duena: ["duena", "Gerencia"],
-    adm: ["admin", "Paula Terán"],
+    adm: ["admin", "Gerencia (Administración)"],
     dir: ["direccion", "Dirección"],
     bar: ["bartender", "Bar"],
     bod: ["bodega", "Bodega"],

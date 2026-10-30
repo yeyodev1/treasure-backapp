@@ -7,7 +7,7 @@
  *   ENSAYO_PORT=27318 npx ts-node-dev --transpile-only smoke/ensayo.ts
  *   MONGODB_URI=<uri impresa> PORT=8300 npm run dev
  *
- * Usuarios (clave treasure2026): admin@ (dueña), administradora@, direccion@,
+ * Usuarios (clave treasure2026): admin@ (Gerencia), administradora@, direccion@,
  * bar@, bodega@ — todos @treasure.ec.
  */
 import { MongoMemoryReplSet } from "mongodb-memory-server";
@@ -31,10 +31,11 @@ async function main() {
 
   const passwordHash = await bcrypt.hash("treasure2026", 10);
   const users = [
-    ["Paula Terán", "admin@treasure.ec", "duena"],
-    ["Administradora", "administradora@treasure.ec", "admin"],
-    ["Kerly (Directora)", "direccion@treasure.ec", "direccion"],
-    ["Sofía (Bar)", "bar@treasure.ec", "bartender"],
+    // Nombres neutros, sin personas ni género (checklist 29-oct, P16).
+    ["Gerencia", "admin@treasure.ec", "duena"],
+    ["Administración", "administradora@treasure.ec", "admin"],
+    ["Dirección de crucero", "direccion@treasure.ec", "direccion"],
+    ["Bar", "bar@treasure.ec", "bartender"],
     ["Bodega", "bodega@treasure.ec", "bodega"],
   ];
   for (const [name, email, role] of users) {

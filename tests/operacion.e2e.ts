@@ -37,11 +37,11 @@ async function main() {
   const hash = await bcrypt.hash("x", 4);
   const mk = (email: string, role: string, name: string) =>
     User.create({ email, role, name, passwordHash: hash, active: true });
-  const owner = await mk("duena@t", "duena", "Paula");
-  await mk("dir@t", "direccion", "Directora");
+  const owner = await mk("duena@t", "duena", "Gerencia");
+  await mk("dir@t", "direccion", "Dirección de crucero");
   await mk("bar@t", "bartender", "Bartender");
   await mk("bar2@t", "bartender", "Bartender 2");
-  await mk("adm@t", "admin", "Administradora");
+  await mk("adm@t", "admin", "Administración");
   await syncCatalogV3(owner._id);
 
   const server = createApp().app.listen(0);
@@ -208,12 +208,12 @@ async function main() {
   const barPay = await api("bar", "POST", "/payments/collect", { cruiseId, cabinNumber: 3, method: "efectivo", cashConfirmed: true, billing: { idNumber: "0912345678" } });
   check("El bar no cobra", barPay.status === 403);
   const pay = await api("dir", "POST", "/payments/collect", { cruiseId, cabinNumber: 3, method: "efectivo", cashConfirmed: true, billing: { idNumber: "0912345678" } });
-  check("La directora cobra (sin depender de cajera)", pay.status === 201, pay.data.message);
+  check("Dirección de crucero cobra (sin depender de caja)", pay.status === 201, pay.data.message);
   const owner1 = await api("duena", "GET", `/reports/owner?cruiseId=${cruiseId}`);
   check("Panel: consumo neto, cobrado y por cobrar", owner1.data.netConsumption === 27.5 && owner1.data.collected === 6.5 && owner1.data.pendingCollection === 21, owner1.data);
   check("Panel: costo consumido y margen con costos completos", owner1.data.costsComplete === true && owner1.data.margin !== null, owner1.data);
   const ownerForbidden = await api("dir", "GET", "/reports/owner");
-  check("El panel de la dueña no lo ve la directora", ownerForbidden.status === 403);
+  check("El panel de Gerencia no lo ve Dirección de crucero", ownerForbidden.status === 403);
 
   // ---- Cierre con deuda, envío tardío retenido y salida siguiente sin mezcla
   await api("bar", "POST", "/devices/heartbeat", { deviceId: "tablet-1", label: "Tablet bar", pending: 1, cruiseId });

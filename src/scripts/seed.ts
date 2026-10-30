@@ -17,10 +17,11 @@ async function seed() {
 
   const password = await bcrypt.hash("treasure2026", 10);
   const users = [
-    { name: "Paula Terán", email: "admin@treasure.ec", role: "duena", isCashier: false },
-    { name: "Administradora", email: "administradora@treasure.ec", role: "admin", isCashier: false },
-    { name: "Kerly (Dirección)", email: "direccion@treasure.ec", role: "direccion", isCashier: false },
-    { name: "Sofía (Bar)", email: "bar@treasure.ec", role: "bartender", isCashier: false },
+    // Nombres neutros, sin personas ni género (checklist 29-oct, P16).
+    { name: "Gerencia", email: "admin@treasure.ec", role: "duena", isCashier: false },
+    { name: "Administración", email: "administradora@treasure.ec", role: "admin", isCashier: false },
+    { name: "Dirección de crucero", email: "direccion@treasure.ec", role: "direccion", isCashier: false },
+    { name: "Bar", email: "bar@treasure.ec", role: "bartender", isCashier: false },
     { name: "Bodega", email: "bodega@treasure.ec", role: "bodega", isCashier: false },
   ] as const;
 
