@@ -87,6 +87,28 @@ export function ismEquipment(): IsmEquipment[] {
   return equipmentCache!;
 }
 
+export interface IsmVessel {
+  id: string;
+  name: string;
+  default?: boolean;
+}
+
+let vesselsCache: IsmVessel[] | null = null;
+
+/** Embarcaciones (datos maestros en assets/ism/master.json, no en el código). */
+export function ismVessels(): IsmVessel[] {
+  if (!vesselsCache) {
+    const file = path.join(ASSETS, "master.json");
+    vesselsCache = fs.existsSync(file) ? (JSON.parse(fs.readFileSync(file, "utf8")).vessels ?? []) : [];
+  }
+  return vesselsCache!;
+}
+
+export function defaultVessel(): IsmVessel | null {
+  const list = ismVessels();
+  return list.find((v) => v.default) ?? list[0] ?? null;
+}
+
 export function ismDefinition(code: string): IsmFormDef | null {
   if (!/^R-\d{2}(_[A-Za-z]+)?$/.test(code)) return null;
   if (!defCache.has(code)) {
