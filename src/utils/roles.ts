@@ -1,10 +1,11 @@
 /**
  * Roles del sistema.
- * Bar (reunión 21-oct-2026 y guía auditada 27-oct-2026):
- * - duena:     Paula (dueña): toda la operación y finanzas; autoriza precios,
+ * Bar (reunión 21-oct-2026 y guía auditada 27-oct-2026). Los códigos internos
+ * se conservan; lo visible usa el área sin género (checklist 29-oct, 19 y 20):
+ * - duena:     Gerencia: toda la operación y finanzas; autoriza precios,
  *              ajustes de inventario y reversos. Puede todo lo de los demás roles.
- * - admin:     administradora: conteo físico, diferencias, compras y recepciones.
- * - direccion: directora de crucero: pasajeros, cabinas, inicio/fin,
+ * - admin:     Administración: conteo físico, diferencias, compras y recepciones.
+ * - direccion: Dirección de crucero: pasajeros, cabinas, inicio/fin,
  *              aprobación de cuentas y abastecimiento, cobros.
  * - bartender: registra consumos y requerimientos desde la tablet.
  * - bodega:    inventario en tierra (compras, recepciones, cargas).
@@ -26,8 +27,8 @@ export const USER_ROLES = [
 export type UserRole = (typeof USER_ROLES)[number];
 
 export const ROLE_LABELS: Record<UserRole, string> = {
-  duena: "Dueña",
-  admin: "Administradora",
+  duena: "Gerencia",
+  admin: "Administración",
   direccion: "Dirección de crucero",
   bartender: "Bartender",
   bodega: "Bodega",
@@ -61,15 +62,15 @@ export const POSITION_LABELS: Record<CrewPosition, string> = {
   AuxCOC: "Auxiliar de Cocina",
   BAR: "Bar",
   CABIN: "Cabinas",
-  DIR: "Director de Crucero",
+  DIR: "Dirección de crucero",
 };
 
-/** La dueña puede todo; la administradora conserva lo operativo. */
+/** Gerencia puede todo; Administración conserva lo operativo. */
 export function isOwner(role: string | undefined): boolean {
   return role === "duena";
 }
 
-/** Dueña o administradora (antes "admin" lo era todo). */
+/** Gerencia o Administración (antes "admin" lo era todo). */
 export function isManager(role: string | undefined): boolean {
   return role === "duena" || role === "admin";
 }
