@@ -5,7 +5,8 @@ import axios from "axios";
 import { AnnotationFlags, PDFDocument, PDFPage, PDFSignature, StandardFonts, rgb } from "pdf-lib";
 import { IIsmRecord } from "../models/ismRecord.model";
 import { SignatureStage } from "../models/ismRecord.model";
-import { hashContent, ismSchema, signatureIsValid } from "./ismSchema.service";
+import { IsmSchema, hashContent, ismSchema, schemaItems, signatureIsValid } from "./ismSchema.service";
+import { POSITION_LABELS } from "../utils/roles";
 import { appendGuidedAnnex } from "./ismAnnex.service";
 
 /**
@@ -111,9 +112,21 @@ export function galapagosParts(date: Date = new Date()) {
   };
 }
 
-/** Mediodía del día indicado ('YYYY-MM-DD') en Galápagos, para no cambiar de día por la zona. */
-export function recordDateFromKey(key: string): Date {
-  return new Date(`${key}T12:00:00-06:00`);
+/**
+ * Fecha del registro en Galápagos. Con hora ('HH:MM'), la hora real de la
+ * actividad (informe 29-oct: antes todos quedaban a las 18:00 UTC); sin
+ * hora, mediodía, para no cambiar de día por la zona.
+ */
+export function recordDateFromKey(key: string, time?: string | null): Date {
+  const hhmm = time && /^([01]\d|2[0-3]):[0-5]\d$/.test(time) ? time : "12:00";
+  return new Date(`${key}T${hhmm}:00-06:00`);
+}
+
+/** 'YYYY-MM-DD' real del calendario (rechaza 2026-02-31 o textos). */
+export function isDateKey(value: unknown): value is string {
+  if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+  const d = new Date(`${value}T12:00:00Z`);
+  return !Number.isNaN(d.getTime()) && d.toISOString().slice(0, 10) === value;
 }
 
 export function monthRangeGalapagos(date: Date = new Date()) {
@@ -142,6 +155,35 @@ export function buildFileName(
   return `${base}${clean ? `_${clean}` : ""}.pdf`;
 }
 
+/**
+ * Nombre del PDF de un registro guiado: R-14_AAAAMMDD_HHMM.pdf con la fecha y
+ * hora de la actividad (no las de creación del borrador).
+ */
+export function activityFileName(code: string, dateKey: string, time: string): string {
+  const hhmm = /^([01]\d|2[0-3]):[0-5]\d$/.test(time) ? time.replace(":", "") : "0000";
+  return `${code}_${dateKey.replace(/-/g, "")}_${hhmm}.pdf`;
+}
+
+/** Si otro registro ya tiene el nombre, se agrega _2, _3… */
+export async function uniqueFileName(
+  base: string,
+  taken: (name: string) => Promise<boolean>,
+): Promise<string> {
+  if (!(await taken(base))) return base;
+  const stem = base.replace(/\.pdf$/, "");
+  for (let n = 2; n < 100; n++) {
+    const name = `${stem}_${n}.pdf`;
+    if (!(await taken(name))) return name;
+  }
+  return `${stem}_${Date.now()}.pdf`;
+}
+
+/** Fecha y hora para el PDF: "29/10/2026 21:28" (hora Galápagos). */
+export function pdfStamp(date: Date): string {
+  const t = galapagosParts(date);
+  return `${pad(t.d)}/${pad(t.m)}/${t.y} ${pad(t.hh)}:${pad(t.mm)}`;
+}
+
 /** Huella del archivo: contenido (datos, respuestas, contexto) + firmas existentes. */
 export function hashRecord(
   record: Pick<IIsmRecord, "code" | "data" | "signatures" | "recordDate" | "answers" | "context">,
@@ -159,6 +201,29 @@ export function hashRecord(
 }
 
 // ---- PDF oficial ----
+
+/**
+ * Texto de la casilla OBS: con una novedad, su resumen; con varias, cuántas
+ * y "ver página anexa". Sin novedades pero con puntos que no aplican, se
+ * remite al anexo igual.
+ */
+export function obsText(schema: IsmSchema, record: Pick<IIsmRecord, "answers">): string[] {
+  const novedades = schemaItems(schema).filter(({ item }) => {
+    const a = record.answers?.[item.id];
+    return a?.value === "no" || Boolean(a?.problem);
+  });
+  const noAplica = schemaItems(schema).filter(({ item }) => record.answers?.[item.id]?.value === "na").length;
+  if (novedades.length === 1) {
+    const { section, item } = novedades[0]!;
+    const a = record.answers[item.id]!;
+    const summary = `${section.title} ${item.n}: ${a.descripcion || item.official}${a.accion ? ` (acción: ${a.accion})` : ""}`;
+    // Si el resumen no cabe en la casilla, queda solo la remisión al anexo.
+    return [`1 novedad: ${summary.replace(/\s+/g, " ")}. Ver página anexa`, "1 novedad: ver página anexa"];
+  }
+  if (novedades.length > 1) return [`${novedades.length} novedades: ver página anexa`];
+  if (noAplica) return [`Sin novedades. ${noAplica === 1 ? "1 punto no aplica" : `${noAplica} puntos no aplican`}: ver página anexa`];
+  return [];
+}
 
 /** Texto compatible con la fuente estándar del PDF (WinAnsi). */
 function winAnsi(text: string): string {
@@ -266,11 +331,12 @@ export async function renderRecordPdf(record: IIsmRecord): Promise<Uint8Array> {
     const w = embedded.width * scale;
     const h = embedded.height * scale;
     page.drawImage(embedded, { x: r.x + (r.w - w) / 2, y: r.y + 8 + (r.h - 10 - h) / 2, width: w, height: h });
-    const t = galapagosParts(new Date(sig.signedAt));
-    const stamp = winAnsi(
-      `${sig.signerName} · ${pad(t.d)}/${pad(t.m)}/${t.y} ${pad(t.hh)}:${pad(t.mm)} (hora Galápagos)`,
-    );
-    page.drawText(stamp, { x: r.x + 2, y: r.y + 1.5, size: 5, font, color: rgb(0.25, 0.3, 0.28) });
+    // "[Nombre] · Timonel 1 · 29/10/2026 21:31" (nombre, cargo y hora del momento de firmar).
+    const position = sig.position ? POSITION_LABELS[sig.position as keyof typeof POSITION_LABELS] ?? sig.position : "";
+    const stamp = winAnsi([sig.signerName, position, pdfStamp(new Date(sig.signedAt))].filter(Boolean).join(" · "));
+    let size = 5.5;
+    while (size > 4 && font.widthOfTextAtSize(stamp, size) > r.w - 4) size -= 0.25;
+    page.drawText(stamp, { x: r.x + 2, y: r.y + 1.5, size, font, color: rgb(0.25, 0.3, 0.28) });
   }
 
   // Fotos de soporte (anexo del R-18).
@@ -288,18 +354,34 @@ export async function renderRecordPdf(record: IIsmRecord): Promise<Uint8Array> {
     page.drawImage(embedded, { x: r.x + (r.w - w) / 2, y: r.y + (r.h - h) / 2, width: w, height: h });
   }
 
-  // Registros guiados: página anexa con novedades, "no aplica" y responsable.
+  // Registros guiados: casilla OBS con el resumen y página anexa con novedades,
+  // "no aplica" y quien hizo el chequeo.
   const schema = record.schemaVersion ? ismSchema(record.code, record.schemaVersion) : null;
+  if (schema?.obs && pages[schema.obs.page]) {
+    const page = pages[schema.obs.page]!;
+    const { width, height } = page.getSize();
+    const box = {
+      x: schema.obs.x * width,
+      y: height - (schema.obs.y + schema.obs.h) * height,
+      w: schema.obs.w * width,
+      h: schema.obs.h * height,
+    };
+    const options = obsText(schema, record).map(winAnsi);
+    for (const [i, text] of options.entries()) {
+      let size = 8;
+      while (size > 6 && font.widthOfTextAtSize(text, size) > box.w) size -= 0.25;
+      if (font.widthOfTextAtSize(text, size) > box.w && i < options.length - 1) continue;
+      page.drawText(text, { x: box.x, y: box.y + (box.h - size) / 2 + 1, size, font, color: rgb(0.06, 0.08, 0.1) });
+      break;
+    }
+  }
   if (schema) {
     await appendGuidedAnnex(pdf, template, schema, record, {
       font,
       bold,
       safe: winAnsi,
       loadImage: imageBytes,
-      stamp: (date) => {
-        const t = galapagosParts(date);
-        return `${pad(t.d)}/${pad(t.m)}/${t.y} ${pad(t.hh)}:${pad(t.mm)} (hora Galápagos)`;
-      },
+      stamp: pdfStamp,
     });
   }
 
