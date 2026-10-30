@@ -16,6 +16,7 @@ import { round2 } from "../utils/units";
 import { logEvent } from "../services/audit.service";
 import { badRequest, conflict, notFound } from "../errors/httpError";
 import { addDaysKey, ecuadorDateTime } from "../utils/dates";
+import { EMAIL_ERROR, isValidOptionalEmail } from "../utils/email";
 
 export async function listCruises(req: Request, res: Response, next: NextFunction) {
   try {
@@ -43,7 +44,7 @@ export async function activeCruise(_req: Request, res: Response, next: NextFunct
 export async function getCruise(req: Request, res: Response, next: NextFunction) {
   try {
     const cruise = await Cruise.findById(req.params.id);
-    if (!cruise) throw notFound("Salida no encontrada");
+    if (!cruise) throw notFound("Crucero no encontrado");
     res.json({ cruise });
   } catch (err) {
     next(err);
@@ -149,7 +150,7 @@ export async function generateCycle(req: Request, res: Response, next: NextFunct
     if (created.length) {
       await logEvent(req.auth, {
         kind: "salida",
-        title: `${created.length} salida(s) generadas`,
+        title: `${created.length} crucero(s) generados`,
         detail: created.join(", "),
       });
     }
@@ -177,7 +178,7 @@ export async function createCruise(req: Request, res: Response, next: NextFuncti
       cabins: Array.from({ length: cabinCount ?? 9 }, (_, i) => ({ number: i + 1 })),
       createdBy: req.auth!.sub,
     });
-    await logEvent(req.auth, { kind: "salida", title: `Salida creada · ${name}` });
+    await logEvent(req.auth, { kind: "salida", title: `Crucero creado · ${name}` });
     res.status(201).json({ cruise });
   } catch (err) {
     next(err);
@@ -192,9 +193,9 @@ export async function updateCruise(req: Request, res: Response, next: NextFuncti
       notes?: string;
     };
     const cruise = await Cruise.findById(req.params.id);
-    if (!cruise) throw notFound("Salida no encontrada");
+    if (!cruise) throw notFound("Crucero no encontrado");
     if (status !== undefined && status !== cruise.status) {
-      throw badRequest("Usa Iniciar crucero o Finalizar crucero para cambiar el estado");
+      throw badRequest("Usa Iniciar crucero o Finalizar operación del crucero para cambiar el estado");
     }
 
     if (name !== undefined) cruise.name = name;
@@ -231,7 +232,7 @@ async function startReview(cruise: InstanceType<typeof Cruise>) {
   }
 
   const other = await Cruise.findOne({ status: "abordo", _id: { $ne: cruise._id } }).select("code name");
-  if (other) blockers.push(`La salida ${other.code || other.name} sigue en curso: finalízala primero`);
+  if (other) blockers.push(`El crucero ${other.code || other.name} sigue en curso: finaliza su operación primero`);
 
   // Avisos de stock: no bloquean el crucero, el bar ve "no disponible" por producto.
   const availability = await onboardAvailability();
@@ -265,7 +266,7 @@ async function startReview(cruise: InstanceType<typeof Cruise>) {
 export async function startCheck(req: Request, res: Response, next: NextFunction) {
   try {
     const cruise = await Cruise.findById(req.params.id);
-    if (!cruise) throw notFound("Salida no encontrada");
+    if (!cruise) throw notFound("Crucero no encontrado");
     res.json({ cruise, ...(await startReview(cruise)) });
   } catch (err) {
     next(err);
@@ -279,12 +280,12 @@ export async function startCheck(req: Request, res: Response, next: NextFunction
 export async function startCruise(req: Request, res: Response, next: NextFunction) {
   try {
     const cruise = await Cruise.findById(req.params.id);
-    if (!cruise) throw notFound("Salida no encontrada");
+    if (!cruise) throw notFound("Crucero no encontrado");
     if (cruise.status === "abordo") {
       res.json({ cruise, duplicated: true });
       return;
     }
-    if (cruise.status !== "planificado") throw conflict("Una salida finalizada no se reinicia");
+    if (cruise.status !== "planificado") throw conflict("Un crucero finalizado no se reinicia");
     const review = await startReview(cruise);
     if (review.blockers.length) throw badRequest(review.blockers.join(" · "));
 
@@ -296,7 +297,7 @@ export async function startCruise(req: Request, res: Response, next: NextFunctio
         { new: true },
       );
     } catch (err) {
-      if ((err as { code?: number }).code === 11000) throw conflict("Ya hay otra salida en curso");
+      if ((err as { code?: number }).code === 11000) throw conflict("Ya hay otro crucero en curso");
       throw err;
     }
     if (!started) {
@@ -352,7 +353,7 @@ async function finishReview(cruise: InstanceType<typeof Cruise>) {
   const now = Date.now();
   const deviceRows = devices.map((d) => ({
     deviceId: d.deviceId,
-    label: d.label || d.userName || "Tableta",
+    label: (d.label || "").replace(/^Tablet bar/, "Tableta del bar") || d.userName || "Tableta del bar",
     userName: d.userName,
     pending: d.pending,
     lastSyncAt: d.lastSyncAt,
@@ -391,7 +392,7 @@ async function finishReview(cruise: InstanceType<typeof Cruise>) {
 export async function finishCheck(req: Request, res: Response, next: NextFunction) {
   try {
     const cruise = await Cruise.findById(req.params.id);
-    if (!cruise) throw notFound("Salida no encontrada");
+    if (!cruise) throw notFound("Crucero no encontrado");
     res.json({ cruise, ...(await finishReview(cruise)) });
   } catch (err) {
     next(err);
@@ -408,12 +409,12 @@ export async function finishCruise(req: Request, res: Response, next: NextFuncti
   try {
     const reason = (req.body?.reason as string | undefined)?.trim() ?? "";
     const cruise = await Cruise.findById(req.params.id);
-    if (!cruise) throw notFound("Salida no encontrada");
+    if (!cruise) throw notFound("Crucero no encontrado");
     if (cruise.status === "cerrado") {
       res.json({ cruise, duplicated: true });
       return;
     }
-    if (cruise.status !== "abordo") throw conflict("Solo se finaliza una salida en curso");
+    if (cruise.status !== "abordo") throw conflict("Solo se finaliza un crucero en curso");
     const review = await finishReview(cruise);
     if (review.issues.length && !reason) {
       throw badRequest(`Cierre excepcional: indica el motivo (${review.issues.join(" · ")})`);
@@ -438,7 +439,7 @@ export async function finishCruise(req: Request, res: Response, next: NextFuncti
 
     await logEvent(req.auth, {
       kind: "salida",
-      title: `Crucero finalizado · ${closed.code || closed.name}`,
+      title: `Operación del crucero finalizada · ${closed.code || closed.name}`,
       detail: `Consumos ${review.totals.consumed} · cobrado ${review.totals.paid} · por cobrar ${review.totals.due}${
         reason ? ` · cierre excepcional: ${reason}` : ""
       }`,
@@ -458,10 +459,14 @@ export async function updatePassengers(req: Request, res: Response, next: NextFu
     if (!Array.isArray(passengers)) throw badRequest("Lista de pasajeros inválida");
 
     const cruise = await Cruise.findById(req.params.id);
-    if (!cruise) throw notFound("Salida no encontrada");
-    if (cruise.status === "cerrado") throw conflict("La salida está cerrada");
+    if (!cruise) throw notFound("Crucero no encontrado");
+    if (cruise.status === "cerrado") throw conflict("El crucero está finalizado: los pasajeros ya no se editan");
     const cabin = cruise.cabins.find((c) => c.number === cabinNumber);
     if (!cabin) throw notFound("Cabina no encontrada");
+
+    // Correo vacío o válido; si no, no se guarda nada y se dice cuál revisar.
+    const badEmail = passengers.find((p) => p.name?.trim() && !isValidOptionalEmail(p.email));
+    if (badEmail) throw badRequest(`${badEmail.name!.trim()}: ${EMAIL_ERROR}`);
 
     const clean = passengers
       .filter((p) => p.name?.trim())
@@ -470,7 +475,7 @@ export async function updatePassengers(req: Request, res: Response, next: NextFu
         country: p.country?.trim() ?? "",
         nationality: p.nationality?.trim() ?? "",
         idNumber: p.idNumber?.trim() ?? "",
-        email: p.email?.trim() ?? "",
+        email: typeof p.email === "string" ? p.email.trim() : "",
         phone: p.phone?.trim() ?? "",
         isPayer: Boolean(p.isPayer),
       }));
