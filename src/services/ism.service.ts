@@ -354,7 +354,12 @@ export async function renderRecordPdf(record: IIsmRecord): Promise<Uint8Array> {
     const h = embedded.height * scale;
     page.drawImage(embedded, { x: r.x + (r.w - w) / 2, y: r.y + 8 + (r.h - 10 - h) / 2, width: w, height: h });
     // "[Nombre] · Timonel 1 · 29/10/2026 21:31" (nombre, cargo y hora del momento de firmar).
-    const position = sig.position ? POSITION_LABELS[sig.position as keyof typeof POSITION_LABELS] ?? sig.position : "";
+    // Cargo del momento; Capitán y Persona Designada sin cargo de a bordo llevan el de su casilla.
+    const position = sig.position
+      ? POSITION_LABELS[sig.position as keyof typeof POSITION_LABELS] ?? sig.position
+      : sig.stage !== "tripulacion"
+        ? sig.label
+        : "";
     const stamp = winAnsi([sig.signerName, position, pdfStamp(new Date(sig.signedAt))].filter(Boolean).join(" · "));
     let size = 5.5;
     while (size > 4 && font.widthOfTextAtSize(stamp, size) > r.w - 4) size -= 0.25;
@@ -416,7 +421,7 @@ export async function renderRecordPdf(record: IIsmRecord): Promise<Uint8Array> {
   } else {
     for (const page of pdf.getPages()) {
       const { width, height } = page.getSize();
-      page.drawText("BORRADOR · REGISTRO AUN NO ARCHIVADO", {
+      page.drawText("BORRADOR · REGISTRO AÚN NO ARCHIVADO", {
         x: width / 2 - 120,
         y: height - 14,
         size: 9,

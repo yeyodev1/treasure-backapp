@@ -160,6 +160,8 @@ async function main() {
     const fs = await import("fs");
     fs.writeFileSync(`${process.env.SAVE_PDF}/borrador.pdf`, Buffer.from(await pdf.clone().arrayBuffer()));
   }
+  const draftText = await pdfPages(await pdf.clone().arrayBuffer());
+  if (draftText) check("Marca del borrador con tilde: «REGISTRO AÚN NO ARCHIVADO»", draftText[0]!.includes("REGISTRO AÚN NO ARCHIVADO"));
   check("El PDF se genera", pdf.status === 200 && (pdf.headers.get("content-type") ?? "").includes("pdf"), pdf.status);
   check(
     "El PDF se descarga con el nombre del registro",
@@ -246,6 +248,11 @@ async function main() {
   check("La clave temporal es de un solo uso", reuse.status === 403, reuse.status);
   const capNotice = await api("cap", "GET", "/ism/notices");
   check("Aviso al Capitán cuando le llega un R-14", capNotice.data.notices?.some((n: any) => n.kind === "por_firmar_capitan" && n.record === r1), capNotice.data.unread);
+  check(
+    "El aviso al Capitán trae la fecha como en pantalla (29 oct 2026 · 06:10)",
+    capNotice.data.notices?.some((n: any) => n.record === r1 && n.body.includes("29 oct 2026 · 06:10")),
+    capNotice.data.notices?.find((n: any) => n.record === r1)?.body,
+  );
 
   // Bloqueo tras 5 intentos fallidos
   const r2 = await fullR14("r14-flow-2", pedro.id, "06:30");
@@ -384,6 +391,7 @@ async function main() {
   const archText = await pdfPages(archBytes);
   if (archText) {
     const annex = archText.slice(1).join("\n");
+    check("La casilla de la Persona Designada lleva el cargo", /Persona Designada · Persona Designada · \d\d\/\d\d\/\d{4}/.test(archText[0]!.replace(/\s+/g, " ")), archText[0]!.match(/.*Persona Designada ·.*/)?.[0]);
     check("El anexo dice que la clave se restableció antes de firmar", /clave restablecida el \d\d\/\d\d\/\d{4} \d\d:\d\d por Persona Designada/.test(annex), annex.match(/.*clave restablecida.*/)?.[0]);
   }
 

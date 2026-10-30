@@ -47,7 +47,7 @@ import { notifyRole, notifyUsers } from "../services/ismNotify.service";
 import { badRequest, conflict, forbidden, notFound } from "../errors/httpError";
 import { CREW_POSITIONS, POSITION_LABELS, isManager } from "../utils/roles";
 
-/** Quién puede ver todos los registros (la tripulación ve los suyos). La dueña ve todo. */
+/** Quién puede ver todos los registros (la tripulación ve los suyos). Gerencia ve todo. */
 const SEES_ALL = new Set(["duena", "admin", "capitan", "designada"]);
 
 const STATUS_LABEL: Record<IsmStatus, string> = {
@@ -56,6 +56,15 @@ const STATUS_LABEL: Record<IsmStatus, string> = {
   por_oficina: "Por firmar · Persona Designada",
   archivado: "Archivado",
 };
+
+const MONTHS_SHORT = ["ene", "feb", "mar", "abr", "may", "jun", "jul", "ago", "sep", "oct", "nov", "dic"];
+
+/** 'YYYY-MM-DD' + 'HH:MM' → "30 oct 2026 · 16:19" (como en pantalla). */
+export function screenStamp(dateKey?: string, time?: string): string {
+  const [y, m, d] = (dateKey ?? "").split("-").map(Number);
+  if (!y || !m || !d) return "";
+  return `${d} ${MONTHS_SHORT[m - 1]} ${y}${time ? ` · ${time}` : ""}`;
+}
 
 /** Hora actual en Galápagos 'HH:MM'. */
 function nowTimeGalapagos(): string {
@@ -975,7 +984,8 @@ export async function signStep(req: Request, res: Response, next: NextFunction) 
 
     if (!record.test) {
       const who = record.context?.filledBy;
-      const when = record.context ? `${record.context.activityDate} ${record.context.activityTime}` : "";
+      // Misma forma de fecha que la app: "30 oct 2026 · 16:19".
+      const when = record.context ? screenStamp(record.context.activityDate, record.context.activityTime) : "";
       if (record.status === "por_capitan") {
         await notifyRole("capitan", {
           kind: "por_firmar_capitan",
