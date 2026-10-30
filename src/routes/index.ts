@@ -17,6 +17,7 @@ import * as publicCtrl from "../controllers/public.controller";
 import * as ism from "../controllers/ism.controller";
 import * as consumptions from "../controllers/consumption.controller";
 import * as supply from "../controllers/supply.controller";
+import { ismRoutes } from "./ism.routes";
 
 /**
  * Permisos por rol (guía auditada 27-oct-2026; se validan en el servidor):
@@ -132,6 +133,8 @@ export default function routerApi(app: Application) {
   router.post("/accounts/:cruiseId/:cabinNumber/submit", requireAuth, BAR, accounts.submitForReview);
   router.post("/accounts/:cruiseId/:cabinNumber/approve", requireAuth, DIRECTOR, accounts.approveAccount);
   router.post("/accounts/:cruiseId/:cabinNumber/return", requireAuth, DIRECTOR, accounts.returnAccount);
+  // Prefactura en inglés (PDF): sin correo ni Contífico.
+  router.get("/accounts/:cruiseId/:cabinNumber/proforma", requireAuth, DIRECTOR, accounts.proforma);
 
   // Cobros (cajero validado en el controlador) y reverso autorizado
   router.post("/payments/collect", requireAuth, DIRECTOR, payments.collectCabin);
@@ -180,6 +183,7 @@ export default function routerApi(app: Application) {
   router.post("/ism/records/:id/approve", requireAuth, CREW, ism.approve);
   router.post("/ism/records/:id/return", requireAuth, CREW, ism.giveBack);
   router.get("/ism/records/:id/pdf", requireAuth, CREW, ism.pdf);
+  ismRoutes(router, CREW);
 
   // En vivo y reportes
   router.get("/live", requireAuth, LEAD, live.livePulse);
