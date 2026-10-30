@@ -47,6 +47,26 @@ export interface IsmSchema {
    * Recibe el resumen de novedades o "ver página anexa" (informe 29-oct, falla 8).
    */
   obs?: { page: number; x: number; y: number; w: number; h: number };
+  /** Carpeta del archivo oficial (OneDrive/SharePoint); el mes sale de la fecha de la actividad. */
+  archiveFolder?: string;
+  /**
+   * Motor de firmas por pasos (informe 29-oct, "El R-14 como plantilla"):
+   * cada paso declara quién firma, en qué estado, a qué estado pasa, dónde se
+   * imprime y a qué paso se devuelve.
+   */
+  signers?: IsmSigner[];
+}
+
+export interface IsmSigner {
+  step: "tripulacion" | "capitan" | "oficina";
+  /** "lista": se elige de la lista de tripulantes; si no, el rol de la cuenta. */
+  who: "lista" | "capitan" | "designada";
+  label: string;
+  field: string;
+  print: "anexo" | "casilla";
+  status: "borrador" | "por_capitan" | "por_oficina";
+  next: "por_capitan" | "por_oficina" | "archivado";
+  returnsTo: "tripulacion" | "capitan" | null;
 }
 
 export interface IsmMissing {
@@ -192,8 +212,11 @@ export function mergeContext(
     next.activityTime = incoming.activityTime;
   }
   if (typeof incoming.place === "string") next.place = clip(incoming.place, 120);
-  if (typeof incoming.name === "string" && incoming.name.trim()) next.filledBy.name = clip(incoming.name, 120);
-  if (typeof incoming.position === "string") next.filledBy.position = clip(incoming.position, 20);
+  // Quien hace el chequeo se elige de la lista (el controlador resuelve crewId);
+  // el nombre ya no se escribe a mano.
+  if (typeof incoming.position === "string" && !next.filledBy.positionFixed) {
+    next.filledBy.position = clip(incoming.position, 20);
+  }
   if (incoming.sectionTimes && typeof incoming.sectionTimes === "object") {
     const times = { ...(current.sectionTimes ?? {}) };
     for (const [id, t] of Object.entries(incoming.sectionTimes as Record<string, unknown>)) {
@@ -254,7 +277,7 @@ export function validateGuided(
   if (!ctx?.activityDate) need("activityDate", "Falta la fecha de la actividad");
   if (!ctx?.activityTime) need("activityTime", "Falta la hora de la actividad");
   if (!ctx?.place) need("place", "Falta el lugar");
-  if (!ctx?.filledBy?.name) need("name", "Falta quién hace el chequeo");
+  if (!ctx?.filledBy?.name || !ctx.filledBy.fromList) need("name", "Elige quién hace el chequeo de la lista");
   if (!ctx?.filledBy?.position) need("position", "Falta el cargo");
 
   for (const { section, item } of schemaItems(schema)) {
