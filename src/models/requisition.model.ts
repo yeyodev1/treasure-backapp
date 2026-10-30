@@ -2,11 +2,11 @@ import mongoose, { Schema, Types } from "mongoose";
 
 /**
  * Requerimiento del bar (guía auditada 27-oct-2026):
- * - abastecimiento: Solicitado → Aprobado / Rechazado (directora) →
+ * - abastecimiento: Solicitado → Aprobado / Rechazado (Dirección de crucero) →
  *   Recibido parcial / Recibido (recepción física). Aprobar no suma stock;
  *   recibir traslada la cantidad real de bodega al barco.
  * - revision: el bar encontró un producto "no disponible" que sí tiene en
- *   la mano; la administradora lo atiende con un conteo físico.
+ *   la mano; Administración lo atiende con un conteo físico.
  */
 export const REQUISITION_KINDS = ["abastecimiento", "revision"] as const;
 export type RequisitionKind = (typeof REQUISITION_KINDS)[number];
