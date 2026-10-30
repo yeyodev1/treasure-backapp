@@ -495,9 +495,10 @@ export async function syncCatalogV3(userId: Types.ObjectId | string) {
     }
   }
 
-  const corkage = await findByNames(["Corkage Fee (descorche)"]);
+  // En la app se llama Descorche; "Corkage fee" solo en el documento en inglés (L12).
+  const corkage = await findByNames(["Descorche", "Corkage Fee (descorche)"]);
   const corkageFields = {
-    name: "Corkage Fee (descorche)",
+    name: "Descorche",
     category: "servicio" as const,
     icon: "bottle",
     kind: "servicio" as const,
