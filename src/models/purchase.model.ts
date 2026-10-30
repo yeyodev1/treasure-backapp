@@ -19,7 +19,7 @@ export interface IPurchaseLine {
   stockUnit: string;
   /** Total en unidad base: containers × containerSize. */
   qty: number;
-  /** Costo por envase, sin IVA o como lo registre la administradora. */
+  /** Costo por envase, sin IVA o como lo registre Administración. */
   containerCost: number;
   receivedQty: number;
 }
