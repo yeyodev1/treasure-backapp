@@ -20,6 +20,10 @@ export interface IIsmCrew {
   failedAttempts: number;
   lockedUntil: Date | null;
   updatedBy: Types.ObjectId | null;
+  /** Última clave temporal dada (restablecimiento): cuándo y quién. Se imprime en el anexo si fue en las 24 h previas a una firma. */
+  pinResetAt?: Date | null;
+  pinResetBy?: Types.ObjectId | null;
+  pinResetByName?: string;
   createdAt?: Date;
   updatedAt?: Date;
 }
@@ -34,6 +38,9 @@ const ismCrewSchema = new Schema<IIsmCrew>(
     failedAttempts: { type: Number, default: 0 },
     lockedUntil: { type: Date, default: null },
     updatedBy: { type: Schema.Types.ObjectId, ref: "User", default: null },
+    pinResetAt: { type: Date, default: null },
+    pinResetBy: { type: Schema.Types.ObjectId, ref: "User", default: null },
+    pinResetByName: { type: String, default: "" },
   },
   { timestamps: true },
 );

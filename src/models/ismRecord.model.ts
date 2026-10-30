@@ -42,6 +42,9 @@ export interface IIsmSignature {
    * Las firmas anteriores (sin versión) no se pueden verificar y se respetan.
    */
   hashV?: number;
+  /** Clave restablecida en las 24 h previas a esta firma: cuándo y por quién (se imprime en el anexo). */
+  pinResetAt?: Date | null;
+  pinResetByName?: string;
 }
 
 export interface IIsmEvent {
@@ -176,6 +179,8 @@ const signatureSchema = new Schema<IIsmSignature>(
     capturedBy: { type: Schema.Types.ObjectId, ref: "User" },
     capturedByName: { type: String },
     method: { type: String },
+    pinResetAt: { type: Date },
+    pinResetByName: { type: String },
   },
   { _id: false },
 );

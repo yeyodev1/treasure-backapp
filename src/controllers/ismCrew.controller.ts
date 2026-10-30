@@ -115,15 +115,18 @@ export async function updateCrewMember(req: Request, res: Response, next: NextFu
 /**
  * Clave temporal de un solo uso. Se muestra una sola vez a la Persona
  * Designada; el tripulante la cambia en su primera firma. También desbloquea.
+ * Queda quién y cuándo la restableció: si fue en las 24 h previas a una
+ * firma, el anexo del PDF lo dice.
  */
 export async function temporaryPin(req: Request, res: Response, next: NextFunction) {
   try {
-    assertKeeper(req);
+    // Solo la Persona Designada (auditoría 30-oct): ni Gerencia restablece claves de firma.
+    if (req.auth!.role !== "designada") throw forbidden("La clave temporal la da la Persona Designada");
     const user = await User.findById(req.params.id).select("name role active");
     if (!user || !CREW_LIST_ROLES.includes(user.role as never) || !user.active) {
       throw notFound("Tripulante no encontrado");
     }
-    const pin = await issueTemporaryPin(user._id, req.auth!.sub);
+    const pin = await issueTemporaryPin(user._id, req.auth!.sub, req.auth!.name);
     await logEvent(req.auth, { kind: "equipo", title: `Clave temporal de firma · ${user.name}` });
     res.json({ pin, name: user.name });
   } catch (err) {

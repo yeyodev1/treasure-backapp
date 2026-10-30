@@ -41,7 +41,7 @@ import {
   IsmSigner,
 } from "../services/ismSchema.service";
 import { logEvent } from "../services/audit.service";
-import { CREW_LIST_ROLES, positionLabel, verifyPin } from "../services/ismCrew.service";
+import { CREW_LIST_ROLES, PIN_RESET_WINDOW_MS, positionLabel, verifyPin } from "../services/ismCrew.service";
 import { notifyRole, notifyUsers } from "../services/ismNotify.service";
 import { badRequest, conflict, forbidden, notFound } from "../errors/httpError";
 import { CREW_POSITIONS, POSITION_LABELS, isManager } from "../utils/roles";
@@ -906,10 +906,13 @@ export async function signStep(req: Request, res: Response, next: NextFunction) 
     const person = await User.findOne({ _id: signerUser, active: true }).select("name role position");
     if (!person) throw forbidden("Esa persona ya no está activa en la lista de tripulantes");
     // La clave asegura que quien firma es quien dice ser (bloqueo en el servidor).
-    await verifyPin(signerUser, pin, newPin);
+    const profile = await verifyPin(signerUser, pin, newPin);
 
     const now = new Date();
     const sessionUser = new Types.ObjectId(req.auth!.sub);
+    // Clave restablecida poco antes de firmar: queda en la firma (y en el anexo).
+    const resetAt = profile.pinResetAt ? new Date(profile.pinResetAt) : null;
+    const recentReset = resetAt && now.getTime() - resetAt.getTime() <= PIN_RESET_WINDOW_MS ? resetAt : null;
     record.signatures = record.signatures.filter((s) => s.field !== step.field) as never;
     record.signatures.push({
       field: step.field,
@@ -923,6 +926,7 @@ export async function signStep(req: Request, res: Response, next: NextFunction) 
       capturedBy: sessionUser.equals(signerUser) ? null : sessionUser,
       capturedByName: sessionUser.equals(signerUser) ? "" : req.auth!.name,
       method: "clave",
+      ...(recentReset ? { pinResetAt: recentReset, pinResetByName: profile.pinResetByName || "" } : {}),
       image,
       signedAt: now,
       dataHash: hashContent(record),

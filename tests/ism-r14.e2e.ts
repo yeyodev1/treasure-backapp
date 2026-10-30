@@ -19,6 +19,24 @@ function check(label: string, ok: boolean, detail: unknown = "") {
   console.log(`${ok ? "OK   " : "FALLA"} ${label}${detail !== "" ? ` → ${JSON.stringify(detail)}` : ""}`);
 }
 
+/** Texto de un PDF por página con pdftotext (si no está instalado, esas pruebas se saltan). */
+async function pdfPages(bytes: ArrayBuffer): Promise<string[] | null> {
+  const { execFileSync } = await import("child_process");
+  const fs = await import("fs");
+  const os = await import("os");
+  const path = await import("path");
+  const file = path.join(os.tmpdir(), `ism-${Date.now()}-${Math.random().toString(36).slice(2)}.pdf`);
+  fs.writeFileSync(file, Buffer.from(bytes));
+  try {
+    return execFileSync("pdftotext", ["-layout", file, "-"], { encoding: "utf8" }).split("\f");
+  } catch {
+    console.log("SALTO pdftotext no disponible: no se revisa el texto del PDF");
+    return null;
+  } finally {
+    fs.rmSync(file, { force: true });
+  }
+}
+
 async function main() {
   const repl = await MongoMemoryReplSet.create({ replSet: { count: 1, storageEngine: "wiredTiger" } });
   process.env.MONGODB_URI = repl.getUri("treasure");
@@ -169,6 +187,8 @@ async function main() {
   check("La Persona Designada da de alta tripulantes", Boolean(juan?.id && pedro?.id), juan);
   const list = await api("tri", "GET", "/ism/crew?onboard=1");
   check("La tablet ve la lista con nombre y cargo", list.data.crew?.some((c: any) => c.name === "Juan Pérez" && c.positionLabel === "Timonel 1"));
+  const duenaPin = await api("duena", "POST", `/ism/crew/${juan.id}/temporary-pin`);
+  check("Gerencia ya no da claves temporales (solo la Persona Designada)", duenaPin.status === 403, duenaPin.status);
   const tempJuan = (await api("des", "POST", `/ism/crew/${juan.id}/temporary-pin`)).data.pin as string;
   const tempPedro = (await api("des", "POST", `/ism/crew/${pedro.id}/temporary-pin`)).data.pin as string;
   check("Clave temporal de 4 números", /^\d{4}$/.test(tempJuan), tempJuan);
@@ -200,6 +220,11 @@ async function main() {
     "La firma guarda usuario, nombre, cargo, rol, hora y huella",
     crewSig?.user === juan.id && crewSig?.signerName === "Juan Pérez" && crewSig?.position === "TIM_01" && crewSig?.userRole === "tripulante" && Boolean(crewSig?.dataHash) && Boolean(crewSig?.signedAt),
     crewSig,
+  );
+  check(
+    "La firma guarda la clave restablecida en las 24 h previas y por quién",
+    Boolean(crewSig?.pinResetAt) && crewSig?.pinResetByName === "Persona Designada",
+    [crewSig?.pinResetAt, crewSig?.pinResetByName],
   );
   check("La sesión de la tablet no es quien firma", crewSig?.capturedByName === "Timonel Uno" && crewSig?.user !== recA.createdBy?._id, crewSig?.capturedByName);
   const reuse = await api("tri", "POST", `/ism/records/${await fullR14("r14-flow-x", juan.id, "06:20")}/sign-step`, { image: PNG, pin: tempJuan, signer: juan.id });
@@ -293,9 +318,15 @@ async function main() {
     (archPdf.headers.get("content-disposition") ?? "").includes("R-14_20261029_0610.pdf"),
     archPdf.headers.get("content-disposition"),
   );
+  const archBytes = await archPdf.arrayBuffer();
   if (process.env.SAVE_PDF) {
     const fs = await import("fs");
-    fs.writeFileSync(`${process.env.SAVE_PDF}/archivado.pdf`, Buffer.from(await archPdf.arrayBuffer()));
+    fs.writeFileSync(`${process.env.SAVE_PDF}/archivado.pdf`, Buffer.from(archBytes));
+  }
+  const archText = await pdfPages(archBytes);
+  if (archText) {
+    const annex = archText.slice(1).join("\n");
+    check("El anexo dice que la clave se restableció antes de firmar", /clave restablecida el \d\d\/\d\d\/\d{4} \d\d:\d\d por Persona Designada/.test(annex), annex.match(/.*clave restablecida.*/)?.[0]);
   }
 
   server.close();

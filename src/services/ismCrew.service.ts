@@ -139,10 +139,14 @@ export async function verifyPin(userId: Types.ObjectId | string, pin: unknown, n
   profile.failedAttempts = 0;
   profile.lockedUntil = null;
   await profile.save();
+  return profile;
 }
 
+/** Restablecimiento de clave que se informa en el anexo (24 h antes de firmar). */
+export const PIN_RESET_WINDOW_MS = 24 * 60 * 60 * 1000;
+
 /** Clave temporal de 4 números, de un solo uso (la ve solo la Persona Designada, una vez). */
-export async function issueTemporaryPin(userId: Types.ObjectId | string, by: string) {
+export async function issueTemporaryPin(userId: Types.ObjectId | string, by: string, byName = "") {
   let pin = "";
   do {
     pin = String(crypto.randomInt(0, 10000)).padStart(4, "0");
@@ -154,6 +158,9 @@ export async function issueTemporaryPin(userId: Types.ObjectId | string, by: str
   profile.failedAttempts = 0;
   profile.lockedUntil = null;
   profile.updatedBy = new Types.ObjectId(by);
+  profile.pinResetAt = profile.pinSetAt;
+  profile.pinResetBy = new Types.ObjectId(by);
+  profile.pinResetByName = byName;
   await profile.save();
   return pin;
 }

@@ -270,6 +270,14 @@ export async function appendGuidedAnnex(
     page.drawText(safe(`Tablet con la sesión de: ${crewSig.capturedByName}`), { x: textX, y: y - 42, size: 8, font, color: MUTED });
   }
   y -= boxH + 12;
+  // Claves restablecidas en las 24 h previas a una firma (auditoría 30-oct, punto 2).
+  for (const sig of (record.signatures ?? []).filter((s) => s.pinResetAt && signatureIsValid(s, current))) {
+    paragraph(
+      `${sig.label} (${sig.signerName}): clave restablecida el ${opts.stamp(new Date(sig.pinResetAt!))}${sig.pinResetByName ? ` por ${sig.pinResetByName}` : ""}, en las 24 h previas a la firma.`,
+      8.5,
+      bold,
+    );
+  }
   const answeredAt = Object.values(record.answers ?? {})
     .map((a) => (a?.at ? new Date(a.at).getTime() : 0))
     .filter(Boolean);
