@@ -80,6 +80,8 @@ export default function routerApi(app: Application) {
   router.get("/cruises/cycle-settings", requireAuth, LEAD, cruises.cycleSettings);
   router.put("/cruises/cycle-settings", requireAuth, LEAD, cruises.updateCycleSettings);
   router.post("/cruises/generate", requireAuth, LEAD, cruises.generateCycle);
+  router.get("/cruises/plan", requireAuth, LEAD, cruises.previewNewCruise);
+  router.post("/cruises/plan", requireAuth, LEAD, cruises.createNewCruise);
   router.post("/cruises", requireAuth, LEAD, cruises.createCruise);
   router.get("/cruises/:id", requireAuth, ALL, cruises.getCruise);
   router.patch("/cruises/:id", requireAuth, LEAD, cruises.updateCruise);

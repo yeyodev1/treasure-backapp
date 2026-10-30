@@ -14,8 +14,8 @@ import { Device } from "../models/device.model";
 import { onboardAvailability } from "../services/inventory.service";
 import { round2 } from "../utils/units";
 import { logEvent } from "../services/audit.service";
-import { badRequest, conflict, notFound } from "../errors/httpError";
-import { addDaysKey, ecuadorDateTime } from "../utils/dates";
+import { badRequest, conflict, HttpError, notFound } from "../errors/httpError";
+import { addDaysKey, ecuadorDateTime, TIMEZONE } from "../utils/dates";
 import { EMAIL_ERROR, isValidOptionalEmail } from "../utils/email";
 
 export async function listCruises(req: Request, res: Response, next: NextFunction) {
@@ -91,6 +91,168 @@ export async function updateCycleSettings(req: Request, res: Response, next: Nex
   }
 }
 
+/** Día de zarpe de cada tramo (guía V3): A y C zarpan sábado, B martes. */
+const LEG_WEEKDAY: Record<string, number> = { A: 6, B: 2, C: 6 };
+const WEEKDAYS = ["domingo", "lunes", "martes", "miércoles", "jueves", "viernes", "sábado"];
+
+function weekdayOf(dateKey: string): number {
+  return new Date(`${dateKey}T12:00:00Z`).getUTCDay();
+}
+
+/** "7 nov" para mensajes (fecha de Galápagos). */
+function dayLabel(date: string | Date): string {
+  return new Intl.DateTimeFormat("es-EC", {
+    day: "numeric",
+    month: "short",
+    timeZone: typeof date === "string" ? "UTC" : TIMEZONE,
+  })
+    .format(typeof date === "string" ? new Date(`${date}T12:00:00Z`) : date)
+    .replace(".", "");
+}
+
+function isDateKey(value: unknown): value is string {
+  return (
+    typeof value === "string" &&
+    /^\d{4}-\d{2}-\d{2}$/.test(value) &&
+    new Date(`${value}T12:00:00Z`).toISOString().slice(0, 10) === value
+  );
+}
+
+/**
+ * Código, ruta y fechas del próximo crucero de un tramo que zarpa ese día.
+ * Lo usan el generador del ciclo y Nuevo crucero: una sola regla.
+ */
+async function planLeg(leg: ICycleLeg, dateKey: string) {
+  const endKey = addDaysKey(dateKey, leg.durationDays);
+  const sequence = (await Cruise.countDocuments({ leg: leg.code })) + 1;
+  const code = `${leg.code}-${String(sequence).padStart(3, "0")}`;
+  return {
+    code,
+    leg: leg.code,
+    routeFrom: leg.routeFrom,
+    routeTo: leg.routeTo,
+    name: `${code} · ${leg.routeFrom} → ${leg.routeTo}`,
+    startDate: ecuadorDateTime(dateKey, leg.departureTime),
+    endDate: ecuadorDateTime(endKey, leg.departureTime),
+    endKey,
+  };
+}
+
+/** Crucero programado o en curso que se cruza con ese rango (tocarse en el zarpe no cuenta). */
+async function overlappingCruise(start: Date, end: Date) {
+  return Cruise.findOne({
+    status: { $in: ["planificado", "abordo"] },
+    startDate: { $lt: end },
+    $or: [{ endDate: { $gt: start } }, { endDate: null, startDate: { $gte: start } }],
+  })
+    .sort({ startDate: 1 })
+    .select("code name status startDate endDate");
+}
+
+/** Vista previa y validación de Nuevo crucero (tipo + fecha de inicio). */
+async function reviewNewCruise(legCode: unknown, startKey: unknown) {
+  if (typeof legCode !== "string" || !legCode) throw badRequest("Elige el tipo de crucero: A, B o C");
+  if (!isDateKey(startKey)) throw badRequest("Elige la fecha de inicio");
+  const settings = await getSettings();
+  const leg = settings.legs.find((l) => l.code === legCode);
+  if (!leg) throw badRequest(`No existe el crucero tipo ${legCode}`);
+
+  const plan = await planLeg(leg, startKey);
+  const expected = LEG_WEEKDAY[leg.code];
+  const actual = weekdayOf(startKey);
+  const overlap = await overlappingCruise(plan.startDate, plan.endDate);
+  return {
+    leg,
+    plan: {
+      ...plan,
+      label: leg.label,
+      durationDays: leg.durationDays,
+      departureTime: leg.departureTime,
+      cabinCount: settings.cabinCount,
+      weekday: {
+        ok: expected === undefined || expected === actual,
+        expected: expected === undefined ? "" : WEEKDAYS[expected]!,
+        actual: WEEKDAYS[actual]!,
+      },
+      overlap: overlap
+        ? {
+            _id: overlap._id,
+            code: overlap.code,
+            name: overlap.name,
+            status: overlap.status,
+            startDate: overlap.startDate,
+            endDate: overlap.endDate,
+          }
+        : null,
+    },
+    cabinCount: settings.cabinCount,
+  };
+}
+
+function overlapMessage(overlap: { code: string; name: string; status: string; startDate: Date; endDate: Date | null }) {
+  const state = overlap.status === "abordo" ? "en curso" : "programado";
+  const dates = `${dayLabel(overlap.startDate)}${overlap.endDate ? ` → ${dayLabel(overlap.endDate)}` : ""}`;
+  return `Se cruza con el crucero ${overlap.code || overlap.name} (${state}, ${dates}). Elige otra fecha de inicio.`;
+}
+
+/** GET /cruises/plan?leg=A&startDate=YYYY-MM-DD: fecha de fin, ruta, código y avisos. */
+export async function previewNewCruise(req: Request, res: Response, next: NextFunction) {
+  try {
+    const { plan } = await reviewNewCruise(req.query.leg, req.query.startDate);
+    res.json({ plan });
+  } catch (err) {
+    next(err);
+  }
+}
+
+/**
+ * Nuevo crucero: solo tipo y fecha de inicio; el resto sale de la
+ * configuración del ciclo. No se cruza con otro programado o en curso; si el
+ * día no es el de zarpe del tipo, se avisa y se crea solo si se confirma.
+ */
+export async function createNewCruise(req: Request, res: Response, next: NextFunction) {
+  try {
+    const { leg, startDate, acceptWeekday } = req.body as {
+      leg?: string;
+      startDate?: string;
+      acceptWeekday?: boolean;
+    };
+    const { plan, cabinCount } = await reviewNewCruise(leg, startDate);
+    if (plan.overlap) throw new HttpError(409, overlapMessage(plan.overlap), "solapa", { cruise: plan.overlap });
+    if (!plan.weekday.ok && acceptWeekday !== true) {
+      throw new HttpError(
+        409,
+        `El crucero ${plan.leg} zarpa en ${plan.weekday.expected} y el ${dayLabel(startDate!)} es ${plan.weekday.actual}.`,
+        "dia_distinto",
+        { expected: plan.weekday.expected, actual: plan.weekday.actual },
+      );
+    }
+
+    const cruise = await Cruise.create({
+      code: plan.code,
+      leg: plan.leg,
+      routeFrom: plan.routeFrom,
+      routeTo: plan.routeTo,
+      name: plan.name,
+      startDate: plan.startDate,
+      endDate: plan.endDate,
+      cabins: Array.from({ length: cabinCount }, (_, i) => ({ number: i + 1 })),
+      createdBy: req.auth!.sub,
+    });
+    await logEvent(req.auth, {
+      kind: "salida",
+      title: `Crucero creado · ${cruise.code}`,
+      detail: `${plan.routeFrom} → ${plan.routeTo} · ${dayLabel(startDate!)} a ${dayLabel(plan.endKey)}${
+        plan.weekday.ok ? "" : ` · zarpa ${plan.weekday.actual} (confirmado)`
+      }`,
+      cruise: cruise._id,
+    });
+    res.status(201).json({ cruise });
+  } catch (err) {
+    next(err);
+  }
+}
+
 /**
  * Genera salidas repitiendo A → B → C desde la fecha de inicio de A.
  * No duplica: si ya existe la salida de ese tramo en esa fecha, la salta.
@@ -114,8 +276,7 @@ export async function generateCycle(req: Request, res: Response, next: NextFunct
     while (cursor <= until && guard < 300) {
       guard += 1;
       const leg = settings.legs[legIndex % settings.legs.length]!;
-      const start = ecuadorDateTime(cursor, leg.departureTime);
-      const endKey = addDaysKey(cursor, leg.durationDays);
+      const plan = await planLeg(leg, cursor);
       const dayStart = ecuadorDateTime(cursor, "00:00");
       const dayEnd = ecuadorDateTime(addDaysKey(cursor, 1), "00:00");
 
@@ -127,23 +288,21 @@ export async function generateCycle(req: Request, res: Response, next: NextFunct
       if (exists) {
         skipped += 1;
       } else {
-        const sequence = (await Cruise.countDocuments({ leg: leg.code })) + 1;
-        const code = `${leg.code}-${String(sequence).padStart(3, "0")}`;
         await Cruise.create({
-          code,
-          leg: leg.code,
-          routeFrom: leg.routeFrom,
-          routeTo: leg.routeTo,
-          name: `${code} · ${leg.routeFrom} → ${leg.routeTo}`,
-          startDate: start,
-          endDate: ecuadorDateTime(endKey, leg.departureTime),
+          code: plan.code,
+          leg: plan.leg,
+          routeFrom: plan.routeFrom,
+          routeTo: plan.routeTo,
+          name: plan.name,
+          startDate: plan.startDate,
+          endDate: plan.endDate,
           cabins: Array.from({ length: settings.cabinCount }, (_, i) => ({ number: i + 1 })),
           createdBy: req.auth!.sub,
         });
-        created.push(code);
+        created.push(plan.code);
       }
 
-      cursor = endKey;
+      cursor = plan.endKey;
       legIndex += 1;
     }
 
