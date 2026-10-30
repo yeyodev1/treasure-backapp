@@ -8,6 +8,28 @@ import { commercialDateKey, startOfDayEcuador } from "../utils/dates";
 import { round2 } from "../utils/units";
 
 /**
+ * La bitácora guarda el texto con el que se escribió. Los eventos viejos se
+ * muestran con las palabras actuales (checklist 29-oct, 19 y 23) sin
+ * reescribir la base: roles sin nombres y un término por concepto.
+ */
+const LEGACY_WORDING: Array<[RegExp, string]> = [
+  [/lo revisa la (dueña|directora|administradora)/g, "pendiente de revisión"],
+  [/ a la (dueña|directora|administradora)/g, " para revisión"],
+  [/[Ll]a dueña/g, "Gerencia"],
+  [/[Ll]a directora/g, "Dirección de crucero"],
+  [/[Ll]a administradora/g, "Administración"],
+  [/\bRequerimiento\b/g, "Solicitud"],
+  [/\bPedido registrado\b/g, "Consumo registrado"],
+  [/\bBonificado\b/g, "Cortesía"],
+  [/\bBonificación\b/g, "Cortesía"],
+  [/^Tablet bar/g, "Tableta del bar"],
+];
+
+function currentWording(text: string): string {
+  return LEGACY_WORDING.reduce((acc, [re, to]) => acc.replace(re, to), text);
+}
+
+/**
  * Pulso en vivo para administración: fecha comercial (Ecuador), saldo por
  * cabina, pendientes por resolver y el feed de toda la actividad con autor.
  */
@@ -77,8 +99,8 @@ export async function livePulse(req: Request, res: Response, next: NextFunction)
         id: e._id,
         kind: e.kind,
         at: e.createdAt,
-        title: e.title,
-        detail: e.detail,
+        title: currentWording(e.title),
+        detail: e.detail ? currentWording(e.detail) : e.detail,
         amount: e.amount,
         by: e.byName,
       })),
