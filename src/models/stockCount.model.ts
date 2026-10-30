@@ -3,7 +3,7 @@ import { STOCK_LOCATIONS, StockLocation } from "../utils/units";
 
 /**
  * Conteo físico (guía V3, pantalla 03). Bodega o Bar cuentan; guardar no
- * cambia stock. Solo Paula aprueba: se registra una sola diferencia por
+ * cambia stock. Solo Gerencia aprueba: se registra una sola diferencia por
  * producto contra el corte y se conservan los movimientos posteriores.
  */
 export const COUNT_STATUSES = ["borrador", "enviado", "aprobado", "rechazado"] as const;
