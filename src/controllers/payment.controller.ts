@@ -5,20 +5,22 @@ import { Payment, PAYMENT_METHODS, PaymentMethod } from "../models/payment.model
 import { Cruise } from "../models/cruise.model";
 import { User } from "../models/user.model";
 import { Account } from "../models/account.model";
-import { buildCabinAccount, ensureAccount } from "../services/account.service";
+import { buildCabinAccount } from "../services/account.service";
 import { contificoStatus, issueInvoice } from "../services/contifico.service";
 import { logEvent } from "../services/audit.service";
 import { badRequest, conflict, forbidden, notFound } from "../errors/httpError";
 import { parseRangeEdge } from "../utils/dates";
 
-/** Cobra la directora (guía auditada 27-oct-2026) o la dueña. */
+const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
+
+/** Cobra Dirección de crucero (guía auditada 27-oct-2026) o Gerencia. */
 async function assertCanCollect(userId: string, role: string) {
   if (role === "duena") return;
   if (role === "direccion") {
     const user = await User.findById(userId).select("active");
     if (user?.active) return;
   }
-  throw forbidden("Los cobros los registra la directora o la dueña");
+  throw forbidden("Los cobros los registra Dirección de crucero o Gerencia");
 }
 
 /**
@@ -58,30 +60,50 @@ export async function collectCabin(req: Request, res: Response, next: NextFuncti
     const cabin = cruise?.cabins.find((c) => c.number === cabinNumber);
     const payer = cabin?.passengers.find((p) => p.isPayer) ?? cabin?.passengers[0];
 
+    const typedEmail = billing?.email?.trim() ?? "";
+    if (typedEmail && !EMAIL.test(typedEmail)) {
+      throw badRequest("Revisa el correo. Ejemplo: nombre@dominio.com.");
+    }
     const finalBilling = {
       name: billing?.name?.trim() || payer?.name || "",
       idNumber: billing?.idNumber?.trim() || payer?.idNumber || "",
-      email: billing?.email?.trim() || payer?.email || "",
+      // Un correo guardado inválido no bloquea el cobro: se factura sin correo.
+      email: typedEmail || (EMAIL.test(payer?.email ?? "") ? payer!.email : ""),
       country: billing?.country?.trim() || payer?.country || "",
     };
     if (!finalBilling.name || !finalBilling.idNumber) {
       throw badRequest("Falta el nombre o la identificación del pagador para facturar");
     }
 
-    const payment = await Payment.create({
-      cruise: cruiseId,
-      cabinNumber,
-      orders: summary.orders.map((o) => o.id),
-      accountVersion: summary.version,
-      subtotal: summary.subtotal,
-      courtesyTotal: summary.courtesyTotal,
-      total: summary.total,
-      method,
-      reference: reference?.trim() ?? "",
-      cashConfirmed: Boolean(cashConfirmed),
-      billing: finalBilling,
-      collectedBy: req.auth!.sub,
-    });
+    // Doble clic o dos tablets: solo una petición toma la cuenta aprobada
+    // (R07: un solo pago). Si algo falla antes de guardar el pago, se libera.
+    const claimed = await Account.findOneAndUpdate(
+      { cruise: cruiseId, cabinNumber, status: "aprobada", approvedVersion: summary.version },
+      { $set: { status: "cobrada" } },
+      { new: true },
+    );
+    if (!claimed) throw conflict("Esta cuenta ya se está cobrando o ya fue pagada");
+
+    let payment;
+    try {
+      payment = await Payment.create({
+        cruise: cruiseId,
+        cabinNumber,
+        orders: summary.orders.map((o) => o.id),
+        accountVersion: summary.version,
+        subtotal: summary.subtotal,
+        courtesyTotal: summary.courtesyTotal,
+        total: summary.total,
+        method,
+        reference: reference?.trim() ?? "",
+        cashConfirmed: Boolean(cashConfirmed),
+        billing: finalBilling,
+        collectedBy: req.auth!.sub,
+      });
+    } catch (err) {
+      await Account.updateOne({ _id: claimed._id, status: "cobrada" }, { $set: { status: "aprobada" } });
+      throw err;
+    }
 
     await Order.updateMany({ _id: { $in: payment.orders } }, { $set: { payment: payment._id } });
 
@@ -93,16 +115,20 @@ export async function collectCabin(req: Request, res: Response, next: NextFuncti
       await cruise.save();
     }
 
-    const account = await ensureAccount(cruiseId, cabinNumber);
-    account.status = "cobrada";
-    account.history.push({
-      action: "cobrada",
-      version: account.version,
-      reason: method,
-      by: new Types.ObjectId(req.auth!.sub),
-      at: new Date(),
-    });
-    await account.save();
+    await Account.updateOne(
+      { _id: claimed._id },
+      {
+        $push: {
+          history: {
+            action: "cobrada",
+            version: claimed.version,
+            reason: method,
+            by: new Types.ObjectId(req.auth!.sub),
+            at: new Date(),
+          },
+        },
+      },
+    );
 
     const invoiced = (await issueInvoice(payment._id)) ?? payment;
 
