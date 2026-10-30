@@ -220,6 +220,8 @@ export async function proforma(req: Request, res: Response, next: NextFunction) 
       `${req.query.download ? "attachment" : "inline"}; filename="${name}"`,
     );
     res.setHeader("Cache-Control", "no-store");
+    // La app lee el nombre del archivo desde otro dominio.
+    res.setHeader("Access-Control-Expose-Headers", "Content-Disposition");
     res.send(Buffer.from(bytes));
   } catch (err) {
     next(err);
