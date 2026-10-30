@@ -17,10 +17,20 @@ export interface IIsmSignature {
   label: string;
   /** Quién firma (puede ser un asistente sin cuenta que firma en la tablet). */
   signerName: string;
-  /** Usuario con sesión iniciada que capturó la firma. */
+  /**
+   * Usuario que firma. En el R-14 guiado es la persona de la lista de
+   * tripulantes que confirmó con su clave, no la sesión de la tablet.
+   */
   user: Types.ObjectId;
   userName: string;
   userRole: string;
+  /** Cargo en el momento de firmar (CAP, TIM_01…). */
+  position?: string;
+  /** Sesión de la tablet con la que se capturó (si es distinta de quien firma). */
+  capturedBy?: Types.ObjectId | null;
+  capturedByName?: string;
+  /** "clave": confirmada con la clave de 4 números. */
+  method?: string;
   /** PNG de la firma dibujada con el dedo (data URL). */
   image: string;
   signedAt: Date;
@@ -56,6 +66,10 @@ export interface IIsmAnswer {
   motivo: string;
   /** Fotos de evidencia (URL). */
   evidencia: string[];
+  /** Seguimiento de la novedad (informe 29-oct): quién la resuelve, para cuándo y si quedó cerrada. */
+  responsable?: string;
+  plazo?: string;
+  estado?: "" | "abierta" | "cerrada";
   /** Momento de captura y quién respondió. */
   at: Date | null;
   by: Types.ObjectId | null;
@@ -77,6 +91,8 @@ export interface IIsmContext {
     role: string;
     position: string;
   };
+  /** Hora de la actividad de cada sección ('HH:MM'): la ronda, el zarpe, el arribo y el fondeo no ocurren a la vez. */
+  sectionTimes?: Record<string, string>;
   confirmedAt: Date | null;
 }
 
@@ -85,6 +101,8 @@ export interface IIsmFlags {
   total: number;
   novedades: number;
   noAplica: number;
+  /** Marca de novedad: true si hay al menos un "No". */
+  hasNovedad?: boolean;
 }
 
 export interface IIsmReturnInfo {
@@ -124,6 +142,10 @@ export interface IIsmRecord {
   returnInfo: IIsmReturnInfo | null;
   /** Clave del cliente para que un reintento no duplique el registro. */
   idempotencyKey: string | null;
+  /** Edición del formato oficial con que se llenó (p. ej. "Edición 00 · Vigencia 01-05-2025"). */
+  formEdition?: string;
+  /** Registro de prueba: fuera de indicadores y avisos. */
+  test?: boolean;
   createdAt?: Date;
   updatedAt?: Date;
 }
@@ -141,6 +163,10 @@ const signatureSchema = new Schema<IIsmSignature>(
     signedAt: { type: Date, default: () => new Date() },
     dataHash: { type: String, default: "" },
     hashV: { type: Number },
+    position: { type: String },
+    capturedBy: { type: Schema.Types.ObjectId, ref: "User" },
+    capturedByName: { type: String },
+    method: { type: String },
   },
   { _id: false },
 );
@@ -188,7 +214,7 @@ const ismRecordSchema = new Schema<IIsmRecord>(
     answers: { type: Schema.Types.Mixed, default: {} },
     flags: {
       type: new Schema(
-        { answered: Number, total: Number, novedades: Number, noAplica: Number },
+        { answered: Number, total: Number, novedades: Number, noAplica: Number, hasNovedad: Boolean },
         { _id: false },
       ),
       default: null,
@@ -201,6 +227,8 @@ const ismRecordSchema = new Schema<IIsmRecord>(
       default: null,
     },
     idempotencyKey: { type: String, default: null },
+    formEdition: { type: String, default: "" },
+    test: { type: Boolean, default: false },
   },
   { timestamps: true, minimize: false, optimisticConcurrency: true },
 );
