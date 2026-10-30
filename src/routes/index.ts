@@ -21,13 +21,13 @@ import { ismRoutes } from "./ism.routes";
 
 /**
  * Permisos por rol (guía auditada 27-oct-2026; se validan en el servidor):
- * - duena (Paula): toda la operación y finanzas. Única que cambia precios,
+ * - duena (Gerencia): toda la operación y finanzas. Única que cambia precios,
  *   autoriza ajustes y conteos, devuelve stock en anulaciones y reversa
  *   cobros. `requireRole` siempre la deja pasar.
- * - admin (administradora): conteo físico y diferencias, compras y recepciones.
- * - direccion (directora): pasajeros, cabinas, inicio/fin del crucero,
+ * - admin (Administración): conteo físico y diferencias, compras y recepciones.
+ * - direccion (Dirección de crucero): pasajeros, cabinas, inicio/fin del crucero,
  *   aprobación de cuentas y de abastecimiento, cobros.
- * - bartender: consumos y requerimientos.
+ * - bartender: consumos y solicitudes de productos.
  * - bodega: compras, recepciones, cargas al barco y conteos en tierra.
  */
 export default function routerApi(app: Application) {
@@ -156,7 +156,7 @@ export default function routerApi(app: Application) {
   );
   router.get("/inventory/movements", requireAuth, ALL, inventory.listMovements);
 
-  // Conteos físicos: la administradora cuenta y documenta; la dueña autoriza
+  // Conteos físicos: Administración cuenta y documenta; Gerencia autoriza
   router.get("/counts", requireAuth, COUNTERS, counts.listCounts);
   router.post("/counts", requireAuth, COUNTERS, counts.createCount);
   router.get("/counts/:id", requireAuth, COUNTERS, counts.getCount);
