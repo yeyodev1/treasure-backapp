@@ -11,8 +11,12 @@ import {
 import { Cruise } from "../models/cruise.model";
 import { User } from "../models/user.model";
 import {
+  activityFileName,
   buildFileName,
+  galapagosParts,
   hashRecord,
+  isDateKey,
+  uniqueFileName,
   ismCatalog,
   ismDefinition,
   ismEquipment,
@@ -41,10 +45,33 @@ const SEES_ALL = new Set(["duena", "admin", "capitan", "designada"]);
 
 const STATUS_LABEL: Record<IsmStatus, string> = {
   borrador: "Borrador",
-  por_capitan: "Por firmar del Capitán",
-  por_oficina: "Por firmar en oficina",
+  por_capitan: "Por firmar · Capitán",
+  por_oficina: "Por firmar · Persona Designada",
   archivado: "Archivado",
 };
+
+/** Hora actual en Galápagos 'HH:MM'. */
+function nowTimeGalapagos(): string {
+  const t = galapagosParts(new Date());
+  return `${String(t.hh).padStart(2, "0")}:${String(t.mm).padStart(2, "0")}`;
+}
+
+/**
+ * Fecha real del registro guiado y su nombre: R-14_AAAAMMDD_HHMM.pdf con la
+ * hora de la actividad; si otro registro ya lo tiene, _2, _3…
+ */
+async function applyActivityDate(record: IIsmRecord & { _id?: Types.ObjectId }) {
+  const ctx = record.context;
+  if (!ctx?.activityDate) return;
+  record.recordDate = recordDateFromKey(ctx.activityDate, ctx.activityTime);
+  const base = activityFileName(record.code, ctx.activityDate, ctx.activityTime);
+  // Mismo minuto que ya tenía (con o sin sufijo): conserva su nombre.
+  const stem = base.replace(/\.pdf$/, "");
+  if (record.fileName === base || new RegExp(`^${stem}_\\d+\\.pdf$`).test(record.fileName ?? "")) return;
+  record.fileName = await uniqueFileName(base, async (name) =>
+    Boolean(await IsmRecord.exists({ fileName: name, ...(record._id ? { _id: { $ne: record._id } } : {}) })),
+  );
+}
 
 /**
  * La firma va atada al rol de quien firma (informe ISM 29-oct, falla 1):
@@ -179,19 +206,19 @@ async function findByKey(uid: string, key: string) {
 
 export async function createRecord(req: Request, res: Response, next: NextFunction) {
   try {
-    const { code, recordDate, equipmentFolder, position, idempotencyKey, context } = req.body as {
+    const { code, recordDate, equipmentFolder, position, idempotencyKey, context, test } = req.body as {
       code?: string;
       recordDate?: string;
       equipmentFolder?: string;
       position?: string;
       idempotencyKey?: string;
       context?: Record<string, unknown>;
+      test?: boolean;
     };
     const def = code ? ismDefinition(code) : null;
     if (!def) throw badRequest("Formulario inválido");
-    if (!recordDate || !/^\d{4}-\d{2}-\d{2}$/.test(recordDate)) {
-      throw badRequest("Indica la fecha del registro");
-    }
+    if (!recordDate) throw badRequest("Indica la fecha del registro");
+    if (!isDateKey(recordDate)) throw badRequest("La fecha no es válida. Elige otra en el calendario.");
     if (def.officeOnly && !(isManager(req.auth!.role) || req.auth!.role === "designada")) {
       throw forbidden("Este registro lo llena la oficina");
     }
@@ -264,6 +291,9 @@ export async function createRecord(req: Request, res: Response, next: NextFuncti
       title: def.title,
       recordDate: date,
       fileName: buildFileName(def.code, date, now, pos || equipment?.folder),
+      formEdition: schema?.templateEdition ?? "",
+      // Registros de prueba: fuera de indicadores y avisos (solo quien administra los marca).
+      test: test === true && (isManager(req.auth!.role) || req.auth!.role === "designada"),
       data: schema ? projectToData(schema, { data, answers: {}, context: ctx }) : data,
       position: pos,
       equipment,
@@ -276,6 +306,7 @@ export async function createRecord(req: Request, res: Response, next: NextFuncti
       idempotencyKey: key,
     });
     pushEvent(record, req, "creado");
+    if (schema) await applyActivityDate(record);
     try {
       await record.save();
     } catch (err) {
@@ -313,6 +344,13 @@ export async function listRecords(req: Request, res: Response, next: NextFunctio
     if (status) filter.status = { $in: status.split(",") };
     if (position) filter.position = position;
     if (equipment) filter["equipment.folder"] = equipment;
+    for (const [label, value] of [
+      ["desde", from],
+      ["hasta", to],
+    ] as const) {
+      if (value && !isDateKey(value)) throw badRequest(`La fecha «${label}» no es válida. Elige otra en el calendario.`);
+    }
+    if (before && Number.isNaN(new Date(before).getTime())) throw badRequest("La fecha no es válida");
     if (from || to) {
       filter.recordDate = {
         ...(from ? { $gte: new Date(`${from}T00:00:00-06:00`) } : {}),
@@ -398,20 +436,30 @@ export async function saveData(req: Request, res: Response, next: NextFunction) 
     record.data = merged;
 
     if (schema) {
-      if (isObject(answers)) {
-        record.answers = mergeAnswers(schema, record.answers ?? {}, answers, req.auth!.sub).answers;
-        record.markModified("answers");
-      }
       if (isObject(context)) {
-        const prevDate = record.context?.activityDate;
         record.context = mergeContext(record.context, context);
         record.markModified("context");
-        // La fecha de la actividad define el mes del archivo y el nombre del PDF.
-        if (record.context?.activityDate && record.context.activityDate !== prevDate) {
-          record.recordDate = recordDateFromKey(record.context.activityDate);
-          record.fileName = buildFileName(record.code, record.recordDate, record.createdAt ?? new Date());
+      }
+      if (isObject(answers)) {
+        const prev = record.answers ?? {};
+        record.answers = mergeAnswers(schema, prev, answers, req.auth!.sub).answers;
+        record.markModified("answers");
+        // Cada sección guarda su propia hora: la primera respuesta la fija con la hora
+        // actual (se puede corregir en la tablet).
+        if (record.context) {
+          const times = { ...(record.context.sectionTimes ?? {}) };
+          for (const section of schema.sections) {
+            if (times[section.id]) continue;
+            if (section.items.some((i) => i.id in answers && record.answers[i.id]?.value)) {
+              times[section.id] = nowTimeGalapagos();
+            }
+          }
+          record.context = { ...record.context, sectionTimes: times };
+          record.markModified("context");
         }
       }
+      // La fecha y hora de la actividad definen el mes del archivo y el nombre del PDF.
+      await applyActivityDate(record);
       record.data = projectToData(schema, record);
       record.flags = computeFlags(schema, record.answers ?? {});
     }
@@ -737,6 +785,31 @@ export async function discard(req: Request, res: Response, next: NextFunction) {
   }
 }
 
+/**
+ * Marca o desmarca un registro como de prueba (Persona Designada o Gerencia).
+ * No cambia el contenido ni las firmas: solo lo saca de indicadores y avisos.
+ */
+export async function setTest(req: Request, res: Response, next: NextFunction) {
+  try {
+    const role = req.auth!.role;
+    if (!(role === "designada" || isManager(role))) throw forbidden("Solo la Persona Designada marca registros de prueba");
+    const { test, reason } = req.body as { test?: unknown; reason?: string };
+    if (typeof test !== "boolean") throw badRequest("Indica si es de prueba");
+    const record = await IsmRecord.findById(req.params.id);
+    if (!record) throw notFound("Registro no encontrado");
+    if (Boolean(record.test) === test) {
+      res.json({ record: { _id: record._id, test: record.test } });
+      return;
+    }
+    record.test = test;
+    pushEvent(record, req, test ? "marcado como prueba" : "ya no es de prueba", (reason ?? "").trim().slice(0, 300));
+    await saveOrConflict(record);
+    res.json({ record: { _id: record._id, test: record.test } });
+  } catch (err) {
+    next(err);
+  }
+}
+
 /** PDF oficial para imprimir o entregar al auditor. */
 export async function pdf(req: Request, res: Response, next: NextFunction) {
   try {
@@ -757,10 +830,12 @@ export async function summary(req: Request, res: Response, next: NextFunction) {
   try {
     const uid = new Types.ObjectId(req.auth!.sub);
     const { start, end, y, m } = monthRangeGalapagos();
-    const monthFilter = { recordDate: { $gte: start, $lt: end }, status: { $ne: "borrador" } };
+    // Los registros de prueba no cuentan en indicadores.
+    const real = { test: { $ne: true } };
+    const monthFilter = { recordDate: { $gte: start, $lt: end }, status: { $ne: "borrador" }, ...real };
 
     const [byStatus, mine, mineReturned, monthly, equipmentDone, positionsDone] = await Promise.all([
-      IsmRecord.aggregate([{ $group: { _id: "$status", n: { $sum: 1 } } }]),
+      IsmRecord.aggregate([{ $match: real }, { $group: { _id: "$status", n: { $sum: 1 } } }]),
       IsmRecord.countDocuments({ createdBy: uid, status: "borrador" }),
       IsmRecord.countDocuments({ createdBy: uid, status: "borrador", returnInfo: { $ne: null } }),
       IsmRecord.aggregate([
