@@ -13,6 +13,7 @@ import { User } from "../models/user.model";
 import {
   activityFileName,
   buildFileName,
+  defaultVessel,
   galapagosParts,
   hashRecord,
   isDateKey,
@@ -133,6 +134,10 @@ function schemaOf(record: Pick<IIsmRecord, "code" | "schemaVersion">) {
  */
 async function applyCrewChoice(ctx: IIsmContext | null, incoming: Record<string, unknown>, req: Request) {
   if (!ctx || typeof incoming.crewId !== "string") return ctx;
+  // "No soy yo": se vuelve a elegir de la lista.
+  if (incoming.crewId === "") {
+    return { ...ctx, filledBy: { ...ctx.filledBy, name: "", fromList: false, positionFixed: false } };
+  }
   if (!Types.ObjectId.isValid(incoming.crewId)) throw badRequest("Elige quién hace el chequeo de la lista");
   const member = await User.findOne({ _id: incoming.crewId, active: true, role: { $in: CREW_LIST_ROLES } }).select(
     "name role position",
@@ -221,6 +226,7 @@ export async function catalog(_req: Request, res: Response, next: NextFunction) 
       forms: ismCatalog().map((f) => ({ ...f, guidedVersion: latestSchemaVersion(f.code) })),
       equipment: ismEquipment(),
       positions: CREW_POSITIONS.map((p) => ({ value: p, label: POSITION_LABELS[p] })),
+      vessel: defaultVessel(),
     });
   } catch (err) {
     next(err);
@@ -319,7 +325,8 @@ export async function createRecord(req: Request, res: Response, next: NextFuncti
       const user = await User.findById(req.auth!.sub).select("position");
       ctx = mergeContext(
         {
-          vessel: schema.vessel,
+          // Embarcación de los datos maestros; el esquema queda como respaldo.
+          vessel: defaultVessel()?.name ?? schema.vessel,
           activityDate: recordDate,
           activityTime: "",
           place: "",
