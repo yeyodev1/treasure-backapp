@@ -2,6 +2,7 @@ import { PDFDocument, PDFEmbeddedPage, PDFFont, PDFPage, rgb } from "pdf-lib";
 import { IIsmRecord } from "../models/ismRecord.model";
 import { IsmSchema, hashContent, schemaItems, signatureIsValid } from "./ismSchema.service";
 import { POSITION_LABELS } from "../utils/roles";
+import { bandPage } from "./pdfBand.service";
 
 /**
  * Página anexa de los registros guiados. El formato oficial del R-14 no
@@ -71,16 +72,13 @@ export async function appendGuidedAnnex(
 ): Promise<number> {
   const { font, bold, safe } = opts;
   const source = await PDFDocument.load(templateBytes);
-  const sourcePage = source.getPage(0);
-  const { width: W, height: H } = sourcePage.getSize();
+  const { width: W, height: H } = source.getPage(0).getSize();
+  const headerBox = { left: 0, right: W, top: H * (1 - HEADER_BAND.top), bottom: H * (1 - HEADER_BAND.bottom) };
+  const footerBox = { left: 0, right: W, top: H * (1 - FOOTER_BAND.top), bottom: H * (1 - FOOTER_BAND.bottom) };
 
-  const [header, footer] = await pdf.embedPages(
-    [sourcePage, sourcePage],
-    [
-      { left: 0, right: W, top: H * (1 - HEADER_BAND.top), bottom: H * (1 - HEADER_BAND.bottom) },
-      { left: 0, right: W, top: H * (1 - FOOTER_BAND.top), bottom: H * (1 - FOOTER_BAND.bottom) },
-    ],
-  );
+  // Cada franja lleva solo su propio texto: el anexo no arrastra oculta la hoja oficial (punto 8).
+  const header = await pdf.embedPage(await bandPage(templateBytes, 0, headerBox.bottom, headerBox.top), headerBox);
+  const footer = await pdf.embedPage(await bandPage(templateBytes, 0, footerBox.bottom, footerBox.top), footerBox);
 
   const left = W * MARGIN_X;
   const right = W * (1 - MARGIN_X);

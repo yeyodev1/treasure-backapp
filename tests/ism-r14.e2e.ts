@@ -391,6 +391,10 @@ async function main() {
   const archText = await pdfPages(archBytes);
   if (archText) {
     const annex = archText.slice(1).join("\n");
+    check(
+      "El anexo no arrastra oculto el texto de la hoja oficial (punto 8)",
+      !/Estiba de drizas|La presente lista de chequeo|Supervisión de las operaciones/.test(annex) && annex.includes("MANUAL DE GESTION DE SEGURIDAD") && annex.includes("R-14"),
+    );
     check("La casilla de la Persona Designada lleva el cargo", /Persona Designada · Persona Designada · \d\d\/\d\d\/\d{4}/.test(archText[0]!.replace(/\s+/g, " ")), archText[0]!.match(/.*Persona Designada ·.*/)?.[0]);
     check("El anexo dice que la clave se restableció antes de firmar", /clave restablecida el \d\d\/\d\d\/\d{4} \d\d:\d\d por Persona Designada/.test(annex), annex.match(/.*clave restablecida.*/)?.[0]);
   }
