@@ -184,7 +184,84 @@ async function main() {
   );
   check("QR: sin datos de facturación del pago", !("billing" in pub.account.payments[0]) && !("reference" in pub.account.payments[0]));
 
-  // RESUMEN
+  // ---- 05: compras recibidas = recepciones exactas ($84 parcial + $18)
+  const tanqueray = await id("Tanqueray (botella)");
+  const cp1 = await api("adm", "POST", "/purchases", {
+    supplier: "Distribuidora", document: "001-001-1", idempotencyKey: "cp-001",
+    lines: [{ productId: tanqueray, containers: 4, containerCost: 28 }],
+  });
+  await api("adm", "POST", `/purchases/${cp1.data.purchase._id}/receive`, { key: "r1", lines: [{ index: 0, containers: 3 }] });
+  const cp2 = await api("adm", "POST", "/purchases", {
+    supplier: "Distribuidora", document: "001-001-2", idempotencyKey: "cp-002",
+    lines: [{ productId: coke, containers: 30, containerCost: 0.6 }],
+  });
+  await api("adm", "POST", `/purchases/${cp2.data.purchase._id}/receive`, { key: "r2", lines: [{ index: 0, containers: 30 }] });
+  const { StockMovement } = await import("../src/models/stockMovement.model");
+  const oldWay = (await StockMovement.find({ type: "compra", qty: { $gt: 0 } })).reduce((s, m) => s + m.qty * m.unitCost, 0);
+  const today = dates.commercialDateKey();
+  const period = (await api("duena", "GET", `/reports/owner?from=${today}&to=${today}`)).data;
+  check(
+    "Compras: $84 (CP-001 parcial) + $18 (CP-002) = $102 exactos",
+    period.purchases === 102 && period.details.purchases.length === 2 && period.details.purchases[0].amount === 84 && period.details.purchases[0].partial === true && period.details.purchases[1].amount === 18,
+    { purchases: period.purchases, antes: Math.round(oldWay * 100) / 100 },
+  );
+
+  // ---- 08/09/10A: un filtro, cifras que cuadran con su detalle
+  const sum = (rows: any[], key: string) => Math.round(rows.reduce((s, r) => s + (r[key] ?? 0), 0) * 100) / 100;
+  const byCruise = (await api("duena", "GET", `/reports/owner?cruiseId=${cruiseId}`)).data;
+  check(
+    "Crucero: consumos $34, cobrado $27,50, por cobrar $6,50",
+    byCruise.netConsumption === 34 && byCruise.collected === 27.5 && byCruise.pendingCollection === 6.5 && byCruise.scope.mode === "crucero",
+    { net: byCruise.netConsumption, col: byCruise.collected, pend: byCruise.pendingCollection },
+  );
+  check(
+    "Cada cifra suma su detalle (consumos, pagos, por cobrar, por día)",
+    sum(byCruise.details.consumption, "amount") === byCruise.netConsumption &&
+      sum(byCruise.details.payments, "total") === byCruise.collected &&
+      sum(byCruise.details.pending, "amount") === byCruise.pendingCollection &&
+      sum(byCruise.byDay, "total") === byCruise.netConsumption,
+  );
+  check(
+    "Alertas con acción: cuentas pendientes y facturas pendientes",
+    byCruise.alerts.some((a: any) => a.kind === "cuentas" && a.action === "Ver cuentas pendientes") &&
+      byCruise.alerts.some((a: any) => a.kind === "facturas" && a.count === 1),
+    byCruise.alerts.map((a: any) => a.kind),
+  );
+  check("Costos completos: costo y margen calculados", byCruise.consumedCost !== null && byCruise.margin === Math.round((34 - byCruise.consumedCost) * 100) / 100);
+
+  // 10A: la deuda de ayer no es consumo de hoy; cobrarla hoy tampoco.
+  const { Order } = await import("../src/models/order.model");
+  const yesterday = new Date(Date.now() - 26 * 3600 * 1000);
+  await Order.collection.updateMany({ cruise: new mongoose.Types.ObjectId(cruiseId), cabinNumber: 3 }, { $set: { createdAt: yesterday } });
+  await api("bar", "POST", `/accounts/${cruiseId}/3/submit`);
+  await api("dir", "POST", `/accounts/${cruiseId}/3/approve`);
+  await api("dir", "POST", "/payments/collect", { cruiseId, cabinNumber: 3, method: "transferencia", reference: "TR-1", billing: { idNumber: "P3" } });
+  const todayAfter = (await api("duena", "GET", `/reports/owner?from=${today}&to=${today}`)).data;
+  check(
+    "Cobrar hoy una deuda de ayer no aumenta los consumos de hoy",
+    todayAfter.netConsumption === 27.5 && todayAfter.collected === 34 && todayAfter.pendingCollection === 0,
+    { net: todayAfter.netConsumption, col: todayAfter.collected },
+  );
+  const cutYesterday = dates.commercialDateKey(yesterday);
+  const atYesterday = (await api("duena", "GET", `/reports/owner?to=${cutYesterday}`)).data;
+  check(
+    "Por cobrar es el saldo al corte (ayer debía $6,50)",
+    atYesterday.pendingCollection === 6.5 && atYesterday.collected === 0,
+    { pend: atYesterday.pendingCollection, col: atYesterday.collected },
+  );
+
+  // 10B: un costo desconocido no vale cero.
+  const fanta = await id("Fanta");
+  await Product.updateOne({ _id: fanta }, { $set: { costPerUnit: 0 } });
+  await api("bar", "POST", "/consumptions", { cruiseId, cabinNumber: 2, productId: fanta, idempotencyKey: "f-1" });
+  const noCost = (await api("duena", "GET", `/reports/owner?cruiseId=${cruiseId}`)).data;
+  check(
+    "Falta un costo: costo y margen No disponible, producto listado",
+    noCost.consumedCost === null && noCost.margin === null && noCost.missingCost.includes("Fanta") && noCost.alerts.some((a: any) => a.kind === "costos"),
+    { cost: noCost.consumedCost, missing: noCost.missingCost },
+  );
+  const forbidden = await api("dir", "GET", `/reports/owner?cruiseId=${cruiseId}`);
+  check("El resumen solo lo ve Gerencia", forbidden.status === 403);
 
   server.close();
   await mongoose.disconnect();
