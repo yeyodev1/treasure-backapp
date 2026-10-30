@@ -9,10 +9,10 @@ export const MOVEMENT_TYPES = [
   "carga", // traslado bodega → a bordo
   "venta", // consumo por bebida entregada
   "merma", // rotura o pérdida reportada en el momento
-  "ajuste", // diferencia aprobada por Paula (conteo físico o ajuste manual)
+  "ajuste", // diferencia aprobada por Gerencia (conteo físico o ajuste manual)
   "compra", // recepción física de una compra (factura sin recepción no mueve stock)
   "reverso", // deshacer un consumo registrado por error (devuelve lo descontado)
-  "devolucion", // anulación aprobada por Paula con regreso al stock
+  "devolucion", // anulación aprobada por Gerencia con regreso al stock
   "migracion", // saldo trasladado desde el modelo anterior
 ] as const;
 export type MovementType = (typeof MOVEMENT_TYPES)[number];
