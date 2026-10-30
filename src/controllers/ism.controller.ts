@@ -153,7 +153,13 @@ async function applyCrewChoice(ctx: IIsmContext | null, incoming: Record<string,
     return { ...ctx, filledBy: { ...ctx.filledBy, name: "", fromList: false, positionFixed: false } };
   }
   if (!Types.ObjectId.isValid(incoming.crewId)) throw badRequest("Elige quién hace el chequeo de la lista");
-  const member = await User.findOne({ _id: incoming.crewId, active: true, role: { $in: CREW_LIST_ROLES } }).select(
+  const member = await User.findOne({
+    _id: incoming.crewId,
+    active: true,
+    role: { $in: CREW_LIST_ROLES },
+    // La tablet compartida no es una persona: no hace chequeos.
+    sharedDevice: { $ne: true },
+  }).select(
     "name role position",
   );
   if (!member) throw badRequest("Esa persona no está en la lista de tripulantes");
@@ -905,8 +911,9 @@ export async function signStep(req: Request, res: Response, next: NextFunction) 
       signerUser = new Types.ObjectId(req.auth!.sub);
     }
 
-    const person = await User.findOne({ _id: signerUser, active: true }).select("name role position");
+    const person = await User.findOne({ _id: signerUser, active: true }).select("name role position sharedDevice");
     if (!person) throw forbidden("Esa persona ya no está activa en la lista de tripulantes");
+    if (person.sharedDevice) throw forbidden("La tablet compartida no firma: elige a la persona que hizo el chequeo");
     // La clave asegura que quien firma es quien dice ser (bloqueo en el servidor).
     const profile = await verifyPin(signerUser, pin, newPin);
 

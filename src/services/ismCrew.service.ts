@@ -27,13 +27,18 @@ export async function crewProfile(userId: Types.ObjectId | string) {
   );
 }
 
-/** Lista de tripulantes: cuentas activas con rol de tripulación, su cargo y si están a bordo. */
-export async function listCrew(opts: { onboardOnly?: boolean; includeInactive?: boolean } = {}) {
+/**
+ * Lista de tripulantes: cuentas activas con rol de tripulación, su cargo y si
+ * están a bordo. Las cuentas compartidas (tablet del barco) no son personas:
+ * solo salen en la vista de administración (`includeShared`) para marcarlas.
+ */
+export async function listCrew(opts: { onboardOnly?: boolean; includeInactive?: boolean; includeShared?: boolean } = {}) {
   const users = await User.find({
     role: { $in: CREW_LIST_ROLES },
     ...(opts.includeInactive ? {} : { active: true }),
+    ...(opts.includeShared ? {} : { sharedDevice: { $ne: true } }),
   })
-    .select("name email role position active")
+    .select("name email role position active sharedDevice")
     .sort({ name: 1 });
   const profiles = await IsmCrew.find({ user: { $in: users.map((u) => u._id) } });
   const byUser = new Map(profiles.map((p) => [p.user.toString(), p]));
@@ -50,6 +55,7 @@ export async function listCrew(opts: { onboardOnly?: boolean; includeInactive?: 
         active: u.active,
         // Sin correo propio: solo firma en la tablet del barco con su clave.
         hasAccount: !u.email.endsWith("@sin-cuenta.treasure.ec"),
+        sharedDevice: Boolean(u.sharedDevice),
         onboard: p?.onboard ?? true,
         hasPin: Boolean(p?.pinHash),
         pinTemporary: Boolean(p?.pinTemporary),

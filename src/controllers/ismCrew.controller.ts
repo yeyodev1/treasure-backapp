@@ -29,7 +29,8 @@ const validPosition = (p: unknown): p is string => typeof p === "string" && CREW
 export async function listCrewMembers(req: Request, res: Response, next: NextFunction) {
   try {
     const keeper = req.auth!.role === "designada" || req.auth!.role === "duena";
-    const crew = await listCrew({ onboardOnly: req.query.onboard === "1", includeInactive: keeper && req.query.all === "1" });
+    const manage = keeper && req.query.all === "1";
+    const crew = await listCrew({ onboardOnly: req.query.onboard === "1", includeInactive: manage, includeShared: manage });
     res.json({ crew });
   } catch (err) {
     next(err);
@@ -80,11 +81,12 @@ export async function updateCrewMember(req: Request, res: Response, next: NextFu
     assertKeeper(req);
     const user = await User.findById(req.params.id);
     if (!user || !CREW_LIST_ROLES.includes(user.role as never)) throw notFound("Tripulante no encontrado");
-    const { name, position, onboard, active } = req.body as {
+    const { name, position, onboard, active, sharedDevice } = req.body as {
       name?: string;
       position?: string;
       onboard?: boolean;
       active?: boolean;
+      sharedDevice?: boolean;
     };
     if (typeof name === "string") {
       const clean = name.trim().replace(/\s+/g, " ").slice(0, 120);
@@ -97,6 +99,11 @@ export async function updateCrewMember(req: Request, res: Response, next: NextFu
     }
     // Solo se desactiva a quien no tiene cuenta propia (las cuentas las maneja Gerencia).
     if (typeof active === "boolean" && user.email.endsWith("@sin-cuenta.treasure.ec")) user.active = active;
+    // Cuenta compartida (tablet del barco): solo se marca a mano, nunca por el nombre o el correo.
+    if (typeof sharedDevice === "boolean") {
+      if (sharedDevice && user.role !== "tripulante") throw badRequest("Solo una cuenta de tripulante puede ser la tablet compartida");
+      user.sharedDevice = sharedDevice;
+    }
     user.updatedBy = new Types.ObjectId(req.auth!.sub);
     await user.save();
     if (typeof onboard === "boolean") {
@@ -105,7 +112,7 @@ export async function updateCrewMember(req: Request, res: Response, next: NextFu
       profile.updatedBy = new Types.ObjectId(req.auth!.sub);
       await profile.save();
     }
-    const crew = await listCrew({ includeInactive: true });
+    const crew = await listCrew({ includeInactive: true, includeShared: true });
     res.json({ member: crew.find((c) => c.id === user._id.toString()) });
   } catch (err) {
     next(err);

@@ -189,6 +189,21 @@ async function main() {
   check("La tablet ve la lista con nombre y cargo", list.data.crew?.some((c: any) => c.name === "Juan Pérez" && c.positionLabel === "Timonel 1"));
   const duenaPin = await api("duena", "POST", `/ism/crew/${juan.id}/temporary-pin`);
   check("Gerencia ya no da claves temporales (solo la Persona Designada)", duenaPin.status === 403, duenaPin.status);
+  // ---- Tablet compartida (punto 4): no es una persona; solo se marca a mano ----
+  const tablet = await User.create({ email: "tablet.barco@t", role: "tripulante", name: "Tablet Barco", passwordHash: hash, active: true, position: "" });
+  const before4 = await api("tri", "GET", "/ism/crew?onboard=1");
+  check("Una cuenta llamada «Tablet Barco» no se marca sola", before4.data.crew?.some((c: any) => c.id === tablet._id.toString() && c.sharedDevice === false));
+  const noMark = await api("tri", "PATCH", `/ism/crew/${tablet._id}`, { sharedDevice: true });
+  check("Un tripulante no marca la tablet compartida", noMark.status === 403, noMark.status);
+  const marked = await api("des", "PATCH", `/ism/crew/${tablet._id}`, { sharedDevice: true });
+  check("La Persona Designada marca la tablet compartida", marked.data.member?.sharedDevice === true, marked.data.member);
+  const after4 = await api("tri", "GET", "/ism/crew?onboard=1");
+  check("La tablet compartida no sale en «¿Quién hace el chequeo?»", !after4.data.crew?.some((c: any) => c.id === tablet._id.toString()));
+  const manage4 = await api("des", "GET", "/ism/crew?all=1");
+  check("En Tripulantes se ve marcada para poder desmarcarla", manage4.data.crew?.some((c: any) => c.id === tablet._id.toString() && c.sharedDevice));
+  const pickTablet = await api("tri", "PATCH", `/ism/records/${recA._id}`, { context: { crewId: tablet._id.toString() } });
+  check("No se puede elegir la tablet como quien hace el chequeo", pickTablet.status === 400, pickTablet.status);
+
   const tempJuan = (await api("des", "POST", `/ism/crew/${juan.id}/temporary-pin`)).data.pin as string;
   const tempPedro = (await api("des", "POST", `/ism/crew/${pedro.id}/temporary-pin`)).data.pin as string;
   check("Clave temporal de 4 números", /^\d{4}$/.test(tempJuan), tempJuan);
