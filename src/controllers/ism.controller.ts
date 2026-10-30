@@ -32,7 +32,9 @@ import {
   latestSchemaVersion,
   mergeAnswers,
   mergeContext,
+  deviceTime,
   projectToData,
+  schemaFileName,
   schemaItems,
   schemaManagedFields,
   signatureIsValid,
@@ -42,10 +44,11 @@ import {
 } from "../services/ismSchema.service";
 import { logEvent } from "../services/audit.service";
 import { freezeArchivedPdf, readArchivedPdf, tryFreezeArchivedPdf } from "../services/ismArchive.service";
+import { syncNovedades } from "../services/ismNovedad.service";
 import { CREW_LIST_ROLES, PIN_RESET_WINDOW_MS, positionLabel, verifyPin } from "../services/ismCrew.service";
 import { notifyRole, notifyUsers } from "../services/ismNotify.service";
 import { badRequest, conflict, forbidden, notFound } from "../errors/httpError";
-import { CREW_POSITIONS, POSITION_LABELS, isManager } from "../utils/roles";
+import { CREW_POSITIONS, POSITION_LABELS, ROLE_LABELS, isManager } from "../utils/roles";
 
 /** Quién puede ver todos los registros (la tripulación ve los suyos). Gerencia ve todo. */
 const SEES_ALL = new Set(["duena", "admin", "capitan", "designada"]);
@@ -79,14 +82,32 @@ function nowTimeGalapagos(): string {
 async function applyActivityDate(record: IIsmRecord & { _id?: Types.ObjectId }) {
   const ctx = record.context;
   if (!ctx?.activityDate) return;
+  const schema = schemaOf(record);
   record.recordDate = recordDateFromKey(ctx.activityDate, ctx.activityTime);
-  const base = activityFileName(record.code, ctx.activityDate, ctx.activityTime);
+  // Carpeta del mes calculada en el servidor (antes solo en la tablet).
+  record.archivePath = archivePathFor(record.code, schema?.archiveFolder, ctx.activityDate);
+  // Nombre según el patrón del esquema (por defecto R-14_AAAAMMDD_HHMM.pdf).
+  const base = schema ? schemaFileName(schema, record.code, ctx.activityDate, ctx.activityTime) : activityFileName(record.code, ctx.activityDate, ctx.activityTime);
   // Mismo minuto que ya tenía (con o sin sufijo): conserva su nombre.
   const stem = base.replace(/\.pdf$/, "");
   if (record.fileName === base || new RegExp(`^${stem}_\\d+\\.pdf$`).test(record.fileName ?? "")) return;
-  record.fileName = await uniqueFileName(base, async (name) =>
-    Boolean(await IsmRecord.exists({ fileName: name, ...(record._id ? { _id: { $ne: record._id } } : {}) })),
-  );
+  const taken = async (name: string) =>
+    Boolean(await IsmRecord.exists({ fileName: name, ...(record._id ? { _id: { $ne: record._id } } : {}) }));
+  // Regla de unicidad del esquema: "reject" no admite otro registro con el mismo nombre.
+  if (schema?.uniqueness?.onConflict === "reject" && (await taken(base))) {
+    throw conflict(`Ya hay un ${record.code} con esa fecha y hora (${base}). Ábrelo desde Mis tareas.`);
+  }
+  record.fileName = await uniqueFileName(base, taken);
+}
+
+const MONTH_NAMES = ["enero", "febrero", "marzo", "abril", "mayo", "junio", "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre"];
+
+/** "ISM/Listado de registros/R-14 …/2026/10_octubre" (mes de la actividad). */
+export function archivePathFor(code: string, folder: string | undefined, dateKey: string): string {
+  const [y, m] = dateKey.split("-").map(Number);
+  const base = (folder || `ISM/${code}`).split("/").filter(Boolean);
+  if (!y || !m) return base.join("/");
+  return [...base, String(y), `${String(m).padStart(2, "0")}_${MONTH_NAMES[m - 1]}`].join("/");
 }
 
 /**
@@ -193,6 +214,13 @@ async function applyCrewChoice(ctx: IIsmContext | null, incoming: Record<string,
   };
 }
 
+/** "el Capitán", "la Persona Designada" o el nombre del rol (motor de firmas con rol libre). */
+function roleName(role: string): string {
+  if (role === "capitan") return "el Capitán";
+  if (role === "designada") return "la Persona Designada";
+  return ROLE_LABELS[role as keyof typeof ROLE_LABELS] ?? role;
+}
+
 /** Paso de firma del registro guiado según su estado (motor de firmas del esquema). */
 function currentSigner(record: IIsmRecord): IsmSigner | null {
   const schema = schemaOf(record);
@@ -227,7 +255,13 @@ function toClient(record: { toObject?: () => unknown } & Partial<IIsmRecord>) {
     return { ...plain, valid: current ? signatureIsValid(plain, current) : true };
   });
   const annulled = (annulledSignatures ?? []).map(({ image: _image, ...plain }) => plain);
-  return { ...rest, signatures: clientSignatures, annulledSignatures: annulled };
+  // Registros de antes: la carpeta del mes se calcula al vuelo.
+  const archivePath =
+    rest.archivePath ||
+    (rest.schemaVersion && rest.context?.activityDate
+      ? archivePathFor(rest.code, schemaOf(rest)?.archiveFolder, rest.context.activityDate)
+      : undefined);
+  return { ...rest, ...(archivePath ? { archivePath } : {}), signatures: clientSignatures, annulledSignatures: annulled };
 }
 
 function validSignatures(record: IIsmRecord) {
@@ -252,7 +286,12 @@ const LIST_FIELDS = "-data -signatures.image -history -answers -idempotencyKey";
 export async function catalog(_req: Request, res: Response, next: NextFunction) {
   try {
     res.json({
-      forms: ismCatalog().map((f) => ({ ...f, guidedVersion: latestSchemaVersion(f.code) })),
+      forms: ismCatalog().map((f) => {
+        const guidedVersion = latestSchemaVersion(f.code);
+        // Tarjeta de Mis tareas del formato guiado (sale del esquema, no del código).
+        const card = guidedVersion ? ismSchema(f.code, guidedVersion)?.card : undefined;
+        return { ...f, guidedVersion, ...(card ? { card } : {}) };
+      }),
       equipment: ismEquipment(),
       positions: CREW_POSITIONS.map((p) => ({ value: p, label: POSITION_LABELS[p] })),
       vessel: defaultVessel(),
@@ -606,6 +645,8 @@ export async function saveData(req: Request, res: Response, next: NextFunction) 
     }
 
     await saveOrConflict(record);
+    // Las respuestas "No" se siguen como novedades (colección propia).
+    if (schema && isObject(answers)) await syncNovedades(record, { id: req.auth!.sub, name: req.auth!.name });
     const out = toClient(record);
     res.json({
       record: {
@@ -872,11 +913,12 @@ export async function approve(req: Request, res: Response, next: NextFunction) {
  */
 export async function signStep(req: Request, res: Response, next: NextFunction) {
   try {
-    const { image, pin, newPin, signer: signerId } = req.body as {
+    const { image, pin, newPin, signer: signerId, deviceAt } = req.body as {
       image?: string;
       pin?: string;
       newPin?: string;
       signer?: string;
+      deviceAt?: string;
     };
     if (!image?.startsWith("data:image/png;base64,")) throw badRequest("Firma con el dedo en el recuadro");
     if (image.length > 400_000) throw badRequest("La firma es demasiado grande");
@@ -904,13 +946,7 @@ export async function signStep(req: Request, res: Response, next: NextFunction) 
       signerUser = new Types.ObjectId(chosen.user.toString());
     } else {
       // Nadie firma por otro rol: ni Gerencia ni Administración.
-      if (role !== step.who) {
-        throw forbidden(
-          step.who === "capitan"
-            ? "Solo el Capitán, desde su cuenta, firma este paso"
-            : "Solo la Persona Designada, desde su cuenta, firma este paso",
-        );
-      }
+      if (role !== step.who) throw forbidden(`Solo ${roleName(step.who)}, desde su cuenta, firma este paso`);
       const invalid = invalidSignatures(record);
       if (invalid.length) {
         throw badRequest(
@@ -945,6 +981,7 @@ export async function signStep(req: Request, res: Response, next: NextFunction) 
       capturedByName: sessionUser.equals(signerUser) ? "" : req.auth!.name,
       method: "clave",
       ...(recentReset ? { pinResetAt: recentReset, pinResetByName: profile.pinResetByName || "" } : {}),
+      ...(deviceTime(deviceAt) ? { deviceAt: deviceTime(deviceAt) } : {}),
       image,
       signedAt: now,
       dataHash: hashContent(record),
@@ -973,6 +1010,7 @@ export async function signStep(req: Request, res: Response, next: NextFunction) 
       pushEvent(record, req, "archivado");
     }
     await saveOrConflict(record);
+    if (step.step === "tripulacion") await syncNovedades(record, { id: req.auth!.sub, name: req.auth!.name });
     // El PDF se genera una vez y queda congelado con su sha256.
     if (record.status === "archivado") await tryFreezeArchivedPdf(record);
 
@@ -1069,13 +1107,7 @@ async function giveBackStep(
   reason: string,
   section: string,
 ) {
-  if (req.auth!.role !== step.who) {
-    throw forbidden(
-      step.who === "capitan"
-        ? "Solo el Capitán, desde su cuenta, devuelve este registro"
-        : "Solo la Persona Designada, desde su cuenta, devuelve este registro",
-    );
-  }
+  if (req.auth!.role !== step.who) throw forbidden(`Solo ${roleName(step.who)}, desde su cuenta, devuelve este registro`);
   const target = signerByStep(record, step.returnsTo);
   if (!target) throw conflict("Este paso no se devuelve");
   const cleanReason = reason.trim().slice(0, 1000);

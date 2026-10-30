@@ -2,6 +2,7 @@ import { RequestHandler, Router } from "express";
 import { requireAuth } from "../middlewares/auth.middleware";
 import * as ism from "../controllers/ism.controller";
 import * as crew from "../controllers/ismCrew.controller";
+import * as plantilla from "../controllers/ismPlantilla.controller";
 
 /**
  * Rutas nuevas de Registros ISM (informe R-14 del 29-oct). Van aparte del
@@ -20,6 +21,11 @@ export function ismRoutes(router: Router, crewRoles: RequestHandler) {
   router.post("/ism/crew/me/pin", requireAuth, crewRoles, crew.changeMyPin);
   router.patch("/ism/crew/:id", requireAuth, crewRoles, crew.updateCrewMember);
   router.post("/ism/crew/:id/temporary-pin", requireAuth, crewRoles, crew.temporaryPin);
+
+  // Plantilla (informe ISM, criterio 5): novedades como colección y métricas.
+  router.get("/ism/novedades", requireAuth, crewRoles, plantilla.listNovedades);
+  router.patch("/ism/novedades/:id", requireAuth, crewRoles, plantilla.updateNovedad);
+  router.get("/ism/metrics", requireAuth, crewRoles, plantilla.metrics);
 
   // Avisos dentro de la app
   router.get("/ism/notices", requireAuth, crewRoles, crew.listNotices);

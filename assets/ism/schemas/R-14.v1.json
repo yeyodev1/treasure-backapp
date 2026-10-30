@@ -9,10 +9,14 @@
   "notice": "Completar este chequeo no autoriza el zarpe. La decisión de zarpar es del Capitán, que revisa y firma este registro.",
   "obs": { "page": 0, "x": 0.112, "y": 0.3485, "w": 0.818, "h": 0.0175 },
   "archiveFolder": "ISM/Listado de registros/R-14 Chequeo previo al zarpe",
+  "card": { "title": "Preparar el zarpe", "text": "Ronda de seguridad y chequeos previos al zarpe, al arribo y fondeado.", "icon": "fa-anchor", "newLabel": "Nuevo zarpe", "resumeTitle": "Tienes un chequeo sin enviar" },
+  "fileNamePattern": "{code}_{date}_{time}.pdf",
+  "uniqueness": { "by": "fileName", "onConflict": "suffix" },
+  "answerTypes": ["si", "no", "na"],
   "signers": [
-    { "step": "tripulacion", "who": "lista", "label": "Quien hace el chequeo", "field": "Firma_Chequeo", "print": "anexo", "status": "borrador", "next": "por_capitan", "returnsTo": null },
-    { "step": "capitan", "who": "capitan", "label": "Capitán", "field": "Firma_Capitan", "print": "casilla", "status": "por_capitan", "next": "por_oficina", "returnsTo": "tripulacion" },
-    { "step": "oficina", "who": "designada", "label": "Persona Designada", "field": "Firma_Persona_Designada", "print": "casilla", "status": "por_oficina", "next": "archivado", "returnsTo": "capitan" }
+    { "step": "tripulacion", "who": "lista", "label": "Quien hace el chequeo", "field": "Firma_Chequeo", "print": "anexo", "status": "borrador", "next": "por_capitan", "returnsTo": null, "order": 1, "signers": 1 },
+    { "step": "capitan", "who": "capitan", "label": "Capitán", "field": "Firma_Capitan", "print": "casilla", "status": "por_capitan", "next": "por_oficina", "returnsTo": "tripulacion", "order": 2, "signers": 1 },
+    { "step": "oficina", "who": "designada", "label": "Persona Designada", "field": "Firma_Persona_Designada", "print": "casilla", "status": "por_oficina", "next": "archivado", "returnsTo": "capitan", "order": 3, "signers": 1 }
   ],
   "context": {
     "activityDate": { "label": "Fecha de la actividad", "pdfField": "Text Field 1069", "required": true },

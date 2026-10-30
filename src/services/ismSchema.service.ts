@@ -18,7 +18,13 @@ export interface IsmSchemaItem {
   si: string;
   no: string;
   allowNa: boolean;
+  /** Tipos de respuesta de este punto (si no, los del esquema). */
+  answerTypes?: IsmAnswerType[];
 }
+
+/** Tipos de respuesta que admite un formato guiado (plantilla, criterio 5). */
+export const ANSWER_TYPES = ["si", "no", "na"] as const;
+export type IsmAnswerType = (typeof ANSWER_TYPES)[number];
 
 export interface IsmSchemaSection {
   id: string;
@@ -55,18 +61,115 @@ export interface IsmSchema {
    * imprime y a qué paso se devuelve.
    */
   signers?: IsmSigner[];
+  /**
+   * Tarjeta de Mis tareas y textos de la pantalla de inicio del formato
+   * (/formato/:code/nuevo). Plantilla, criterio 5 del informe.
+   */
+  card?: { title: string; text: string; icon: string; newLabel?: string; resumeTitle?: string };
+  /**
+   * Nombre del PDF: {code}, {date} (AAAAMMDD) y {time} (HHMM) de la actividad.
+   * Por defecto "{code}_{date}_{time}.pdf".
+   */
+  fileNamePattern?: string;
+  /**
+   * Unicidad del registro: "suffix" (otro con el mismo nombre → _2, _3…) o
+   * "reject" (no se permite un segundo registro con el mismo nombre).
+   */
+  uniqueness?: { by: "fileName"; onConflict: "suffix" | "reject" };
+  /** Tipos de respuesta del formato (por defecto Sí · No · No aplica). */
+  answerTypes?: IsmAnswerType[];
 }
 
+/**
+ * Paso del motor de firmas. `who` es un rol libre (capitan, designada,
+ * jefe_maquinas…) o "lista" (se elige de la lista de tripulantes).
+ * `order` agrupa pasos: los del mismo orden son paralelos (comparten el
+ * estado y se firman en cualquier orden); `signers` es cuántas firmas pide
+ * el paso. El R-14 sigue en 3 pasos secuenciales de una firma.
+ */
 export interface IsmSigner {
   step: "tripulacion" | "capitan" | "oficina";
-  /** "lista": se elige de la lista de tripulantes; si no, el rol de la cuenta. */
-  who: "lista" | "capitan" | "designada";
+  who: string;
   label: string;
   field: string;
   print: "anexo" | "casilla";
   status: "borrador" | "por_capitan" | "por_oficina";
   next: "por_capitan" | "por_oficina" | "archivado";
   returnsTo: "tripulacion" | "capitan" | null;
+  /** Orden del paso (1, 2, 3…); el mismo número = firmas en paralelo. Por defecto, su posición. */
+  order?: number;
+  /** Número de firmantes que pide el paso (por defecto 1). */
+  signers?: number;
+}
+
+const SIGNER_STATUSES = ["borrador", "por_capitan", "por_oficina"];
+const SIGNER_NEXT = ["por_capitan", "por_oficina", "archivado"];
+
+/**
+ * Valida el motor de firmas de un esquema: campos únicos, quién firma,
+ * orden y paralelos coherentes, cadena de estados que termina en archivado
+ * y devoluciones a pasos que existen. Devuelve los problemas (vacío = válido).
+ */
+export function validateSigners(signers: IsmSigner[] | undefined): string[] {
+  const errors: string[] = [];
+  if (!signers?.length) return errors;
+  const fields = new Set<string>();
+  const steps = new Set<string>();
+  signers.forEach((s, i) => {
+    const at = `firmante ${i + 1} (${s.label || s.field || "?"})`;
+    if (!s.field) errors.push(`${at}: falta el campo de firma`);
+    else if (fields.has(s.field)) errors.push(`${at}: el campo ${s.field} se repite`);
+    fields.add(s.field);
+    steps.add(s.step);
+    if (typeof s.who !== "string" || !/^[a-z_]{2,30}$/.test(s.who)) errors.push(`${at}: «who» debe ser un rol (minúsculas) o "lista"`);
+    if (!SIGNER_STATUSES.includes(s.status)) errors.push(`${at}: estado inválido ${s.status}`);
+    if (!SIGNER_NEXT.includes(s.next)) errors.push(`${at}: siguiente estado inválido ${s.next}`);
+    if (s.signers !== undefined && (!Number.isInteger(s.signers) || s.signers < 1 || s.signers > 10)) {
+      errors.push(`${at}: número de firmantes entre 1 y 10`);
+    }
+    if (s.order !== undefined && (!Number.isInteger(s.order) || s.order < 1)) errors.push(`${at}: orden inválido`);
+  });
+  // Orden: no decrece; los paralelos (mismo orden) comparten estado y siguiente.
+  const orders = signers.map((s, i) => s.order ?? i + 1);
+  for (let i = 1; i < orders.length; i++) {
+    if (orders[i]! < orders[i - 1]!) errors.push("Los pasos deben ir en orden creciente");
+  }
+  const groups = new Map<number, IsmSigner[]>();
+  signers.forEach((s, i) => groups.set(orders[i]!, [...(groups.get(orders[i]!) ?? []), s]));
+  const sequence = [...groups.entries()].sort(([a], [b]) => a - b).map(([, g]) => g);
+  for (const g of sequence) {
+    if (new Set(g.map((s) => s.status)).size > 1 || new Set(g.map((s) => s.next)).size > 1) {
+      errors.push(`Los pasos en paralelo (${g.map((s) => s.label).join(", ")}) deben compartir estado y siguiente`);
+    }
+  }
+  // Cadena: empieza en borrador, cada grupo pasa al estado del siguiente y el último archiva.
+  if (sequence[0]?.[0]?.status !== "borrador") errors.push("El primer paso se firma en borrador");
+  sequence.forEach((g, i) => {
+    const next = sequence[i + 1]?.[0]?.status ?? "archivado";
+    if (g[0]!.next !== next) errors.push(`«${g[0]!.label}» pasa a ${g[0]!.next}, pero el siguiente paso espera ${next}`);
+  });
+  for (const s of signers) {
+    if (s.returnsTo && !steps.has(s.returnsTo)) errors.push(`«${s.label}» devuelve a un paso que no existe (${s.returnsTo})`);
+  }
+  return errors;
+}
+
+/** Tipos de respuesta de un punto. */
+export function itemAnswerTypes(schema: Pick<IsmSchema, "answerTypes">, item: IsmSchemaItem): IsmAnswerType[] {
+  const base = item.answerTypes ?? schema.answerTypes ?? [...ANSWER_TYPES];
+  return base.filter((t) => t !== "na" || item.allowNa);
+}
+
+/** Nombre del PDF según el patrón del esquema. */
+export function schemaFileName(schema: Pick<IsmSchema, "code" | "fileNamePattern"> | null, code: string, dateKey: string, time: string): string {
+  const hhmm = /^([01]\d|2[0-3]):[0-5]\d$/.test(time) ? time.replace(":", "") : "0000";
+  const pattern = schema?.fileNamePattern || "{code}_{date}_{time}.pdf";
+  const name = pattern
+    .replace(/\{code\}/g, code)
+    .replace(/\{date\}/g, dateKey.replace(/-/g, ""))
+    .replace(/\{time\}/g, hhmm)
+    .replace(/[^A-Za-z0-9_.-]+/g, "_");
+  return name.endsWith(".pdf") ? name : `${name}.pdf`;
 }
 
 export interface IsmMissing {
@@ -89,7 +192,11 @@ export function ismSchema(code: string, version?: number | null): IsmSchema | nu
   const key = `${code}.v${version}`;
   if (!cache.has(key)) {
     const file = path.join(SCHEMAS, `${key}.json`);
-    cache.set(key, fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, "utf8")) : null);
+    const schema: IsmSchema | null = fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, "utf8")) : null;
+    // Un motor de firmas mal declarado no se usa: mejor no abrir el formato que firmar mal.
+    const problems = validateSigners(schema?.signers);
+    if (problems.length) throw new Error(`Esquema ${key} con firmas inválidas: ${problems.join("; ")}`);
+    cache.set(key, schema);
   }
   return cache.get(key) ?? null;
 }
@@ -128,9 +235,13 @@ export function schemaManagedFields(schema: IsmSchema): Set<string> {
 const clip = (v: unknown, max: number) => (typeof v === "string" ? v.trim().slice(0, max) : "");
 
 /** Limpia una respuesta recibida del cliente. */
-export function sanitizeAnswer(input: unknown, item: IsmSchemaItem): Omit<IIsmAnswer, "at" | "by"> {
+export function sanitizeAnswer(
+  input: unknown,
+  item: IsmSchemaItem,
+  types: IsmAnswerType[] = itemAnswerTypes({}, item),
+): Omit<IIsmAnswer, "at" | "by"> {
   const raw = (input ?? {}) as Record<string, unknown>;
-  const value = raw.value === "si" || raw.value === "no" || (raw.value === "na" && item.allowNa) ? raw.value : null;
+  const value = types.includes(raw.value as IsmAnswerType) ? (raw.value as IsmAnswerType) : null;
   const evidencia = Array.isArray(raw.evidencia)
     ? raw.evidencia.filter((u): u is string => typeof u === "string" && /^https:\/\//.test(u)).slice(0, 4)
     : [];
@@ -155,6 +266,14 @@ export function sanitizeAnswer(input: unknown, item: IsmSchemaItem): Omit<IIsmAn
     if (estado) clean.estado = estado;
   }
   return clean;
+}
+
+/** Hora de la tablet (ISO) si es válida y razonable (±2 días del servidor). */
+export function deviceTime(value: unknown): Date | null {
+  if (typeof value !== "string" || value.length > 40) return null;
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime()) || Math.abs(d.getTime() - Date.now()) > 2 * 24 * 60 * 60 * 1000) return null;
+  return d;
 }
 
 /** Campos de seguimiento de una novedad, vacíos si no se llenaron. */
@@ -192,9 +311,11 @@ export function mergeAnswers(
   for (const [id, raw] of Object.entries(incoming ?? {})) {
     const item = byId.get(id);
     if (!item) continue;
-    const clean = sanitizeAnswer(raw, item);
+    const clean = sanitizeAnswer(raw, item, itemAnswerTypes(schema, item));
     if (sameAnswer(answers[id], clean)) continue;
-    answers[id] = { ...clean, at: new Date(), by: new Types.ObjectId(userId) };
+    // Hora de la tablet al responder (además de la del servidor): no entra en la huella.
+    const deviceAt = deviceTime((raw as { deviceAt?: unknown })?.deviceAt);
+    answers[id] = { ...clean, at: new Date(), by: new Types.ObjectId(userId), ...(deviceAt ? { deviceAt } : {}) };
     changed++;
     changedIds.push(id);
   }

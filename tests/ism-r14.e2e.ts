@@ -137,7 +137,15 @@ async function main() {
     "fondeado.radar": { value: "na", motivo: "El barco no está fondeado" },
     "zarpe.cartas": { value: "si", problem: true, descripcion: "x", accion: "y" },
   });
-  const saved = await api("tri", "PATCH", `/ism/records/${recA._id}`, { answers });
+  const deviceAt = new Date(Date.now() - 5 * 60 * 1000).toISOString();
+  const saved = await api("tri", "PATCH", `/ism/records/${recA._id}`, {
+    answers: { ...answers, "ronda.drizas": { value: "si", deviceAt } },
+  });
+  check("Guarda la hora de la tablet por respuesta (punto 9)", saved.data.record?.answers?.["ronda.drizas"]?.deviceAt === deviceAt, saved.data.record?.answers?.["ronda.drizas"]);
+  check(
+    "Carpeta del mes calculada en el servidor",
+    saved.data.record?.context && (await api("tri", "GET", `/ism/records/${recA._id}`)).data.record?.archivePath === "ISM/Listado de registros/R-14 Chequeo previo al zarpe/2026/10_octubre",
+  );
   const flags = saved.data.record?.flags;
   check("Marca de novedad Sí con al menos un No", flags?.hasNovedad === true && flags?.novedades === 1, flags);
   check("«Hay un problema» ya no se acepta", saved.data.record?.answers?.["zarpe.cartas"]?.problem === false);
@@ -230,7 +238,8 @@ async function main() {
   check("Clave temporal: pide crear la propia", s1.status === 428 && s1.data.code === "clave_temporal", [s1.status, s1.data.code]);
   const weak = await api("tri", "POST", `/ism/records/${r1}/sign-step`, { image: PNG, pin: tempJuan, newPin: "1234", signer: juan.id });
   check("No acepta claves fáciles", weak.status === 400, weak.status);
-  const s1b = await api("tri", "POST", `/ism/records/${r1}/sign-step`, { image: PNG, pin: tempJuan, newPin: "5826", signer: juan.id });
+  const signDevice = new Date().toISOString();
+  const s1b = await api("tri", "POST", `/ism/records/${r1}/sign-step`, { image: PNG, pin: tempJuan, newPin: "5826", signer: juan.id, deviceAt: signDevice });
   check("Quien hizo el chequeo firma y envía al Capitán", s1b.data.record?.status === "por_capitan", [s1b.status, s1b.data.message]);
   const crewSig = s1b.data.record?.signatures?.find((s: any) => s.stage === "tripulacion");
   check(
@@ -238,6 +247,7 @@ async function main() {
     crewSig?.user === juan.id && crewSig?.signerName === "Juan Pérez" && crewSig?.position === "TIM_01" && crewSig?.userRole === "tripulante" && Boolean(crewSig?.dataHash) && Boolean(crewSig?.signedAt),
     crewSig,
   );
+  check("Guarda la hora de la tablet por firma", crewSig?.deviceAt === signDevice, crewSig?.deviceAt);
   check(
     "La firma guarda la clave restablecida en las 24 h previas y por quién",
     Boolean(crewSig?.pinResetAt) && crewSig?.pinResetByName === "Persona Designada",
@@ -398,6 +408,53 @@ async function main() {
     check("La casilla de la Persona Designada lleva el cargo", /Persona Designada · Persona Designada · \d\d\/\d\d\/\d{4}/.test(archText[0]!.replace(/\s+/g, " ")), archText[0]!.match(/.*Persona Designada ·.*/)?.[0]);
     check("El anexo dice que la clave se restableció antes de firmar", /clave restablecida el \d\d\/\d\d\/\d{4} \d\d:\d\d por Persona Designada/.test(annex), annex.match(/.*clave restablecida.*/)?.[0]);
   }
+
+  // ---- Plantilla (punto 9) ----
+  const { validateSigners } = await import("../src/services/ismSchema.service");
+  check("El motor de firmas del R-14 es válido (3 pasos secuenciales)", validateSigners(schema.signers).length === 0 && schema.signers!.length === 3);
+  const free = validateSigners([
+    { step: "tripulacion", who: "lista", label: "Quien hace", field: "F1", print: "anexo", status: "borrador", next: "por_capitan", returnsTo: null, order: 1 },
+    { step: "capitan", who: "jefe_maquinas", label: "Jefe de Máquinas", field: "F2", print: "casilla", status: "por_capitan", next: "por_oficina", returnsTo: "tripulacion", order: 2, signers: 2 },
+    { step: "capitan", who: "capitan", label: "Capitán", field: "F3", print: "casilla", status: "por_capitan", next: "por_oficina", returnsTo: "tripulacion", order: 2 },
+    { step: "oficina", who: "designada", label: "Persona Designada", field: "F4", print: "casilla", status: "por_oficina", next: "archivado", returnsTo: "capitan", order: 3 },
+  ]);
+  check("Rol libre, 2 firmantes y pasos en paralelo: válido", free.length === 0, free);
+  const broken = validateSigners([
+    { step: "tripulacion", who: "lista", label: "A", field: "F1", print: "anexo", status: "borrador", next: "por_oficina", returnsTo: null },
+    { step: "capitan", who: "Capitán!", label: "B", field: "F1", print: "casilla", status: "por_capitan", next: "archivado", returnsTo: "otro" as never, signers: 0 },
+  ]);
+  check("La validación encuentra cadena rota, campo repetido, rol y firmantes inválidos", broken.length >= 4, broken);
+  const cat = await api("tri", "GET", "/ism/catalog");
+  const r14Card = cat.data.forms?.find((f: any) => f.code === "R-14")?.card;
+  check("El catálogo trae la tarjeta del esquema", r14Card?.title === "Preparar el zarpe" && r14Card?.newLabel === "Nuevo zarpe", r14Card);
+  check("El esquema declara unicidad, patrón de nombre y tipos de respuesta", schema.uniqueness?.onConflict === "suffix" && schema.fileNamePattern === "{code}_{date}_{time}.pdf" && schema.answerTypes?.length === 3);
+
+  const novTri = await api("tri", "GET", "/ism/novedades");
+  check("Un tripulante no ve el seguimiento de novedades", novTri.status === 403, novTri.status);
+  const novs = await api("des", "GET", "/ism/novedades?estado=todas");
+  const balsas = novs.data.novedades?.find((n: any) => n.itemId === "ronda.balsas" && n.record === r1);
+  check("La novedad vive en su propia colección (responsable, plazo, estado)", balsas?.responsable === "Contramaestre" && balsas?.plazo === "2026-10-30" && balsas?.itemLabel === "Ronda de seguridad de cubierta 02", balsas);
+  const r17 = (await api("des", "POST", "/ism/records", { code: "R-17", recordDate: "2026-10-30", idempotencyKey: "r17-link-1" })).data.record;
+  const follow = await api("des", "PATCH", `/ism/novedades/${balsas?._id}`, { estado: "en_proceso", responsable: "Jefe de Máquinas", r17Record: r17?._id });
+  check("Seguimiento con enlace a un R-17, sin tocar el registro archivado", follow.data.novedad?.estado === "en_proceso" && follow.data.novedad?.r17Record === r17?._id && follow.data.novedad?.history?.length === 2, follow.data);
+  const notR17 = await api("des", "PATCH", `/ism/novedades/${balsas?._id}`, { r17Record: r1 });
+  check("Solo se enlaza un R-17", notR17.status === 400, notR17.status);
+  // Compatibilidad: novedades guardadas solo en las respuestas pasan a la colección al listar.
+  const { IsmNovedad } = await import("../src/models/ismNovedad.model");
+  await IsmNovedad.deleteMany({ record: recA._id });
+  const back3 = await api("des", "GET", "/ism/novedades?estado=todas");
+  check("Registros de antes: sus novedades pasan a la colección", back3.data.novedades?.some((n: any) => n.record === recA._id && n.itemId === "ronda.balsas"));
+
+  const mTri = await api("tri", "GET", "/ism/metrics");
+  check("Métricas solo para Gerencia y la Persona Designada", mTri.status === 403, mTri.status);
+  const m = await api("des", "GET", "/ism/metrics?code=R-14");
+  check(
+    "Métricas: tiempo por paso, borradores abandonados, devoluciones por motivo y días hasta archivar",
+    m.data.timePerStep?.tripulacion?.n >= 1 && m.data.timePerStep?.oficina?.n >= 1 && typeof m.data.abandonedDrafts?.n === "number" &&
+      m.data.returns?.n >= 2 && m.data.returns.byReason.some((r: any) => r.label === "la acción de la balsa no está clara") && m.data.daysToArchive?.n >= 1,
+    m.data,
+  );
+  check("Gerencia también ve las métricas", (await api("duena", "GET", "/ism/metrics")).status === 200);
 
   server.close();
   await mongoose.disconnect();

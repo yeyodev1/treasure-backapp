@@ -45,6 +45,8 @@ export interface IIsmSignature {
   /** Clave restablecida en las 24 h previas a esta firma: cuándo y por quién (se imprime en el anexo). */
   pinResetAt?: Date | null;
   pinResetByName?: string;
+  /** Hora de la tablet al firmar (la del servidor es signedAt). */
+  deviceAt?: Date | null;
 }
 
 export interface IIsmEvent {
@@ -76,6 +78,8 @@ export interface IIsmAnswer {
   /** Momento de captura y quién respondió. */
   at: Date | null;
   by: Types.ObjectId | null;
+  /** Hora de la tablet al responder (puede diferir de la del servidor sin señal). */
+  deviceAt?: Date | null;
 }
 
 /** Contexto confirmado al iniciar un registro guiado. */
@@ -168,6 +172,11 @@ export interface IIsmRecord {
   annulledSignatures?: Array<IIsmSignature & { annulledAt: Date; annulReason: string }>;
   /** PDF archivado congelado con su sha256 (auditoría 30-oct, punto 3). */
   archivedPdf?: IIsmArchivedPdf | null;
+  /**
+   * Carpeta del archivo oficial con el mes de la actividad, calculada en el
+   * servidor: "ISM/Listado de registros/R-14 …/2026/10_octubre".
+   */
+  archivePath?: string;
   createdAt?: Date;
   updatedAt?: Date;
 }
@@ -191,6 +200,7 @@ const signatureSchema = new Schema<IIsmSignature>(
     method: { type: String },
     pinResetAt: { type: Date },
     pinResetByName: { type: String },
+    deviceAt: { type: Date },
   },
   { _id: false },
 );
@@ -266,6 +276,7 @@ const ismRecordSchema = new Schema<IIsmRecord>(
       ],
       default: undefined,
     },
+    archivePath: { type: String },
     archivedPdf: {
       type: new Schema(
         {
