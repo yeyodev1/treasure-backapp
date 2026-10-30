@@ -9,11 +9,11 @@ import { moveStock } from "../services/inventory.service";
 import { nextCode } from "../services/codes.service";
 import { logEvent } from "../services/audit.service";
 import { badRequest, conflict, notFound } from "../errors/httpError";
-import { round2, STOCK_LOCATIONS, StockLocation } from "../utils/units";
+import { isNonNegativeQty, isPositiveQty, QTY_POSITIVE_ERROR, round2, STOCK_LOCATIONS, StockLocation } from "../utils/units";
 
 /**
  * Abastecimiento (guía auditada 27-oct-2026):
- * - El bar pide (requerimiento): Solicitado → Aprobado/Rechazado (directora)
+ * - El bar solicita (solicitud): Solicitado → Aprobado/Rechazado (Dirección de crucero)
  *   → Recibido parcial/completo. Aprobar no suma stock; recibir traslada la
  *   cantidad real de bodega al barco y descuenta lo pendiente.
  * - Compras: la factura se registra sin mover stock; la recepción física
@@ -73,7 +73,9 @@ export async function createRequisition(req: Request, res: Response, next: NextF
     const clean = lines.map((line) => {
       const product = map.get(line.productId);
       if (!product) throw badRequest("Solo se piden insumos físicos");
-      if (type === "abastecimiento" && !(line.qty > 0)) throw badRequest(`Indica cuánto ${product.name}`);
+      if (type === "abastecimiento" && !isPositiveQty(line.qty)) {
+        throw badRequest(`${product.name}: ${QTY_POSITIVE_ERROR.toLowerCase()}`);
+      }
       const byContainer = line.unit !== "base" && product.containerSize > 1;
       const qty = byContainer ? line.qty * product.containerSize : line.qty;
       return {
@@ -101,7 +103,7 @@ export async function createRequisition(req: Request, res: Response, next: NextF
 
     await logEvent(req.auth, {
       kind: "requerimiento",
-      title: `${type === "revision" ? "Revisión de inventario" : "Requerimiento"} ${requisition.code}`,
+      title: `${type === "revision" ? "Revisión de inventario" : "Solicitud"} ${requisition.code}`,
       detail: clean.map((l) => `${l.name}${type === "revision" ? "" : ` · ${l.label}`}`).join(", "),
       cruise: requisition.cruise,
     });
@@ -131,7 +133,7 @@ export async function listRequisitions(req: Request, res: Response, next: NextFu
   }
 }
 
-/** La directora aprueba o rechaza (con motivo). Aprobar no suma stock. */
+/** Dirección de crucero aprueba o rechaza (con motivo). Aprobar no suma stock. */
 export async function reviewRequisition(req: Request, res: Response, next: NextFunction) {
   try {
     const { decision, note } = req.body as { decision?: "aprobar" | "rechazar"; note?: string };
@@ -150,11 +152,11 @@ export async function reviewRequisition(req: Request, res: Response, next: NextF
       },
       { new: true },
     );
-    if (!requisition) throw conflict("El requerimiento no existe o ya fue revisado");
+    if (!requisition) throw conflict("La solicitud no existe o ya fue revisada");
 
     await logEvent(req.auth, {
       kind: "requerimiento",
-      title: `Requerimiento ${requisition.code} ${decision === "aprobar" ? "aprobado" : "rechazado"}`,
+      title: `Solicitud ${requisition.code} ${decision === "aprobar" ? "aprobada" : "rechazada"}`,
       detail: note?.trim() ?? "",
       cruise: requisition.cruise,
     });
@@ -179,7 +181,7 @@ export async function receiveRequisition(req: Request, res: Response, next: Next
     if (!lines?.length) throw badRequest("Indica qué llegó");
 
     const current = await Requisition.findById(req.params.id);
-    if (!current) throw notFound("Requerimiento no encontrado");
+    if (!current) throw notFound("Solicitud no encontrada");
     if (current.receipts.some((r) => r.key === key)) {
       res.json({ requisition: await current.populate(REQUISITION_POPULATE), duplicated: true });
       return;
@@ -188,16 +190,16 @@ export async function receiveRequisition(req: Request, res: Response, next: Next
     let code = "";
     await mongoose.connection.transaction(async (session) => {
       const requisition = await Requisition.findById(req.params.id).session(session);
-      if (!requisition) throw notFound("Requerimiento no encontrado");
+      if (!requisition) throw notFound("Solicitud no encontrada");
       if (!["aprobado", "recibido_parcial"].includes(requisition.status)) {
-        throw conflict("Solo se recibe un requerimiento aprobado y con pendiente");
+        throw conflict("Solo se recibe una solicitud aprobada y con pendiente");
       }
       code = requisition.code;
       const picks: Array<{ index: number; qty: number }> = [];
       for (const pick of lines) {
         const line = requisition.lines[pick.index];
         if (!line) throw badRequest("Hay una línea inválida");
-        if (!(pick.qty >= 0)) throw badRequest("Cantidad inválida");
+        if (!isNonNegativeQty(pick.qty)) throw badRequest("Introduce una cantidad de cero o más.");
         if (pick.qty === 0) continue;
         const pending = round2(line.qty - line.receivedQty);
         if (pick.qty > pending + 1e-9) throw badRequest(`De ${line.name} solo quedan ${pending} por recibir`);
@@ -245,7 +247,7 @@ export async function receiveRequisition(req: Request, res: Response, next: Next
     const saved = await Requisition.findById(req.params.id).populate(REQUISITION_POPULATE);
     await logEvent(req.auth, {
       kind: "requerimiento",
-      title: `Requerimiento ${code} ${saved?.status === "recibido" ? "recibido" : "recibido parcial"}`,
+      title: `Solicitud ${code} ${saved?.status === "recibido" ? "recibida" : "recibida parcial"}`,
       detail: lines
         .filter((l) => l.qty > 0)
         .map((l) => `${saved?.lines[l.index]?.name ?? "?"} +${l.qty}`)
@@ -258,7 +260,7 @@ export async function receiveRequisition(req: Request, res: Response, next: Next
   }
 }
 
-/** La administradora atiende una solicitud de revisión (normalmente tras un conteo). */
+/** Administración atiende una solicitud de revisión (normalmente tras un conteo). */
 export async function resolveRequisition(req: Request, res: Response, next: NextFunction) {
   try {
     const note = (req.body?.note as string | undefined)?.trim();
@@ -321,7 +323,7 @@ export async function createPurchase(req: Request, res: Response, next: NextFunc
     const clean = lines.map((line) => {
       const product = map.get(line.productId);
       if (!product) throw badRequest("Solo se compran insumos físicos");
-      if (!(line.containers > 0)) throw badRequest(`Indica cuántos ${product.containerLabel} de ${product.name}`);
+      if (!isPositiveQty(line.containers)) throw badRequest(`${product.name}: ${QTY_POSITIVE_ERROR.toLowerCase()}`);
       if (line.containerCost !== undefined && !(line.containerCost >= 0)) throw badRequest("Costo inválido");
       return {
         product: product._id,
@@ -429,7 +431,7 @@ export async function receivePurchase(req: Request, res: Response, next: NextFun
       for (const pick of lines) {
         const line = purchase.lines[pick.index];
         if (!line) throw badRequest("Hay una línea inválida");
-        if (!(pick.containers >= 0)) throw badRequest("Cantidad inválida");
+        if (!isNonNegativeQty(pick.containers)) throw badRequest("Introduce una cantidad de cero o más.");
         if (pick.containers === 0) continue;
         const qty = round2(pick.containers * line.containerSize);
         const pending = round2(line.qty - line.receivedQty);
