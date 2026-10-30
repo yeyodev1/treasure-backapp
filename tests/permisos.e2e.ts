@@ -69,19 +69,25 @@ async function main() {
     }
   }
 
-  // ISM falla 1 · firma atada al rol
-  const form = await api("tri", "GET", "/ism/forms/R-14");
+  // ISM falla 1 · firma atada al rol (formato en papel R-05; el R-14 firma
+  // por pasos con clave y se prueba en tests/ism-r14.e2e.ts)
+  const form = await api("tri", "GET", "/ism/forms/R-05");
   const fields = (form.data.form?.fields ?? form.data.fields ?? []) as Array<{ name: string; type: string; stage?: string }>;
   const capSlot = fields.find((f) => f.type === "signature" && f.stage === "capitan");
-  check("R-14 tiene recuadro de firma del Capitán", Boolean(capSlot));
+  check("R-05 tiene recuadro de firma del Capitán", Boolean(capSlot));
   const created = await api("tri", "POST", "/ism/records", {
-    code: "R-14",
+    code: "R-05",
     recordDate: "2026-10-30",
     position: "TIM_01",
     idempotencyKey: "perm-1",
   });
   const recId = created.data.record?.id ?? created.data.record?._id;
-  check("Tripulante crea el R-14", created.status < 300 && Boolean(recId), created.status);
+  check("Tripulante crea el R-05", created.status < 300 && Boolean(recId), created.status);
+  const r14 = await api("tri", "POST", "/ism/records", { code: "R-14", recordDate: "2026-10-30", idempotencyKey: "perm-14" });
+  for (const who of ["duena", "adm", "tri", "des"]) {
+    const r = await api(who, "POST", `/ism/records/${r14.data.record?._id}/signatures`, { field: "Firma_Capitan", image: PNG });
+    check(`${people[who][1]} no firma como Capitán en el R-14`, r.status === 403, r.status);
+  }
   if (capSlot && recId) {
     for (const who of ["duena", "adm", "tri", "des"]) {
       const r = await api(who, "POST", `/ism/records/${recId}/signatures`, { field: capSlot.name, image: PNG });
