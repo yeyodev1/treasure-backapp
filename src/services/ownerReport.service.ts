@@ -303,7 +303,7 @@ export async function ownerReport(query: OwnerReportQuery) {
       document: purchase.document,
       at: new Date(lastAt),
       status: purchase.status,
-      partial: purchase.status === "recibida_parcial",
+      partial: purchase.status === "recibida_parcial" || purchase.status === "cerrada",
       invoiceTotal: purchase.total,
       amount: round2(amount),
       lines: [...lines.values()].map((l) => ({ ...l, containers: round2(l.containers), amount: round2(l.amount) })),
@@ -322,7 +322,18 @@ export async function ownerReport(query: OwnerReportQuery) {
     }),
   ]);
   const pendingCabins = [...pendingByCabin.values()];
-  const alerts: Array<{ kind: string; count: number; amount?: number; text: string; action: string }> = [];
+  // Alcance de cada alerta: "alcance" sigue el filtro elegido; "total" son
+  // pendientes de todo el sistema (conteos siempre; facturas y retenidos
+  // cuando el filtro no es un crucero) y se rotulan "Pendientes en total" (11).
+  const pendingScope = cruise ? "alcance" : "total";
+  const alerts: Array<{
+    kind: string;
+    count: number;
+    amount?: number;
+    text: string;
+    action: string;
+    scope: "alcance" | "total";
+  }> = [];
   if (pendingCabins.length) {
     alerts.push({
       kind: "cuentas",
@@ -330,6 +341,7 @@ export async function ownerReport(query: OwnerReportQuery) {
       amount: round2(pendingPeriod + pendingBefore),
       text: `${pendingCabins.length} cuenta(s) con saldo por cobrar`,
       action: "Ver cuentas pendientes",
+      scope: "alcance",
     });
   }
   if (missingCost.size) {
@@ -338,6 +350,7 @@ export async function ownerReport(query: OwnerReportQuery) {
       count: missingCost.size,
       text: `${missingCost.size} producto(s) servidos sin costo`,
       action: "Ver productos sin costo",
+      scope: "alcance",
     });
   }
   if (countsPending) {
@@ -346,6 +359,7 @@ export async function ownerReport(query: OwnerReportQuery) {
       count: countsPending,
       text: `${countsPending} conteo(s) pendiente(s) de aprobación`,
       action: "Revisar conteos",
+      scope: "total",
     });
   }
   if (invoicesPending) {
@@ -354,6 +368,7 @@ export async function ownerReport(query: OwnerReportQuery) {
       count: invoicesPending,
       text: `${invoicesPending} pago(s) con factura pendiente`,
       action: "Ver facturas pendientes",
+      scope: pendingScope,
     });
   }
   if (held) {
@@ -362,10 +377,13 @@ export async function ownerReport(query: OwnerReportQuery) {
       count: held,
       text: `${held} consumo(s) enviados tarde, pendientes de revisión`,
       action: "Revisar consumos retenidos",
+      scope: pendingScope,
     });
   }
 
-  const costsComplete = missingCost.size === 0 && periodOrders > 0;
+  // Sin consumos en el alcance: costo y margen son $0 (no "faltan costos", 10B).
+  const noConsumption = periodOrders === 0;
+  const costsComplete = missingCost.size === 0;
   // Costo como suma de lo que muestra el detalle (sin diferencias de centavos).
   const servedCost = [...costByProduct.values()].reduce((s, c) => s + round2(c.cost), 0);
   const cruiseRows = [...collectedByCruise.entries()]
@@ -411,15 +429,18 @@ export async function ownerReport(query: OwnerReportQuery) {
     pendingCollection: round2(pendingPeriod + pendingBefore),
     pendingFromPeriod: round2(pendingPeriod),
     pendingFromBefore: round2(pendingBefore),
-    consumedCost: costsComplete ? round2(servedCost) : null,
+    consumedCost: noConsumption ? 0 : costsComplete ? round2(servedCost) : null,
     costsComplete,
+    noConsumption,
     missingCost: [...missingCost.values()].slice(0, 30),
     missingCostCount: missingCost.size,
-    margin: costsComplete ? round2(net - servedCost) : null,
+    margin: noConsumption ? 0 : costsComplete ? round2(net - servedCost) : null,
     // Información secundaria.
     courtesy: round2(courtesy),
     purchases: round2(purchases),
     heldConsumptions: held,
+    /** Retenidos y facturas: del crucero elegido o pendientes en total. */
+    pendingScope,
     alerts,
     // Bloque antiguo, con el mismo filtro (L24).
     byDay: round(byDay)

@@ -6,7 +6,11 @@ import { STOCK_LOCATIONS, StockLocation } from "../utils/units";
  * mueve stock; solo la recepción física suma la cantidad real al almacén
  * destino, con su costo. Una compra va a un solo almacén.
  */
-export const PURCHASE_STATUSES = ["registrada", "recibida_parcial", "recibida", "anulada"] as const;
+/**
+ * cerrada: recibida en parte y cerrada con motivo (lo pendiente no llegará);
+ * lo recibido se queda en el stock.
+ */
+export const PURCHASE_STATUSES = ["registrada", "recibida_parcial", "recibida", "anulada", "cerrada"] as const;
 export type PurchaseStatus = (typeof PURCHASE_STATUSES)[number];
 
 export interface IPurchaseLine {

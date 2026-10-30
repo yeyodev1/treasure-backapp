@@ -425,7 +425,7 @@ export async function receivePurchase(req: Request, res: Response, next: NextFun
       const purchase = await Purchase.findById(req.params.id).session(session);
       if (!purchase) throw notFound("Compra no encontrada");
       if (!["registrada", "recibida_parcial"].includes(purchase.status)) {
-        throw conflict("Esta compra ya se recibió completa o está anulada");
+        throw conflict("Esta compra ya se recibió completa, está anulada o se cerró");
       }
       const picks: Array<{ index: number; qty: number }> = [];
       for (const pick of lines) {
@@ -437,7 +437,9 @@ export async function receivePurchase(req: Request, res: Response, next: NextFun
         const pending = round2(line.qty - line.receivedQty);
         if (qty > pending + 1e-9) {
           throw badRequest(
-            `De ${line.name} solo quedan ${round2(pending / line.containerSize)} ${line.containerLabel} por recibir`,
+            `De ${line.name} solo ${round2(pending / line.containerSize) === 1 ? "queda" : "quedan"} ${round2(
+              pending / line.containerSize,
+            )} ${line.containerLabel}${round2(pending / line.containerSize) === 1 ? "" : "s"} por recibir. Si llegó de más, recibe solo lo facturado y registra lo adicional como una compra nueva (o devuélvelo al proveedor).`,
           );
         }
         const costPerUnit = line.containerSize ? line.containerCost / line.containerSize : 0;
@@ -494,14 +496,46 @@ export async function cancelPurchase(req: Request, res: Response, next: NextFunc
   try {
     const reason = (req.body?.reason as string | undefined)?.trim();
     if (!reason) throw badRequest("El motivo es obligatorio");
-    const purchase = await Purchase.findOneAndUpdate(
+
+    // Sin recepciones: se anula la factura.
+    let purchase = await Purchase.findOneAndUpdate(
       { _id: req.params.id, status: "registrada", "receipts.0": { $exists: false } },
       { $set: { status: "anulada", cancelReason: reason } },
       { new: true },
     );
-    if (!purchase) throw conflict("Solo se anula una compra sin recepciones");
-    await logEvent(req.auth, { kind: "compra", title: `Compra ${purchase.code} anulada`, detail: reason });
-    res.json({ purchase: await purchase.populate(PURCHASE_POPULATE) });
+    if (purchase) {
+      await logEvent(req.auth, { kind: "compra", title: `Compra ${purchase.code} anulada`, detail: reason });
+      res.json({ purchase: await purchase.populate(PURCHASE_POPULATE) });
+      return;
+    }
+
+    // Recibida en parte: se cierra lo pendiente con motivo; lo recibido queda en stock (P09).
+    purchase = await Purchase.findOneAndUpdate(
+      { _id: req.params.id, status: "recibida_parcial" },
+      { $set: { status: "cerrada", cancelReason: reason } },
+      { new: true },
+    );
+    if (purchase) {
+      const pending = purchase.lines
+        .filter((l) => l.qty - l.receivedQty > 1e-9)
+        .map((l) => {
+          const n = round2((l.qty - l.receivedQty) / (l.containerSize || 1));
+          return `${n} ${l.containerLabel}${n === 1 ? "" : "s"} de ${l.name}`;
+        })
+        .join(", ");
+      await logEvent(req.auth, {
+        kind: "compra",
+        title: `Compra ${purchase.code} cerrada con faltante`,
+        detail: `${reason}${pending ? ` · no llegó: ${pending}` : ""}`,
+      });
+      res.json({ purchase: await purchase.populate(PURCHASE_POPULATE) });
+      return;
+    }
+
+    const current = await Purchase.findById(req.params.id).select("status");
+    if (!current) throw notFound("Compra no encontrada");
+    if (current.status === "recibida") throw conflict("La compra ya se recibió completa: no hay nada pendiente");
+    throw conflict("La compra ya está anulada o cerrada");
   } catch (err) {
     next(err);
   }

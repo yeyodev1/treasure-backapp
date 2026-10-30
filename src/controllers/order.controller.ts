@@ -66,7 +66,7 @@ export async function createOrder(req: Request, res: Response, next: NextFunctio
       idempotencyKey?: string;
     };
     if (!cruiseId || !cabinNumber || !items?.length) {
-      throw badRequest("Salida, cabina e ítems son obligatorios");
+      throw badRequest("Crucero, cabina e ítems son obligatorios");
     }
 
     if (idempotencyKey) {
@@ -78,12 +78,12 @@ export async function createOrder(req: Request, res: Response, next: NextFunctio
     }
 
     const cruise = await Cruise.findById(cruiseId);
-    if (!cruise) throw notFound("Salida no encontrada");
+    if (!cruise) throw notFound("Crucero no encontrado");
     if (cruise.status !== "abordo") {
       throw badRequest("Solo se registran consumos con el crucero en curso. Dirección de crucero debe iniciarlo.");
     }
     const cabin = cruise.cabins.find((c) => c.number === cabinNumber);
-    if (!cabin) throw badRequest("Cabina inválida para esta salida");
+    if (!cabin) throw badRequest("Cabina inválida para este crucero");
     if (!cabin.passengers.length) {
       throw badRequest(`La cabina ${cabinNumber} no tiene pasajeros registrados`);
     }

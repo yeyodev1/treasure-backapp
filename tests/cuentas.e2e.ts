@@ -217,6 +217,24 @@ async function main() {
     { purchases: period.purchases, antes: Math.round(oldWay * 100) / 100 },
   );
 
+  // ---- P09: el exceso se rechaza con qué hacer; lo pendiente se cierra con motivo
+  const excess = await api("adm", "POST", `/purchases/${cp1.data.purchase._id}/receive`, { key: "r-x", lines: [{ index: 0, containers: 2 }] });
+  check(
+    "Recibir de más: rechazo con texto claro",
+    excess.status === 400 && /solo queda 1 botella por recibir/.test(excess.data.message) && /compra nueva/.test(excess.data.message),
+    excess.data.message,
+  );
+  const noReason = await api("adm", "POST", `/purchases/${cp1.data.purchase._id}/cancel`, {});
+  check("Cerrar lo pendiente exige motivo", noReason.status === 400);
+  const closed = await api("adm", "POST", `/purchases/${cp1.data.purchase._id}/cancel`, { reason: "El proveedor no tiene más" });
+  check(
+    "Compra recibida en parte: se cierra lo pendiente y lo recibido se conserva",
+    closed.status === 200 && closed.data.purchase.status === "cerrada" && closed.data.purchase.lines[0].receivedQty === 3 * closed.data.purchase.lines[0].containerSize,
+    closed.data.purchase?.status ?? closed.data.message,
+  );
+  const fullCancel = await api("adm", "POST", `/purchases/${cp2.data.purchase._id}/cancel`, { reason: "x" });
+  check("Una compra recibida completa no se cierra", fullCancel.status === 409, fullCancel.data.message);
+
   // ---- 08/09/10A: un filtro, cifras que cuadran con su detalle
   const sum = (rows: any[], key: string) => Math.round(rows.reduce((s, r) => s + (r[key] ?? 0), 0) * 100) / 100;
   const byCruise = (await api("duena", "GET", `/reports/owner?cruiseId=${cruiseId}`)).data;
@@ -270,6 +288,20 @@ async function main() {
     "Falta un costo: costo y margen No disponible, producto listado",
     noCost.consumedCost === null && noCost.margin === null && noCost.missingCost.includes("Fanta") && noCost.alerts.some((a: any) => a.kind === "costos"),
     { cost: noCost.consumedCost, missing: noCost.missingCost },
+  );
+  const empty = (await api("duena", "GET", "/reports/owner?from=2026-01-01&to=2026-01-02")).data;
+  check(
+    "Sin consumos en el alcance: costo y margen $0 (no 'faltan costos')",
+    empty.noConsumption === true && empty.consumedCost === 0 && empty.margin === 0,
+    { cost: empty.consumedCost, margin: empty.margin },
+  );
+  const periodAlerts = (await api("duena", "GET", `/reports/owner?from=${today}&to=${today}`)).data.alerts;
+  check(
+    "Alertas: facturas pendientes del periodo se rotulan como pendientes en total; las del crucero siguen el filtro",
+    periodAlerts.find((a: any) => a.kind === "facturas")?.scope === "total" &&
+      noCost.alerts.find((a: any) => a.kind === "facturas")?.scope === "alcance" &&
+      noCost.alerts.find((a: any) => a.kind === "costos")?.scope === "alcance",
+    periodAlerts.map((a: any) => [a.kind, a.scope]),
   );
   const forbidden = await api("dir", "GET", `/reports/owner?cruiseId=${cruiseId}`);
   check("El resumen solo lo ve Gerencia", forbidden.status === 403);
