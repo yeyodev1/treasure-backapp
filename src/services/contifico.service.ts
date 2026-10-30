@@ -331,7 +331,8 @@ async function sendToSri(documentId: string) {
 async function emitInvoice(payment: IPayment & { _id: Types.ObjectId }): Promise<InvoiceResult> {
   const empty = { invoiceId: "", invoiceNumber: "", invoiceUrl: "" };
   if (!contificoConfigured()) {
-    return { status: "pendiente", ...empty, error: "Contífico sin configurar: la factura queda en cola" };
+    // El pago ya quedó registrado; la factura espera (checklist 29-oct, L03).
+    return { status: "pendiente", ...empty, error: "La facturación no está configurada." };
   }
 
   // Ya existe en Contífico (un intento anterior llegó pero no respondió): solo se envía al SRI.
