@@ -3,33 +3,54 @@ import { Types } from "mongoose";
 import { Account } from "../models/account.model";
 import { Cruise } from "../models/cruise.model";
 import { Order, chargeableQty, pendingQty } from "../models/order.model";
+import { Payment } from "../models/payment.model";
 import { buildCabinAccount, ensureAccount } from "../services/account.service";
 import { logEvent } from "../services/audit.service";
+import { proformaData, proformaFileName, proformaPdf } from "../services/proforma.service";
 import { badRequest, conflict, notFound } from "../errors/httpError";
 import { round2 } from "../utils/units";
 
-/** Resumen de todas las cabinas de una salida: estado, saldo y pendientes. */
+/**
+ * Resumen de todas las cabinas de una salida: estado, consumos, pagado y
+ * por cobrar. Una cuenta pagada conserva sus importes (checklist 29-oct, 01).
+ */
 export async function cruiseAccounts(req: Request, res: Response, next: NextFunction) {
   try {
     const cruise = await Cruise.findById(req.params.cruiseId);
     if (!cruise) throw notFound("Salida no encontrada");
 
-    const [accounts, orders] = await Promise.all([
+    const [accounts, orders, payments] = await Promise.all([
       Account.find({ cruise: cruise._id }),
-      Order.find({ cruise: cruise._id, payment: null, status: { $nin: ["cancelada", "retenida"] } }),
+      Order.find({ cruise: cruise._id, status: { $nin: ["cancelada", "retenida"] } }),
+      Payment.find({ cruise: cruise._id, status: "vigente" }).select("cabinNumber total"),
     ]);
     const accountMap = new Map(accounts.map((a) => [a.cabinNumber, a]));
 
-    const totals = new Map<number, { total: number; orders: number; pending: number }>();
+    const totals = new Map<
+      number,
+      { total: number; orders: number; pending: number; consumed: number; paidOrders: number; paid: number }
+    >();
+    const entryOf = (cabin: number) => {
+      const entry = totals.get(cabin) ?? { total: 0, orders: 0, pending: 0, consumed: 0, paidOrders: 0, paid: 0 };
+      totals.set(cabin, entry);
+      return entry;
+    };
     for (const order of orders) {
-      const entry = totals.get(order.cabinNumber) ?? { total: 0, orders: 0, pending: 0 };
-      entry.orders += 1;
+      const entry = entryOf(order.cabinNumber);
+      let amount = 0;
       for (const item of order.items) {
-        if (!item.courtesy) entry.total += chargeableQty(item) * item.unitPrice;
-        entry.pending += pendingQty(item);
+        if (!item.courtesy) amount += chargeableQty(item) * item.unitPrice;
+        if (!order.payment) entry.pending += pendingQty(item);
       }
-      totals.set(order.cabinNumber, entry);
+      entry.consumed += amount;
+      if (order.payment) {
+        entry.paidOrders += 1;
+      } else {
+        entry.orders += 1;
+        entry.total += amount;
+      }
     }
+    for (const payment of payments) entryOf(payment.cabinNumber).paid += payment.total;
 
     res.json({
       cabins: cruise.cabins.map((cabin) => {
@@ -44,6 +65,10 @@ export async function cruiseAccounts(req: Request, res: Response, next: NextFunc
           total: round2(t?.total ?? 0),
           orders: t?.orders ?? 0,
           pendingDeliveries: t?.pending ?? 0,
+          paidOrders: t?.paidOrders ?? 0,
+          consumed: round2(t?.consumed ?? 0),
+          paid: round2(t?.paid ?? 0),
+          due: round2(t?.total ?? 0),
         };
       }),
     });
@@ -174,6 +199,28 @@ export async function returnAccount(req: Request, res: Response, next: NextFunct
     });
 
     res.json({ account: await buildCabinAccount(cruiseId, cabinNumber) });
+  } catch (err) {
+    next(err);
+  }
+}
+
+/**
+ * Prefactura en inglés (PDF), antes o después de pagar. Solo genera el
+ * archivo: no envía correo ni llama a Contífico (checklist 29-oct, 02).
+ */
+export async function proforma(req: Request, res: Response, next: NextFunction) {
+  try {
+    const { cruiseId, cabinNumber } = params(req);
+    const data = await proformaData(cruiseId, cabinNumber);
+    const bytes = await proformaPdf(data);
+    const name = proformaFileName(data);
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader(
+      "Content-Disposition",
+      `${req.query.download ? "attachment" : "inline"}; filename="${name}"`,
+    );
+    res.setHeader("Cache-Control", "no-store");
+    res.send(Buffer.from(bytes));
   } catch (err) {
     next(err);
   }
