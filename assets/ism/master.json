@@ -1,0 +1,6 @@
+{
+  "_comment": "Datos maestros de Registros ISM (informe R-14 del 29-oct, plantilla punto 8): embarcaciones fuera del código. Tripulantes y cargos viven en la base (Tripulantes) y en utils/roles.ts.",
+  "vessels": [
+    { "id": "TOG1", "name": "Y/P Treasure of Galápagos I", "default": true }
+  ]
+}
