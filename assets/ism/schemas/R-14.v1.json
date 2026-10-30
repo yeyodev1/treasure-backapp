@@ -7,6 +7,7 @@
   "officialTitle": "R-14 Lista de chequeo previo al zarpe y rondas de seguridad",
   "vessel": "Y/P Treasure of Galápagos I",
   "notice": "Completar este chequeo no autoriza el zarpe. La decisión de zarpar es del Capitán, que revisa y firma este registro.",
+  "obs": { "page": 0, "x": 0.112, "y": 0.3485, "w": 0.818, "h": 0.0175 },
   "context": {
     "activityDate": { "label": "Fecha de la actividad", "pdfField": "Text Field 1069", "required": true },
     "activityTime": { "label": "Hora de la actividad", "pdfField": "Text Field 1070", "required": true },
