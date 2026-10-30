@@ -54,9 +54,9 @@ async function validateRecipe(recipe: Array<{ product: string; qty: number }>) {
   if (recipe.some((r) => !(r.qty > 0))) throw badRequest("Cada ingrediente necesita su medida");
 }
 
-/** Solo administración (Paula) cambia precios; queda historial con autor. */
+/** Solo Gerencia (rol duena, nunca por nombre o correo) cambia precios; queda historial con autor. */
 function applyPrice(product: IProduct, price: number, req: Request) {
-  if (!isOwner(req.auth!.role)) throw forbidden("Solo la dueña cambia precios");
+  if (!isOwner(req.auth!.role)) throw forbidden("Solo Gerencia cambia precios");
   if (!(price >= 0)) throw badRequest("Precio inválido");
   if (product.price !== price) {
     product.priceHistory.push({ price, changedBy: req.auth!.sub as never, at: new Date() });
@@ -189,7 +189,7 @@ export async function updateProduct(req: Request, res: Response, next: NextFunct
       changes.push(body.active ? "activado" : "desactivado");
     }
     if (body.contificoId !== undefined && body.contificoId !== product.contificoId) {
-      if (!isOwner(req.auth!.role)) throw forbidden("Solo la dueña vincula con Contífico");
+      if (!isOwner(req.auth!.role)) throw forbidden("Solo Gerencia vincula con Contífico");
       if (body.contificoId) {
         const match = (await contificoProducts()).find((p) => p.id === body.contificoId);
         if (!match) throw badRequest("Ese producto no existe en Contífico");
