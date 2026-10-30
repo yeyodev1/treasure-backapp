@@ -33,9 +33,11 @@ import {
   mergeAnswers,
   mergeContext,
   projectToData,
+  schemaItems,
   schemaManagedFields,
   signatureIsValid,
   validateGuided,
+  IsmSchema,
   IsmSigner,
 } from "../services/ismSchema.service";
 import { logEvent } from "../services/audit.service";
@@ -94,8 +96,21 @@ function stageOpen(record: IIsmRecord, stage: SignatureStage, officeOnly: boolea
   return record.status === "por_oficina" || (officeOnly && record.status === "borrador");
 }
 
-function canEdit(record: IIsmRecord, role: string, officeOnly: boolean): boolean {
+/** Id de quien creó el registro (poblado o no). */
+function creatorId(record: Pick<IIsmRecord, "createdBy">): string {
+  const author = record.createdBy as unknown as { _id?: Types.ObjectId } | Types.ObjectId;
+  return ("_id" in author && author._id ? author._id : author).toString();
+}
+
+/**
+ * Quién edita. Registros guiados (R-14…): solo quien lo creó (la sesión del
+ * barco o el tripulante) y solo en borrador, también cuando vuelve devuelto.
+ * Capitán, Gerencia, Administración y Persona Designada revisan y devuelven
+ * con motivo, pero no cambian respuestas ni contexto (auditoría 30-oct).
+ */
+function canEdit(record: IIsmRecord, role: string, officeOnly: boolean, uid: string): boolean {
   if (record.status === "archivado") return false;
+  if (record.schemaVersion) return record.status === "borrador" && creatorId(record) === uid;
   if (isManager(role)) return true;
   if (record.status === "borrador") return officeOnly ? role === "designada" : true;
   if (record.status === "por_capitan") return role === "capitan";
@@ -106,9 +121,7 @@ function canEdit(record: IIsmRecord, role: string, officeOnly: boolean): boolean
 function assertCanView(record: IIsmRecord, req: Request) {
   if (SEES_ALL.has(req.auth!.role)) return;
   const uid = req.auth!.sub;
-  const author = record.createdBy as unknown as { _id?: Types.ObjectId } | Types.ObjectId;
-  const authorId = ("_id" in author && author._id ? author._id : author).toString();
-  const involved = authorId === uid || record.signatures.some((s) => s.user.toString() === uid);
+  const involved = creatorId(record) === uid || record.signatures.some((s) => s.user.toString() === uid);
   if (!involved) throw forbidden("Este registro no está a tu cargo");
 }
 
@@ -460,6 +473,25 @@ export async function getRecord(req: Request, res: Response, next: NextFunction)
 const isObject = (v: unknown): v is Record<string, unknown> =>
   Boolean(v) && typeof v === "object" && !Array.isArray(v);
 
+/** Campos del contexto que cambiaron (para el historial). */
+function contextChanges(schema: IsmSchema, prev: IIsmContext | null, next: IIsmContext | null): string[] {
+  if (!prev || !next) return [];
+  const out: string[] = [];
+  if (prev.activityDate !== next.activityDate) out.push(schema.context.activityDate.label);
+  if (prev.activityTime !== next.activityTime) out.push(schema.context.activityTime.label);
+  if (prev.place !== next.place) out.push(schema.context.place.label);
+  if ((prev.filledBy?.user?.toString() ?? "") !== (next.filledBy?.user?.toString() ?? "") || prev.filledBy?.name !== next.filledBy?.name) {
+    out.push("Quien hace el chequeo");
+  }
+  if (prev.filledBy?.position !== next.filledBy?.position) out.push("Cargo");
+  for (const section of schema.sections) {
+    if ((prev.sectionTimes?.[section.id] ?? "") !== (next.sectionTimes?.[section.id] ?? "")) {
+      out.push(`Hora de ${section.title}`);
+    }
+  }
+  return out;
+}
+
 /**
  * Guarda lo llenado. Solo quien tiene el registro en su etapa puede editar.
  * Si el contenido cambia después de una firma, esa firma queda invalidada.
@@ -477,8 +509,12 @@ export async function saveData(req: Request, res: Response, next: NextFunction) 
     if (!record) throw notFound("Registro no encontrado");
     assertCanView(record, req);
     const def = ismDefinition(record.code)!;
-    if (!canEdit(record, req.auth!.role, def.officeOnly)) {
-      throw forbidden(`No puedes editar un registro ${STATUS_LABEL[record.status].toLowerCase()}`);
+    if (!canEdit(record, req.auth!.role, def.officeOnly, req.auth!.sub)) {
+      throw forbidden(
+        record.schemaVersion && record.status === "borrador"
+          ? "Solo quien hizo el registro lo corrige. Si hay que cambiar algo, devuélvelo con motivo."
+          : `No puedes editar un registro ${STATUS_LABEL[record.status].toLowerCase()}`,
+      );
     }
     const schema = schemaOf(record);
     if (schema && record.status !== "borrador") {
@@ -489,23 +525,36 @@ export async function saveData(req: Request, res: Response, next: NextFunction) 
     const managed = schema ? schemaManagedFields(schema) : new Set<string>();
     const allowed = new Map(def.fields.map((f) => [f.name, f.type]));
     const merged = { ...(record.data ?? {}) };
+    /** Qué cambió, para el historial ("editó: Ronda 02, Hora de la actividad"). */
+    const changedFields: string[] = [];
+    let sheetFields = 0;
     for (const [name, value] of Object.entries(isObject(data) ? data : {})) {
       const type = allowed.get(name);
       if (!type || type === "signature" || managed.has(name)) continue;
+      const prevValue = merged[name];
       if (type === "checkbox" || type === "radio") merged[name] = value === true;
       else if (typeof value === "string") merged[name] = value.slice(0, 5000);
+      if (merged[name] !== prevValue && !(prevValue === undefined && (merged[name] === "" || merged[name] === false))) {
+        sheetFields++;
+      }
     }
     record.data = merged;
+    if (sheetFields) changedFields.push(sheetFields === 1 ? "1 campo de la hoja" : `${sheetFields} campos de la hoja`);
 
     if (schema) {
       if (isObject(context)) {
+        const prevCtx = record.context;
         record.context = await applyCrewChoice(mergeContext(record.context, context), context, req);
         record.markModified("context");
+        changedFields.push(...contextChanges(schema, prevCtx, record.context));
       }
       if (isObject(answers)) {
         const prev = record.answers ?? {};
-        record.answers = mergeAnswers(schema, prev, answers, req.auth!.sub).answers;
+        const result = mergeAnswers(schema, prev, answers, req.auth!.sub);
+        record.answers = result.answers;
         record.markModified("answers");
+        const labels = new Map(schemaItems(schema).map(({ section, item }) => [item.id, `${section.title} ${item.n}`]));
+        changedFields.push(...result.changedIds.map((id) => labels.get(id) ?? id));
         // Cada sección guarda su propia hora: la primera respuesta la fija con la hora
         // actual (se puede corregir en la tablet).
         if (record.context) {
@@ -530,10 +579,12 @@ export async function saveData(req: Request, res: Response, next: NextFunction) 
     const after = hashContent(record);
     const invalidated: string[] = [];
     if (after !== before) {
+      // Toda edición queda en el historial: quién y qué cambió.
+      pushEvent(record, req, "editó", changedFields.length ? changedFields.join(", ").slice(0, 1000) : "Datos del registro");
       for (const sig of record.signatures) {
         if (sig.hashV === 2 && sig.dataHash === before) {
           invalidated.push(sig.field);
-          pushEvent(record, req, `firma invalidada: ${sig.label}`, "Los datos cambiaron después de firmar");
+          pushEvent(record, req, `firma anulada: ${sig.label}`, "Los datos cambiaron después de firmar");
         }
       }
     }
@@ -688,7 +739,7 @@ export async function submit(req: Request, res: Response, next: NextFunction) {
     assertCanView(record, req);
     assertNotStepSigned(record);
     const def = ismDefinition(record.code)!;
-    if (!canEdit(record, req.auth!.role, def.officeOnly)) throw forbidden();
+    if (!canEdit(record, req.auth!.role, def.officeOnly, req.auth!.sub)) throw forbidden();
 
     // Misma validación que la tablet: faltantes en su pregunta exacta.
     if (rejectIfIncomplete(record, res)) return;
@@ -823,6 +874,10 @@ export async function signStep(req: Request, res: Response, next: NextFunction) 
     // Quién firma este paso.
     let signerUser: Types.ObjectId;
     if (step.who === "lista") {
+      // El paso del chequeo se firma en la sesión que creó el registro (nadie lo corrige por otro).
+      if (creatorId(record) !== req.auth!.sub) {
+        throw forbidden("Este chequeo se firma en la tablet con la que se hizo. Si hay que corregir algo, devuélvelo con motivo.");
+      }
       if (rejectIfIncomplete(record, res)) return;
       const chosen = record.context?.filledBy;
       if (!chosen?.fromList || !chosen.user) throw badRequest("Elige quién hace el chequeo de la lista");

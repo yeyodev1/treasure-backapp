@@ -184,10 +184,11 @@ export function mergeAnswers(
   current: Record<string, IIsmAnswer>,
   incoming: Record<string, unknown>,
   userId: string,
-): { answers: Record<string, IIsmAnswer>; changed: number } {
+): { answers: Record<string, IIsmAnswer>; changed: number; changedIds: string[] } {
   const byId = new Map(schemaItems(schema).map(({ item }) => [item.id, item]));
   const answers = { ...(current ?? {}) };
   let changed = 0;
+  const changedIds: string[] = [];
   for (const [id, raw] of Object.entries(incoming ?? {})) {
     const item = byId.get(id);
     if (!item) continue;
@@ -195,8 +196,9 @@ export function mergeAnswers(
     if (sameAnswer(answers[id], clean)) continue;
     answers[id] = { ...clean, at: new Date(), by: new Types.ObjectId(userId) };
     changed++;
+    changedIds.push(id);
   }
-  return { answers, changed };
+  return { answers, changed, changedIds };
 }
 
 export function mergeContext(

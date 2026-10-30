@@ -40,6 +40,7 @@ async function main() {
     tri: ["tripulante", "Timonel Uno", "TIM_01"],
     tri2: ["tripulante", "Maquinista", "MAQ"],
     des: ["designada", "Persona Designada", ""],
+    adm: ["admin", "Administración", ""],
   };
   for (const [key, [role, name, position]] of Object.entries(people)) {
     await User.create({ email: `${key}@t`, role, name, passwordHash: hash, active: true, position });
@@ -243,7 +244,23 @@ async function main() {
   );
   const triNotices = await api("tri", "GET", "/ism/notices");
   check("Aviso a quien hizo el chequeo cuando se lo devuelven", triNotices.data.notices?.some((n: any) => n.kind === "devuelto" && n.record === r1));
+  // ---- Seguridad (auditoría 30-oct, punto 1): devuelto, solo lo corrige quien lo creó ----
+  for (const who of ["cap", "duena", "adm", "des"]) {
+    const r = await api(who, "PATCH", `/ism/records/${r1}`, { context: { activityTime: "23:59" }, answers: { "ronda.drizas": { value: "no", descripcion: "x", accion: "y" } } });
+    check(`${people[who][1]} no cambia respuestas ni hora de un R-14 devuelto`, r.status === 403, r.status);
+  }
+  const capCrewSign = await api("cap", "POST", `/ism/records/${r1}/sign-step`, { image: PNG, pin: "5826", signer: juan.id });
+  check("El Capitán no firma el paso del chequeo de otro", capCrewSign.status === 403, capCrewSign.status);
+  const untouched = (await api("des", "GET", `/ism/records/${r1}`)).data.record;
+  check("La hora de la ronda sigue igual", untouched?.context?.activityTime === "06:10" && untouched?.answers?.["ronda.drizas"]?.value === "si", untouched?.context?.activityTime);
   await api("tri", "PATCH", `/ism/records/${r1}`, { answers: { "ronda.balsas": { ...answers["ronda.balsas"] as object, accion: "Se trincaron y se avisó al contramaestre" } } });
+  const edited = (await api("des", "GET", `/ism/records/${r1}`)).data.record;
+  const editEvent = [...(edited?.history ?? [])].reverse().find((h: any) => h.action === "editó");
+  check(
+    "La corrección queda en el historial con quién y qué campos",
+    editEvent?.byName === "Timonel Uno" && String(editEvent?.reason).includes("Ronda de seguridad de cubierta 02"),
+    editEvent,
+  );
   const again = await api("tri", "POST", `/ism/records/${r1}/sign-step`, { image: PNG, pin: "5826", signer: juan.id });
   check("Corrige, firma de nuevo y vuelve al Capitán", again.data.record?.status === "por_capitan", [again.status, again.data.message]);
   const wrongCap = await api("cap", "POST", `/ism/records/${r1}/sign-step`, { image: PNG, pin: "1111" });
