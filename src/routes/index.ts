@@ -133,8 +133,6 @@ export default function routerApi(app: Application) {
   router.post("/accounts/:cruiseId/:cabinNumber/submit", requireAuth, BAR, accounts.submitForReview);
   router.post("/accounts/:cruiseId/:cabinNumber/approve", requireAuth, DIRECTOR, accounts.approveAccount);
   router.post("/accounts/:cruiseId/:cabinNumber/return", requireAuth, DIRECTOR, accounts.returnAccount);
-  // Prefactura en inglés (PDF): sin correo ni Contífico.
-  router.get("/accounts/:cruiseId/:cabinNumber/proforma", requireAuth, DIRECTOR, accounts.proforma);
 
   // Cobros (cajero validado en el controlador) y reverso autorizado
   router.post("/payments/collect", requireAuth, DIRECTOR, payments.collectCabin);
