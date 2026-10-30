@@ -40,11 +40,11 @@ export async function collectCabin(req: Request, res: Response, next: NextFuncti
       billing?: { name?: string; idNumber?: string; email?: string; country?: string };
     };
     if (!cruiseId || !cabinNumber || !method) {
-      throw badRequest("Salida, cabina y método de pago son obligatorios");
+      throw badRequest("Crucero, cabina y método de pago son obligatorios");
     }
     if (!PAYMENT_METHODS.includes(method)) throw badRequest("Método de pago inválido");
     if (method === "efectivo" && !cashConfirmed) {
-      throw badRequest("Con efectivo debes confirmar la recaudación en caja");
+      throw badRequest("Con efectivo, confirma que el dinero ingresó a caja");
     }
     if (method === "transferencia" && !reference?.trim()) {
       throw badRequest("Indica la referencia de la transferencia");
