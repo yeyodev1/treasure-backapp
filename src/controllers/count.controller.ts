@@ -96,7 +96,7 @@ export async function saveCount(req: Request, res: Response, next: NextFunction)
     const count = await StockCount.findById(req.params.id);
     if (!count) throw notFound("Conteo no encontrado");
     if (count.status !== "borrador" && count.status !== "rechazado") {
-      throw conflict("Este conteo ya fue enviado a la dueña y no se puede editar");
+      throw conflict("Este conteo ya fue enviado para revisión y no se puede editar mientras se revisa");
     }
 
     const byProduct = new Map((lines ?? []).map((l) => [l.product, l]));
@@ -118,7 +118,7 @@ export async function saveCount(req: Request, res: Response, next: NextFunction)
   }
 }
 
-/** Enviar a Paula: cada diferencia necesita su motivo. */
+/** Enviar para revisión: cada diferencia necesita su motivo. */
 export async function submitCount(req: Request, res: Response, next: NextFunction) {
   try {
     const count = await StockCount.findById(req.params.id);
@@ -141,7 +141,7 @@ export async function submitCount(req: Request, res: Response, next: NextFunctio
 
     await logEvent(req.auth, {
       kind: "conteo",
-      title: `Conteo ${count.code} enviado a la dueña`,
+      title: `Conteo ${count.code} enviado para revisión`,
       detail: `${counted.length} producto(s) contados`,
       cruise: count.cruise,
     });
@@ -152,13 +152,13 @@ export async function submitCount(req: Request, res: Response, next: NextFunctio
 }
 
 /**
- * Solo Paula aprueba. Por cada producto se registra una sola diferencia
+ * Solo Gerencia aprueba. Por cada producto se registra una sola diferencia
  * (físico − digital al corte) sobre el stock actual, así se conservan los
  * movimientos ocurridos después del corte.
  */
 export async function approveCount(req: Request, res: Response, next: NextFunction) {
   try {
-    if (!isOwner(req.auth!.role)) throw forbidden("El ajuste lo autoriza la dueña");
+    if (!isOwner(req.auth!.role)) throw forbidden("Solo Gerencia aprueba ajustes de inventario");
 
     const count = await StockCount.findOneAndUpdate(
       { _id: req.params.id, status: "enviado" },
@@ -198,7 +198,7 @@ export async function approveCount(req: Request, res: Response, next: NextFuncti
 
 export async function rejectCount(req: Request, res: Response, next: NextFunction) {
   try {
-    if (!isOwner(req.auth!.role)) throw forbidden("Los conteos los revisa la dueña");
+    if (!isOwner(req.auth!.role)) throw forbidden("Solo Gerencia revisa los conteos");
     const { note } = req.body as { note?: string };
     if (!note?.trim()) throw badRequest("Indica qué debe revisarse");
 
