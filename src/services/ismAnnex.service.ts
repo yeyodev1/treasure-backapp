@@ -141,7 +141,19 @@ export async function appendGuidedAnnex(
       page.drawText(text, { x: x + lw + 8, y: y - 12.5, size: vs, font, color: INK });
       x += w;
     }
-    y -= rowH + 14;
+    y -= rowH + 4;
+
+    // Cada sección guarda su propia hora (la ronda, el zarpe, el arribo y el fondeo).
+    const times = schema.sections
+      .filter((sec) => ctx?.sectionTimes?.[sec.id])
+      .map((sec) => `${sec.title} ${ctx!.sectionTimes![sec.id]}`);
+    if (times.length) {
+      for (const line of wrap(safe(`Hora de cada sección: ${times.join(" · ")}`), font, 8, contentW)) {
+        page.drawText(line, { x: left, y: y - 9, size: 8, font, color: MUTED });
+        y -= 11;
+      }
+    }
+    y -= 10;
   }
 
   function ensure(height: number) {
@@ -221,12 +233,16 @@ export async function appendGuidedAnnex(
     if (!a?.value) continue;
     const ref = `${section.title} · ${item.n}`;
     if (a.value === "no" || a.problem) {
+      const estado = a.estado === "cerrada" ? "Cerrada" : "Abierta";
+      const plazo = a.plazo ? fmtDate(a.plazo) : "";
       novedades.push([
         ref,
         item.official,
-        a.value === "no" ? "NO" : "SI, con novedad",
-        a.descripcion || "-",
+        `${a.value === "no" ? "" : "(SI, con novedad) "}${a.descripcion || "-"}`,
         a.accion || "-",
+        [a.responsable ? `Responsable: ${a.responsable}` : "", plazo ? `Plazo: ${plazo}` : "", `Estado: ${estado}`]
+          .filter(Boolean)
+          .join("\n"),
       ]);
       (a.evidencia ?? []).forEach((url, i) => evidence.push({ label: `${ref} · foto ${i + 1}`, url }));
     } else if (a.value === "na") {
@@ -238,11 +254,11 @@ export async function appendGuidedAnnex(
   if (novedades.length) {
     table(
       [
-        { title: "Ítem", frac: 0.14 },
-        { title: "Punto revisado", frac: 0.28 },
-        { title: "Respuesta", frac: 0.1 },
-        { title: "Descripción", frac: 0.25 },
-        { title: "Acción tomada", frac: 0.23 },
+        { title: "Ítem", frac: 0.13 },
+        { title: "Punto revisado", frac: 0.25 },
+        { title: "Qué se encontró", frac: 0.22 },
+        { title: "Acción tomada", frac: 0.21 },
+        { title: "Seguimiento", frac: 0.19 },
       ],
       novedades,
     );
