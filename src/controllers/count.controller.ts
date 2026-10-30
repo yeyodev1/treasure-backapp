@@ -35,11 +35,32 @@ export async function listCounts(_req: Request, res: Response, next: NextFunctio
   }
 }
 
+/**
+ * Envase de cada producto (botella de 750 ml…) para mostrar el conteo en
+ * envases y no en unidad base (checklist 29-oct, L09). No se guarda: sale
+ * del catálogo vigente.
+ */
+async function withContainers(count: InstanceType<typeof StockCount>) {
+  const json = count.toJSON() as unknown as { lines: Array<Record<string, unknown> & { product: unknown }> };
+  const ids = json.lines.map((l) => l.product);
+  const products = await Product.find({ _id: { $in: ids } }).select("containerSize containerLabel").lean();
+  const byId = new Map(products.map((p) => [p._id.toString(), p]));
+  json.lines = json.lines.map((line) => {
+    const product = byId.get(String(line.product));
+    return {
+      ...line,
+      containerSize: product?.containerSize ?? 1,
+      containerLabel: product?.containerLabel ?? "",
+    };
+  });
+  return json;
+}
+
 export async function getCount(req: Request, res: Response, next: NextFunction) {
   try {
     const count = await StockCount.findById(req.params.id).populate(POPULATE_PEOPLE);
     if (!count) throw notFound("Conteo no encontrado");
-    res.json({ count });
+    res.json({ count: await withContainers(count) });
   } catch (err) {
     next(err);
   }
@@ -80,7 +101,7 @@ export async function createCount(req: Request, res: Response, next: NextFunctio
       detail: location === "abordo" ? "A bordo" : "Bodega",
       cruise: cruise?._id ?? null,
     });
-    res.status(201).json({ count: await count.populate(POPULATE_PEOPLE) });
+    res.status(201).json({ count: await withContainers(await count.populate(POPULATE_PEOPLE)) });
   } catch (err) {
     next(err);
   }
@@ -112,7 +133,7 @@ export async function saveCount(req: Request, res: Response, next: NextFunction)
     if (notes !== undefined) count.notes = notes;
     count.status = "borrador";
     await count.save();
-    res.json({ count: await count.populate(POPULATE_PEOPLE) });
+    res.json({ count: await withContainers(await count.populate(POPULATE_PEOPLE)) });
   } catch (err) {
     next(err);
   }
@@ -145,7 +166,7 @@ export async function submitCount(req: Request, res: Response, next: NextFunctio
       detail: `${counted.length} producto(s) contados`,
       cruise: count.cruise,
     });
-    res.json({ count: await count.populate(POPULATE_PEOPLE) });
+    res.json({ count: await withContainers(await count.populate(POPULATE_PEOPLE)) });
   } catch (err) {
     next(err);
   }
@@ -190,7 +211,7 @@ export async function approveCount(req: Request, res: Response, next: NextFuncti
       detail: `${adjusted} diferencia(s) ajustada(s)`,
       cruise: count.cruise,
     });
-    res.json({ count: await count.populate(POPULATE_PEOPLE) });
+    res.json({ count: await withContainers(await count.populate(POPULATE_PEOPLE)) });
   } catch (err) {
     next(err);
   }
@@ -222,7 +243,7 @@ export async function rejectCount(req: Request, res: Response, next: NextFunctio
       detail: note.trim(),
       cruise: count.cruise,
     });
-    res.json({ count: await count.populate(POPULATE_PEOPLE) });
+    res.json({ count: await withContainers(await count.populate(POPULATE_PEOPLE)) });
   } catch (err) {
     next(err);
   }
