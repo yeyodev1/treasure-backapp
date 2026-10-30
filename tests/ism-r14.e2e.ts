@@ -4,7 +4,10 @@
  *   npx ts-node-dev --transpile-only tests/ism-r14.e2e.ts
  *
  * Fecha y nombre del archivo con la hora de la actividad, fecha inválida
- * con aviso, marca de novedad, casilla OBS, registros de prueba.
+ * con aviso, marca de novedad, casilla OBS, registros de prueba; lista de
+ * tripulantes y clave de 4 números (temporal, errada y bloqueo); firma por
+ * pasos sin firmar por otro rol (también por la API); devolución con
+ * comentario que anula firmas; archivado inmutable; avisos dentro de la app.
  */
 import { MongoMemoryReplSet } from "mongodb-memory-server";
 import { AddressInfo } from "net";
@@ -155,6 +158,128 @@ async function main() {
   check("Un tripulante no marca registros de prueba", tt.data.record?.test === false, tt.data.record?.test);
   const mark = await api("tri", "POST", `/ism/records/${b.data.record._id}/test`, { test: true });
   check("Solo la Persona Designada marca como prueba", mark.status === 403, mark.status);
+
+  // ---- Lista de tripulantes y claves (bloque 2) ----
+  const PNG = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAAABJRU5ErkJggg==";
+  const noAdd = await api("tri", "POST", "/ism/crew", { name: "Juan Pérez", position: "TIM_01" });
+  check("Un tripulante no edita la lista de tripulantes", noAdd.status === 403, noAdd.status);
+  const juan = (await api("des", "POST", "/ism/crew", { name: "Juan Pérez", position: "TIM_01", onboard: true })).data.member;
+  const pedro = (await api("des", "POST", "/ism/crew", { name: "Pedro Gómez", position: "MAQ" })).data.member;
+  check("La Persona Designada da de alta tripulantes", Boolean(juan?.id && pedro?.id), juan);
+  const list = await api("tri", "GET", "/ism/crew?onboard=1");
+  check("La tablet ve la lista con nombre y cargo", list.data.crew?.some((c: any) => c.name === "Juan Pérez" && c.positionLabel === "Timonel 1"));
+  const tempJuan = (await api("des", "POST", `/ism/crew/${juan.id}/temporary-pin`)).data.pin as string;
+  const tempPedro = (await api("des", "POST", `/ism/crew/${pedro.id}/temporary-pin`)).data.pin as string;
+  check("Clave temporal de 4 números", /^\d{4}$/.test(tempJuan), tempJuan);
+  const { IsmCrew } = await import("../src/models/ismCrew.model");
+  const prof = await IsmCrew.findOne({ user: juan.id });
+  check("La clave se guarda cifrada", Boolean(prof?.pinHash.startsWith("$2")) && !prof?.pinHash.includes(tempJuan));
+
+  async function fullR14(key: string, crewId: string, time: string) {
+    const r = (await newR14("tri", key, time)).data.record;
+    await api("tri", "PATCH", `/ism/records/${r._id}`, { context: { crewId }, answers });
+    return r._id as string;
+  }
+
+  const r1 = await fullR14("r14-flow-1", juan.id, "06:10");
+  const ctxR1 = (await api("tri", "GET", `/ism/records/${r1}`)).data.record.context;
+  check("El cargo sale de la ficha del tripulante elegido", ctxR1?.filledBy?.position === "TIM_01" && ctxR1?.filledBy?.name === "Juan Pérez", ctxR1?.filledBy);
+  const legacy = await api("tri", "POST", `/ism/records/${r1}/submit`);
+  check("No se envía sin firmar con clave", legacy.status === 409, legacy.status);
+  const otherSigner = await api("tri", "POST", `/ism/records/${r1}/sign-step`, { image: PNG, pin: tempPedro, signer: pedro.id });
+  check("Nadie firma por quien hizo el chequeo", otherSigner.status === 403, otherSigner.status);
+  const s1 = await api("tri", "POST", `/ism/records/${r1}/sign-step`, { image: PNG, pin: tempJuan, signer: juan.id });
+  check("Clave temporal: pide crear la propia", s1.status === 428 && s1.data.code === "clave_temporal", [s1.status, s1.data.code]);
+  const weak = await api("tri", "POST", `/ism/records/${r1}/sign-step`, { image: PNG, pin: tempJuan, newPin: "1234", signer: juan.id });
+  check("No acepta claves fáciles", weak.status === 400, weak.status);
+  const s1b = await api("tri", "POST", `/ism/records/${r1}/sign-step`, { image: PNG, pin: tempJuan, newPin: "5826", signer: juan.id });
+  check("Quien hizo el chequeo firma y envía al Capitán", s1b.data.record?.status === "por_capitan", [s1b.status, s1b.data.message]);
+  const crewSig = s1b.data.record?.signatures?.find((s: any) => s.stage === "tripulacion");
+  check(
+    "La firma guarda usuario, nombre, cargo, rol, hora y huella",
+    crewSig?.user === juan.id && crewSig?.signerName === "Juan Pérez" && crewSig?.position === "TIM_01" && crewSig?.userRole === "tripulante" && Boolean(crewSig?.dataHash) && Boolean(crewSig?.signedAt),
+    crewSig,
+  );
+  check("La sesión de la tablet no es quien firma", crewSig?.capturedByName === "Timonel Uno" && crewSig?.user !== recA.createdBy?._id, crewSig?.capturedByName);
+  const reuse = await api("tri", "POST", `/ism/records/${await fullR14("r14-flow-x", juan.id, "06:20")}/sign-step`, { image: PNG, pin: tempJuan, signer: juan.id });
+  check("La clave temporal es de un solo uso", reuse.status === 403, reuse.status);
+  const capNotice = await api("cap", "GET", "/ism/notices");
+  check("Aviso al Capitán cuando le llega un R-14", capNotice.data.notices?.some((n: any) => n.kind === "por_firmar_capitan" && n.record === r1), capNotice.data.unread);
+
+  // Bloqueo tras 5 intentos fallidos
+  const r2 = await fullR14("r14-flow-2", pedro.id, "06:30");
+  const statuses: number[] = [];
+  for (let i = 0; i < 5; i++) {
+    statuses.push((await api("tri", "POST", `/ism/records/${r2}/sign-step`, { image: PNG, pin: "0000", signer: pedro.id })).status);
+  }
+  check("Clave errada: avisa y cuenta intentos", statuses.slice(0, 4).every((s) => s === 403), statuses);
+  check("Al quinto intento se bloquea", statuses[4] === 423, statuses);
+  const locked = await api("tri", "POST", `/ism/records/${r2}/sign-step`, { image: PNG, pin: tempPedro, newPin: "4826", signer: pedro.id });
+  check("Bloqueada en el servidor aunque la clave sea correcta", locked.status === 423, locked.status);
+  const desNotices = await api("des", "GET", "/ism/notices");
+  check("Aviso a la Persona Designada por la clave bloqueada", desNotices.data.notices?.some((n: any) => n.kind === "clave_bloqueada"));
+
+  // Capitán y Persona Designada: su cuenta + su clave
+  const tempCap = (await api("des", "POST", `/ism/crew/${(await User.findOne({ email: "cap@t" }))!._id}/temporary-pin`)).data.pin;
+  const tempDes = (await api("des", "POST", `/ism/crew/${(await User.findOne({ email: "des@t" }))!._id}/temporary-pin`)).data.pin;
+  check("El Capitán cambia su clave temporal", (await api("cap", "POST", "/ism/crew/me/pin", { current: tempCap, next: "7391" })).status === 200);
+  check("La Persona Designada cambia su clave temporal", (await api("des", "POST", "/ism/crew/me/pin", { current: tempDes, next: "2468" })).status === 200);
+
+  for (const who of ["duena", "des", "tri"]) {
+    const r = await api(who, "POST", `/ism/records/${r1}/sign-step`, { image: PNG, pin: "7391" });
+    check(`${people[who][1]} no firma como Capitán (API)`, r.status === 403, r.status);
+  }
+  const legacyCap = await api("cap", "POST", `/ism/records/${r1}/signatures`, { field: "Firma_Capitan", image: PNG });
+  check("Sin clave no hay firma del Capitán (ruta antigua cerrada)", legacyCap.status === 409, legacyCap.status);
+  const noComment = await api("cap", "POST", `/ism/records/${r1}/return`, { reason: " " });
+  check("Devolver exige comentario", noComment.status === 400, noComment.status);
+  const back = await api("cap", "POST", `/ism/records/${r1}/return`, { reason: "La acción de la balsa no está clara" });
+  check("El Capitán devuelve al tripulante", back.data.record?.status === "borrador" && back.data.record?.returnInfo?.toStage === "tripulacion", back.data.record?.status);
+  check(
+    "La firma anterior queda anulada en el historial",
+    back.data.record?.signatures?.length === 0 &&
+      back.data.record?.annulledSignatures?.some((s: any) => s.field === "Firma_Chequeo") &&
+      back.data.record?.history?.some((h: any) => h.action.startsWith("firma anulada")),
+  );
+  const triNotices = await api("tri", "GET", "/ism/notices");
+  check("Aviso a quien hizo el chequeo cuando se lo devuelven", triNotices.data.notices?.some((n: any) => n.kind === "devuelto" && n.record === r1));
+  await api("tri", "PATCH", `/ism/records/${r1}`, { answers: { "ronda.balsas": { ...answers["ronda.balsas"] as object, accion: "Se trincaron y se avisó al contramaestre" } } });
+  const again = await api("tri", "POST", `/ism/records/${r1}/sign-step`, { image: PNG, pin: "5826", signer: juan.id });
+  check("Corrige, firma de nuevo y vuelve al Capitán", again.data.record?.status === "por_capitan", [again.status, again.data.message]);
+  const wrongCap = await api("cap", "POST", `/ism/records/${r1}/sign-step`, { image: PNG, pin: "1111" });
+  check("El Capitán con clave errada no firma", wrongCap.status === 403, wrongCap.status);
+  const capSign = await api("cap", "POST", `/ism/records/${r1}/sign-step`, { image: PNG, pin: "7391" });
+  check("El Capitán firma con su cuenta y su clave", capSign.data.record?.status === "por_oficina", [capSign.status, capSign.data.message]);
+  for (const who of ["duena", "cap", "tri"]) {
+    const r = await api(who, "POST", `/ism/records/${r1}/sign-step`, { image: PNG, pin: "2468" });
+    check(`${people[who][1]} no firma como Persona Designada (API)`, r.status === 403, r.status);
+  }
+  const back2 = await api("des", "POST", `/ism/records/${r1}/return`, { reason: "Falta revisar la hora del zarpe" });
+  check(
+    "La Persona Designada devuelve al Capitán y anula su firma",
+    back2.data.record?.status === "por_capitan" &&
+      !back2.data.record?.signatures?.some((s: any) => s.stage === "capitan") &&
+      back2.data.record?.signatures?.some((s: any) => s.stage === "tripulacion"),
+    back2.data.record?.status,
+  );
+  await api("cap", "POST", `/ism/records/${r1}/sign-step`, { image: PNG, pin: "7391" });
+  const arch = await api("des", "POST", `/ism/records/${r1}/sign-step`, { image: PNG, pin: "2468" });
+  check("La Persona Designada firma y archiva", arch.data.record?.status === "archivado", [arch.status, arch.data.message]);
+  const edit = await api("tri", "PATCH", `/ism/records/${r1}`, { answers: { "ronda.drizas": { value: "no", descripcion: "x", accion: "y" } } });
+  const reSign = await api("des", "POST", `/ism/records/${r1}/sign-step`, { image: PNG, pin: "2468" });
+  const reBack = await api("des", "POST", `/ism/records/${r1}/return`, { reason: "x", section: "Firmas" });
+  const del = await api("tri", "DELETE", `/ism/records/${r1}`);
+  check("Archivado: ya no se edita, firma, devuelve ni borra", [edit.status, reSign.status, reBack.status, del.status].every((s) => s >= 400), [edit.status, reSign.status, reBack.status, del.status]);
+  const archPdf = await fetch(`${base}/ism/records/${r1}/pdf`, { headers: { Authorization: `Bearer ${tokens.des}` } });
+  check(
+    "El PDF archivado sale con el nombre de la fecha y hora de la actividad",
+    (archPdf.headers.get("content-disposition") ?? "").includes("R-14_20261029_0610.pdf"),
+    archPdf.headers.get("content-disposition"),
+  );
+  if (process.env.SAVE_PDF) {
+    const fs = await import("fs");
+    fs.writeFileSync(`${process.env.SAVE_PDF}/archivado.pdf`, Buffer.from(await archPdf.arrayBuffer()));
+  }
 
   server.close();
   await mongoose.disconnect();
