@@ -17,7 +17,7 @@ import { round2 } from "../utils/units";
 export async function cruiseAccounts(req: Request, res: Response, next: NextFunction) {
   try {
     const cruise = await Cruise.findById(req.params.cruiseId);
-    if (!cruise) throw notFound("Salida no encontrada");
+    if (!cruise) throw notFound("Crucero no encontrado");
 
     const [accounts, orders, payments] = await Promise.all([
       Account.find({ cruise: cruise._id }),
