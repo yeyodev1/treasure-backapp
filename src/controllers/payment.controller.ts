@@ -9,6 +9,7 @@ import { buildCabinAccount, ensureAccount } from "../services/account.service";
 import { contificoStatus, issueInvoice } from "../services/contifico.service";
 import { logEvent } from "../services/audit.service";
 import { badRequest, conflict, forbidden, notFound } from "../errors/httpError";
+import { parseRangeEdge } from "../utils/dates";
 
 /** Cobra la directora (guía auditada 27-oct-2026) o la dueña. */
 async function assertCanCollect(userId: string, role: string) {
@@ -189,10 +190,13 @@ export async function listPayments(req: Request, res: Response, next: NextFuncti
     const { cruiseId, from, to, before, limit } = req.query as Record<string, string>;
     const filter: Record<string, unknown> = {};
     if (cruiseId) filter.cruise = cruiseId;
-    if (from || to || before) {
+    // 'YYYY-MM-DD' = día completo en hora de Galápagos.
+    const start = parseRangeEdge(from, "start");
+    const end = parseRangeEdge(to, "end");
+    if (start || end || before) {
       filter.createdAt = {
-        ...(from ? { $gte: new Date(from) } : {}),
-        ...(to ? { $lte: new Date(to) } : {}),
+        ...(start ? { $gte: start } : {}),
+        ...(end ? { $lte: end } : {}),
         ...(before ? { $lt: new Date(before) } : {}),
       };
     }
