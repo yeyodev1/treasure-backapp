@@ -1,10 +1,10 @@
 /**
- * Fechas comerciales en hora de Galápagos (America/Galapagos, UTC−6, sin
+ * Fechas comerciales en hora de Galápagos (Pacific/Galapagos, UTC−6, sin
  * horario de verano): el barco opera allí. Cuenta, bitácora, filtros y
  * gráficos usan esta misma fecha (checklist 29-oct, 04). El servidor corre
  * en UTC: sin esto el "hoy" del panel cambiaba a media tarde.
  */
-export const TIMEZONE = "America/Galapagos";
+export const TIMEZONE = "Pacific/Galapagos";
 /** Mongo no siempre trae la base de zonas horarias: en agregaciones va el desfase fijo. */
 export const UTC_OFFSET = "-06:00";
 const OFFSET_HOURS = 6;
