@@ -16,7 +16,7 @@ import { chargesChanged } from "../services/account.service";
 import { logEvent } from "../services/audit.service";
 import { badRequest, conflict, forbidden, HttpError, notFound } from "../errors/httpError";
 import { startOfDayEcuador } from "../utils/dates";
-import { round2 } from "../utils/units";
+import { QTY_POSITIVE_ERROR, round2 } from "../utils/units";
 
 /**
  * Consumo directo del bar (guía auditada 27-oct-2026): elegir cabina y tocar
@@ -87,11 +87,12 @@ export async function createConsumption(req: Request, res: Response, next: NextF
         clientAt?: string;
       };
     if (!cruiseId || !cabinNumber || !productId) {
-      throw badRequest("Salida, cabina y bebida son obligatorias");
+      throw badRequest("Crucero, cabina y bebida son obligatorios");
     }
     if (!idempotencyKey) throw badRequest("Falta el identificador del registro");
     const units = qty ?? 1;
-    if (!Number.isInteger(units) || units < 1 || units > 50) throw badRequest("Cantidad inválida");
+    if (!Number.isInteger(units) || units < 1) throw badRequest(QTY_POSITIVE_ERROR);
+    if (units > 50) throw badRequest("Cantidad demasiado alta: máximo 50 por registro.");
 
     const existing = await Order.findOne({ idempotencyKey });
     if (existing) {
@@ -104,13 +105,15 @@ export async function createConsumption(req: Request, res: Response, next: NextF
     }
 
     const cruise = await Cruise.findById(cruiseId);
-    if (!cruise) throw notFound("Salida no encontrada");
+    if (!cruise) throw notFound("Crucero no encontrado");
     if (cruise.status === "planificado") {
-      throw badRequest("La salida está programada: la directora debe iniciar el crucero");
+      throw badRequest(`${cruise.code ? `Crucero ${cruise.code}` : "El crucero"} aún no ha iniciado. Dirección de crucero debe iniciarlo.`);
     }
     const cabin = cruise.cabins.find((c) => c.number === cabinNumber);
-    if (!cabin) throw badRequest("Cabina inválida para esta salida");
-    if (!cabin.passengers.length) throw badRequest(`La cabina ${cabinNumber} está vacía`);
+    if (!cabin) throw badRequest("Cabina inválida para este crucero");
+    if (!cabin.passengers.length) {
+      throw badRequest(`Cabina ${cabinNumber} sin pasajeros. Dirección de crucero debe registrarlos.`);
+    }
 
     const product = await Product.findOne({ _id: productId, active: true });
     if (!product) throw badRequest("Esa bebida no está activa");
@@ -191,7 +194,7 @@ export async function createConsumption(req: Request, res: Response, next: NextF
       await logEvent(req.auth, {
         kind: "consumo",
         title: `Consumo retenido · cabina ${cabinNumber}`,
-        detail: `${units}× ${product.name} · llegó con la salida finalizada; lo revisa la directora`,
+        detail: `${units}× ${product.name} · llegó con el crucero finalizado; pendiente de revisión`,
         cruise: cruise._id,
         cabinNumber,
       });
@@ -250,7 +253,7 @@ async function reverseOrder(order: IOrder & { _id: Types.ObjectId }, userId: str
 }
 
 /**
- * Deshacer un error: solo quien lo registró (o la directora) y solo con la
+ * Deshacer registro por error: solo quien lo registró (o Dirección de crucero) y solo con la
  * cuenta abierta. Devuelve el cargo y los ingredientes con reverso auditable.
  */
 export async function undoConsumption(req: Request, res: Response, next: NextFunction) {
@@ -267,14 +270,14 @@ export async function undoConsumption(req: Request, res: Response, next: NextFun
     }
     const account = await Account.findOne({ cruise: order.cruise, cabinNumber: order.cabinNumber });
     if (account && account.status !== "abierta") {
-      throw conflict("La cuenta está en revisión o aprobada: pídele a la directora que la reabra");
+      throw conflict("La cuenta está en revisión o aprobada: pide a Dirección de crucero que la reabra");
     }
 
     await reverseOrder(order, req.auth!.sub, reason);
     await chargesChanged(order.cruise, order.cabinNumber, req.auth!.sub, `Deshacer: ${reason}`);
     await logEvent(req.auth, {
       kind: "consumo",
-      title: `Consumo deshecho · cabina ${order.cabinNumber}`,
+      title: `Registro por error deshecho · cabina ${order.cabinNumber}`,
       detail: `${order.items[0]?.qty ?? 0}× ${order.items[0]?.name ?? ""} · ${reason}`,
       cruise: order.cruise,
       cabinNumber: order.cabinNumber,
@@ -290,28 +293,28 @@ export async function undoConsumption(req: Request, res: Response, next: NextFun
 }
 
 /**
- * Bonificar una bebida que sí se consumió: deja de cobrarse pero conserva la
- * salida de ingredientes. Solo directora o dueña, con motivo.
+ * Marcar como cortesía una bebida que sí se consumió: deja de cobrarse pero
+ * conserva la salida de ingredientes. Solo Dirección de crucero o Gerencia, con motivo.
  */
 export async function bonifyConsumption(req: Request, res: Response, next: NextFunction) {
   try {
     const reason = (req.body?.reason as string | undefined)?.trim();
-    if (!reason) throw badRequest("El motivo de la bonificación es obligatorio");
+    if (!reason) throw badRequest("El motivo de la cortesía es obligatorio");
     const order = await Order.findById(req.params.id);
     if (!order) throw notFound("Consumo no encontrado");
     if (order.payment) throw conflict("La cuenta ya se cobró");
-    if (order.status !== "entregada") throw conflict("Solo se bonifica un consumo servido");
+    if (order.status !== "entregada") throw conflict("Solo se marca como cortesía un consumo servido");
     const item = order.items[0]!;
     if (item.courtesy) throw conflict("Ya es cortesía");
     item.courtesy = true;
     order.total = 0;
-    order.cancellations.push({ items: [], reason: `Bonificado: ${reason}`, by: req.auth!.sub as never, at: new Date() });
+    order.cancellations.push({ items: [], reason: `Cortesía: ${reason}`, by: req.auth!.sub as never, at: new Date() });
     await order.save();
 
-    await chargesChanged(order.cruise, order.cabinNumber, req.auth!.sub, `Bonificación: ${reason}`);
+    await chargesChanged(order.cruise, order.cabinNumber, req.auth!.sub, `Cortesía: ${reason}`);
     await logEvent(req.auth, {
       kind: "consumo",
-      title: `Bonificado · cabina ${order.cabinNumber}`,
+      title: `Cortesía · cabina ${order.cabinNumber}`,
       detail: `${item.qty}× ${item.name} · ${reason}`,
       cruise: order.cruise,
       cabinNumber: order.cabinNumber,
@@ -323,7 +326,7 @@ export async function bonifyConsumption(req: Request, res: Response, next: NextF
 }
 
 /**
- * Envío tardío: la directora acepta (se carga en su salida original y
+ * Envío tardío: Dirección de crucero acepta (se carga en su salida original y
  * descuenta stock) o rechaza con motivo. Nunca pasa al viaje nuevo.
  */
 export async function reviewHeld(req: Request, res: Response, next: NextFunction) {
