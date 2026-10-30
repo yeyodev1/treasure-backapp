@@ -1,6 +1,6 @@
 import { PDFDocument, PDFEmbeddedPage, PDFFont, PDFPage, rgb } from "pdf-lib";
 import { IIsmRecord } from "../models/ismRecord.model";
-import { IsmSchema, schemaItems } from "./ismSchema.service";
+import { IsmSchema, hashContent, schemaItems, signatureIsValid } from "./ismSchema.service";
 import { POSITION_LABELS } from "../utils/roles";
 
 /**
@@ -117,7 +117,7 @@ export async function appendGuidedAnnex(
       color: INK,
     });
     y -= 16;
-    const sub = safe("ANEXO: NOVEDADES, PUNTOS QUE NO APLICAN Y RESPONSABLE DEL CHEQUEO");
+    const sub = safe("ANEXO: QUIEN HIZO EL CHEQUEO, NOVEDADES Y PUNTOS QUE NO APLICAN");
     page.drawText(sub, { x: (W - bold.widthOfTextAtSize(sub, 9)) / 2, y, size: 9, font: bold, color: MUTED });
     y -= 14;
 
@@ -225,6 +225,67 @@ export async function appendGuidedAnnex(
 
   newPage();
 
+  // Quien hizo el chequeo: la hoja oficial no tiene casilla para su firma
+  // (decisión 3 del piloto), así que firma aquí con nombre, cargo y hora.
+  sectionTitle("QUIEN HIZO EL CHEQUEO");
+  y -= 6;
+  const fb = ctx?.filledBy;
+  const label = (code?: string) => (code ? (POSITION_LABELS[code as keyof typeof POSITION_LABELS] ?? code) : "");
+  const step = schema.signers?.find((s) => s.print === "anexo");
+  const current = hashContent(record);
+  const crewSig = step
+    ? record.signatures?.find((s) => s.field === step.field && signatureIsValid(s, current))
+    : undefined;
+  const boxW = Math.min(220, contentW * 0.45);
+  const boxH = 64;
+  ensure(boxH + 30);
+  page.drawRectangle({ x: left, y: y - boxH, width: boxW, height: boxH, borderColor: LINE, borderWidth: 0.6 });
+  const img = crewSig ? await opts.loadImage(crewSig.image) : null;
+  if (img) {
+    try {
+      const embedded = img.png ? await pdf.embedPng(img.bytes) : await pdf.embedJpg(img.bytes);
+      const scale = Math.min((boxW - 10) / embedded.width, (boxH - 10) / embedded.height);
+      const w = embedded.width * scale;
+      const h = embedded.height * scale;
+      page.drawImage(embedded, { x: left + (boxW - w) / 2, y: y - boxH + (boxH - h) / 2, width: w, height: h });
+    } catch {
+      // Sin imagen: quedan nombre, cargo y hora.
+    }
+  } else {
+    page.drawText(safe("Pendiente de firma"), { x: left + 8, y: y - boxH / 2 - 3, size: 8.5, font, color: MUTED });
+  }
+  const who = crewSig
+    ? [crewSig.signerName, label(crewSig.position) || label(fb?.position), opts.stamp(new Date(crewSig.signedAt))]
+    : [fb?.name || "-", label(fb?.position)];
+  const textX = left + boxW + 12;
+  page.drawText(safe(who.filter(Boolean).join(" · ")), { x: textX, y: y - 16, size: 9.5, font: bold, color: INK });
+  page.drawText(safe("Firma con el dedo, confirmada con su clave de 4 números."), {
+    x: textX,
+    y: y - 30,
+    size: 8,
+    font,
+    color: MUTED,
+  });
+  if (crewSig?.capturedByName) {
+    page.drawText(safe(`Tablet con la sesión de: ${crewSig.capturedByName}`), { x: textX, y: y - 42, size: 8, font, color: MUTED });
+  }
+  y -= boxH + 12;
+  const answeredAt = Object.values(record.answers ?? {})
+    .map((a) => (a?.at ? new Date(a.at).getTime() : 0))
+    .filter(Boolean);
+  const lines = [
+    answeredAt.length
+      ? `Captura de respuestas: ${opts.stamp(new Date(Math.min(...answeredAt)))} a ${opts.stamp(new Date(Math.max(...answeredAt)))}`
+      : "Captura de respuestas: -",
+    `Enviado al Capitán: ${record.submittedAt ? opts.stamp(new Date(record.submittedAt)) : "aún no enviado"}`,
+    `Esquema de preguntas: ${schema.code} v${schema.version} · Formato ${record.formEdition || schema.templateEdition}`,
+  ];
+  for (const l of lines) paragraph(l);
+  y -= 6;
+  paragraph(schema.notice, 8.5, bold);
+  y -= 12;
+
+
   const novedades: string[][] = [];
   const noAplica: string[][] = [];
   const evidence: Array<{ label: string; url: string }> = [];
@@ -318,27 +379,6 @@ export async function appendGuidedAnnex(
     if (col) y -= boxH + 18;
     y -= 4;
   }
-
-  sectionTitle("RESPONSABLE DEL CHEQUEO");
-  y -= 6;
-  const fb = ctx?.filledBy;
-  const answeredAt = Object.values(record.answers ?? {})
-    .map((a) => (a?.at ? new Date(a.at).getTime() : 0))
-    .filter(Boolean);
-  const lines = [
-    `Llenado por: ${fb?.name || "-"}${
-      fb?.position ? ` · ${POSITION_LABELS[fb.position as keyof typeof POSITION_LABELS] ?? fb.position}` : ""
-    }`,
-    `Cuenta con la que se inició sesión: ${fb?.accountName || "-"}`,
-    answeredAt.length
-      ? `Captura de respuestas: ${opts.stamp(new Date(Math.min(...answeredAt)))} a ${opts.stamp(new Date(Math.max(...answeredAt)))}`
-      : "Captura de respuestas: -",
-    `Enviado al Capitán: ${record.submittedAt ? opts.stamp(new Date(record.submittedAt)) : "aún no enviado"}`,
-    `Esquema de preguntas: ${schema.code} v${schema.version} · Formato ${schema.templateEdition}`,
-  ];
-  for (const l of lines) paragraph(l);
-  y -= 6;
-  paragraph(schema.notice, 8.5, bold);
 
   return pages.length;
 }
