@@ -213,9 +213,14 @@ export async function reversePayment(req: Request, res: Response, next: NextFunc
 
 export async function listPayments(req: Request, res: Response, next: NextFunction) {
   try {
-    const { cruiseId, from, to, before, limit } = req.query as Record<string, string>;
+    const { cruiseId, from, to, before, limit, invoice } = req.query as Record<string, string>;
     const filter: Record<string, unknown> = {};
     if (cruiseId) filter.cruise = cruiseId;
+    // Facturas pendientes: pagos vigentes cuya factura no se emitió.
+    if (invoice === "pendiente") {
+      filter.status = "vigente";
+      filter.invoiceStatus = { $in: ["pendiente", "error"] };
+    }
     // 'YYYY-MM-DD' = día completo en hora de Galápagos.
     const start = parseRangeEdge(from, "start");
     const end = parseRangeEdge(to, "end");
