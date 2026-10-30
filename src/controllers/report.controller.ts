@@ -3,7 +3,7 @@ import { PipelineStage, Types } from "mongoose";
 import { Order } from "../models/order.model";
 import { Payment } from "../models/payment.model";
 import { Cruise } from "../models/cruise.model";
-import { StockMovement } from "../models/stockMovement.model";
+import { ownerReport } from "../services/ownerReport.service";
 import { parseRangeEdge, UTC_OFFSET } from "../utils/dates";
 
 /** Rango de fechas: 'YYYY-MM-DD' es el día completo en hora de Galápagos. */
@@ -149,65 +149,13 @@ export async function salesByCruise(_req: Request, res: Response, next: NextFunc
 }
 
 /**
- * Panel de la dueña (guía auditada 27-oct-2026), filtrable por salida y
- * fechas. Separa: consumos netos registrados, dinero cobrado, saldo por
- * cobrar, compras recibidas y costo de lo consumido. El margen solo se
- * calcula si todos los consumos tienen costo; nunca es "utilidad neta".
+ * Resumen del negocio (solo Gerencia), con un único filtro de crucero o
+ * periodo para todas las cifras. Ver services/ownerReport.service.ts.
  */
 export async function ownerPanel(req: Request, res: Response, next: NextFunction) {
   try {
     const { cruiseId, from, to } = req.query as Record<string, string>;
-    const range = dateMatch(from, to);
-    const orderMatch: Record<string, unknown> = { status: { $in: ["entregada", "pendiente"] }, ...range };
-    const paymentMatch: Record<string, unknown> = { status: "vigente", ...range };
-    if (cruiseId) {
-      orderMatch.cruise = new Types.ObjectId(cruiseId);
-      paymentMatch.cruise = new Types.ObjectId(cruiseId);
-    }
-
-    const [orders, payments, purchaseMoves, held] = await Promise.all([
-      Order.find(orderMatch).select("items total payment cruise cabinNumber"),
-      Payment.find(paymentMatch).select("total method"),
-      StockMovement.find({ type: "compra", qty: { $gt: 0 }, ...range }).select("qty unitCost product"),
-      Order.countDocuments({ status: "retenida", ...(cruiseId ? { cruise: cruiseId } : {}) }),
-    ]);
-
-    let net = 0;
-    let courtesy = 0;
-    let cost = 0;
-    let unpaid = 0;
-    const missingCost = new Map<string, string>();
-    for (const order of orders) {
-      if (!order.payment) unpaid += order.total;
-      for (const item of order.items) {
-        const units = Math.max(0, item.qty - item.cancelledQty - item.annulledQty);
-        if (!units) continue;
-        if (item.courtesy) courtesy += units * item.unitPrice;
-        else net += units * item.unitPrice;
-        cost += units * (item.unitCost ?? 0);
-        if (!item.costComplete) missingCost.set(item.product.toString(), item.name);
-      }
-    }
-    const collected = payments.reduce((s, p) => s + p.total, 0);
-    const byMethod: Record<string, number> = {};
-    for (const p of payments) byMethod[p.method] = round(byMethod[p.method] ?? 0) + p.total;
-    const purchases = purchaseMoves.reduce((s, m) => s + m.qty * m.unitCost, 0);
-    const costsComplete = missingCost.size === 0 && orders.length > 0;
-
-    res.json({
-      netConsumption: round(net),
-      courtesy: round(courtesy),
-      collected: round(collected),
-      byMethod: Object.fromEntries(Object.entries(byMethod).map(([k, v]) => [k, round(v)])),
-      pendingCollection: round(unpaid),
-      purchases: round(purchases),
-      consumedCost: round(cost),
-      costsComplete,
-      missingCost: [...missingCost.values()].slice(0, 30),
-      missingCostCount: missingCost.size,
-      margin: costsComplete ? round(net - cost) : null,
-      heldConsumptions: held,
-    });
+    res.json(await ownerReport({ cruiseId, from, to }));
   } catch (err) {
     next(err);
   }
