@@ -1,6 +1,7 @@
 import { Types } from "mongoose";
 import { Account, AccountStatus, IAccount } from "../models/account.model";
-import { chargeableQty, Order, pendingQty } from "../models/order.model";
+import { chargeableQty, IOrder, Order, pendingQty } from "../models/order.model";
+import { Payment } from "../models/payment.model";
 import { round2 } from "../utils/units";
 
 export interface AccountLineItem {
@@ -16,6 +17,26 @@ export interface AccountLineItem {
   courtesy: boolean;
 }
 
+export interface AccountOrder {
+  id: string;
+  createdAt: Date;
+  /** Trazabilidad: quién registró el pedido. */
+  by: string;
+  status: string;
+  items: AccountLineItem[];
+  total: number;
+}
+
+export interface AccountPayment {
+  id: string;
+  createdAt: Date;
+  method: string;
+  total: number;
+  invoiceStatus: string;
+  invoiceNumber: string;
+  invoiceError: string;
+}
+
 export interface AccountSummary {
   cabinNumber: number;
   status: AccountStatus;
@@ -26,18 +47,24 @@ export interface AccountSummary {
   readyToCollect: boolean;
   pendingDeliveries: number;
   pendingAnnulments: number;
-  orders: Array<{
-    id: string;
-    createdAt: Date;
-    /** Trazabilidad: quién registró el pedido. */
-    by: string;
-    status: string;
-    items: AccountLineItem[];
-    total: number;
-  }>;
+  /** Consumos sin pago: son los que se revisan, aprueban y cobran. */
+  orders: AccountOrder[];
   subtotal: number;
   courtesyTotal: number;
+  /** Saldo abierto (lo que falta cobrar). */
   total: number;
+  /**
+   * Consumos ya pagados: la cuenta pagada conserva sus productos e
+   * historial (checklist 29-oct, 01).
+   */
+  paidOrders: AccountOrder[];
+  payments: AccountPayment[];
+  /** Cuenta completa: consumos (sin cortesías) = pagado + por cobrar. */
+  consumed: number;
+  paid: number;
+  due: number;
+  /** Cortesías de toda la cuenta (pagadas y abiertas). */
+  courtesyAll: number;
   history: Array<{ action: string; version: number; reason: string; by: string; at: Date }>;
 }
 
@@ -100,65 +127,96 @@ export async function chargesChanged(
   return account;
 }
 
-/** Cuenta de una cabina: pedidos aún no cobrados, con su estado de entrega. */
-export async function buildCabinAccount(
-  cruiseId: Types.ObjectId | string,
-  cabinNumber: number,
-): Promise<AccountSummary> {
-  const [account, orders] = await Promise.all([
-    Account.findOne({ cruise: cruiseId, cabinNumber }).populate("history.by", "name"),
-    Order.find({
-      cruise: cruiseId,
-      cabinNumber,
-      payment: null,
-      status: { $nin: ["cancelada", "retenida"] },
-    })
-      .populate("createdBy", "name")
-      .sort({ createdAt: 1 }),
-  ]);
+type PopulatedOrder = IOrder & { _id: Types.ObjectId };
 
-  let subtotal = 0;
-  let courtesyTotal = 0;
-  let pendingDeliveries = 0;
-  let pendingAnnulments = 0;
-
-  const mapped = orders.map((order) => {
-    let orderTotal = 0;
-    const items = order.items.map((item, index) => {
-      const live = chargeableQty(item);
-      const pending = pendingQty(item);
-      pendingDeliveries += pending;
-      const line = live * item.unitPrice;
-      if (item.courtesy) courtesyTotal += line;
-      else orderTotal += line;
-      return {
-        index,
-        name: item.name,
-        qty: item.qty,
-        deliveredQty: item.deliveredQty,
-        pendingQty: pending,
-        cancelledQty: item.cancelledQty,
-        annulledQty: item.annulledQty,
-        chargeableQty: live,
-        unitPrice: item.unitPrice,
-        courtesy: item.courtesy,
-      };
-    });
-    pendingAnnulments += order.annulments.filter((a) => a.status === "pendiente").length;
-    subtotal += orderTotal;
+/** Líneas de un pedido con su estado de entrega y lo que sigue contando. */
+function mapOrder(order: PopulatedOrder) {
+  let total = 0;
+  let courtesy = 0;
+  let pending = 0;
+  const items = order.items.map((item, index) => {
+    const live = chargeableQty(item);
+    const waiting = pendingQty(item);
+    pending += waiting;
+    const line = live * item.unitPrice;
+    if (item.courtesy) courtesy += line;
+    else total += line;
     return {
+      index,
+      name: item.name,
+      qty: item.qty,
+      deliveredQty: item.deliveredQty,
+      pendingQty: waiting,
+      cancelledQty: item.cancelledQty,
+      annulledQty: item.annulledQty,
+      chargeableQty: live,
+      unitPrice: item.unitPrice,
+      courtesy: item.courtesy,
+    };
+  });
+  return {
+    order: {
       id: order._id.toString(),
       createdAt: order.createdAt as Date,
       by: (order.createdBy as unknown as { name?: string })?.name ?? "",
       status: order.status,
       items,
-      total: round2(orderTotal),
-    };
-  });
+      total: round2(total),
+    },
+    total,
+    courtesy,
+    pending,
+  };
+}
+
+/**
+ * Cuenta de una cabina: lo abierto (se revisa y se cobra) y lo ya pagado
+ * con sus pagos, para que una cuenta pagada no aparezca vacía.
+ */
+export async function buildCabinAccount(
+  cruiseId: Types.ObjectId | string,
+  cabinNumber: number,
+): Promise<AccountSummary> {
+  const [account, orders, payments] = await Promise.all([
+    Account.findOne({ cruise: cruiseId, cabinNumber }).populate("history.by", "name"),
+    Order.find({
+      cruise: cruiseId,
+      cabinNumber,
+      status: { $nin: ["cancelada", "retenida"] },
+    })
+      .populate("createdBy", "name")
+      .sort({ createdAt: 1 }),
+    Payment.find({ cruise: cruiseId, cabinNumber, status: "vigente" }).sort({ createdAt: 1 }),
+  ]);
+
+  let subtotal = 0;
+  let courtesyTotal = 0;
+  let paidTotal = 0;
+  let courtesyAll = 0;
+  let pendingDeliveries = 0;
+  let pendingAnnulments = 0;
+  const open: AccountOrder[] = [];
+  const paidOrders: AccountOrder[] = [];
+
+  for (const order of orders as PopulatedOrder[]) {
+    const mapped = mapOrder(order);
+    courtesyAll += mapped.courtesy;
+    if (order.payment) {
+      paidTotal += mapped.total;
+      paidOrders.push(mapped.order);
+      continue;
+    }
+    pendingDeliveries += mapped.pending;
+    pendingAnnulments += order.annulments.filter((a) => a.status === "pendiente").length;
+    subtotal += mapped.total;
+    courtesyTotal += mapped.courtesy;
+    open.push(mapped.order);
+  }
 
   const status = account?.status ?? "abierta";
   const version = account?.version ?? 1;
   const total = round2(subtotal);
+  const paid = round2(payments.reduce((s, p) => s + p.total, 0));
 
   return {
     cabinNumber,
@@ -173,10 +231,24 @@ export async function buildCabinAccount(
       pendingDeliveries === 0,
     pendingDeliveries,
     pendingAnnulments,
-    orders: mapped,
+    orders: open,
     subtotal: total,
     courtesyTotal: round2(courtesyTotal),
     total,
+    paidOrders,
+    payments: payments.map((p) => ({
+      id: p._id.toString(),
+      createdAt: p.createdAt as Date,
+      method: p.method,
+      total: p.total,
+      invoiceStatus: p.invoiceStatus,
+      invoiceNumber: p.invoiceNumber,
+      invoiceError: p.invoiceError,
+    })),
+    consumed: round2(paidTotal + subtotal),
+    paid,
+    due: total,
+    courtesyAll: round2(courtesyAll),
     history: (account?.history ?? []).map((h) => ({
       action: h.action,
       version: h.version,
