@@ -4,11 +4,15 @@ import { Order } from "../models/order.model";
 import { Payment } from "../models/payment.model";
 import { Cruise } from "../models/cruise.model";
 import { StockMovement } from "../models/stockMovement.model";
+import { parseRangeEdge, UTC_OFFSET } from "../utils/dates";
 
+/** Rango de fechas: 'YYYY-MM-DD' es el día completo en hora de Galápagos. */
 function dateMatch(from?: string, to?: string) {
   const range: Record<string, Date> = {};
-  if (from) range.$gte = new Date(from);
-  if (to) range.$lte = new Date(to);
+  const start = parseRangeEdge(from, "start");
+  const end = parseRangeEdge(to, "end");
+  if (start) range.$gte = start;
+  if (end) range.$lte = end;
   return Object.keys(range).length ? { createdAt: range } : {};
 }
 
@@ -21,7 +25,7 @@ const NET_QTY = {
 };
 
 /**
- * Resumen de ventas para administración: por día (hora de Ecuador), por
+ * Resumen de ventas para administración: por día (hora de Galápagos), por
  * persona y top de productos, filtrable por salida y rango de fechas.
  */
 export async function salesSummary(req: Request, res: Response, next: NextFunction) {
@@ -38,7 +42,7 @@ export async function salesSummary(req: Request, res: Response, next: NextFuncti
       {
         $group: {
           _id: {
-            $dateToString: { format: "%Y-%m-%d", date: "$createdAt", timezone: "America/Guayaquil" },
+            $dateToString: { format: "%Y-%m-%d", date: "$createdAt", timezone: UTC_OFFSET },
           },
           total: { $sum: "$total" },
           orders: { $sum: 1 },
