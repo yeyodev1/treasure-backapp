@@ -42,6 +42,11 @@ export interface IsmSchema {
     { label: string; pdfField: string; required: boolean; suggestions?: string[] }
   >;
   sections: IsmSchemaSection[];
+  /**
+   * Casilla "OBS:" de la hoja oficial (fracciones de la página, desde arriba).
+   * Recibe el resumen de novedades o "ver página anexa" (informe 29-oct, falla 8).
+   */
+  obs?: { page: number; x: number; y: number; w: number; h: number };
 }
 
 export interface IsmMissing {
@@ -109,14 +114,32 @@ export function sanitizeAnswer(input: unknown, item: IsmSchemaItem): Omit<IIsmAn
   const evidencia = Array.isArray(raw.evidencia)
     ? raw.evidencia.filter((u): u is string => typeof u === "string" && /^https:\/\//.test(u)).slice(0, 4)
     : [];
-  return {
+  // Solo Sí · No · No aplica (informe 29-oct, falla 6): "No" es la única forma de
+  // decir que algo está mal. "Hay un problema" ya no se acepta.
+  const novedad = value === "no";
+  const clean: Omit<IIsmAnswer, "at" | "by"> = {
     value,
-    problem: value === "si" && raw.problem === true,
-    descripcion: value === "no" || (value === "si" && raw.problem === true) ? clip(raw.descripcion, 1500) : "",
-    accion: value === "no" || (value === "si" && raw.problem === true) ? clip(raw.accion, 1500) : "",
+    problem: false,
+    descripcion: novedad ? clip(raw.descripcion, 1500) : "",
+    accion: novedad ? clip(raw.accion, 1500) : "",
     motivo: value === "na" ? clip(raw.motivo, 600) : "",
     evidencia: value === "na" ? [] : evidencia,
   };
+  // Seguimiento de la novedad: solo se guarda si se llenó (no cambia la huella de lo anterior).
+  if (novedad) {
+    const responsable = clip(raw.responsable, 120);
+    const plazo = typeof raw.plazo === "string" && /^\d{4}-\d{2}-\d{2}$/.test(raw.plazo) ? raw.plazo : "";
+    const estado = raw.estado === "abierta" || raw.estado === "cerrada" ? raw.estado : "";
+    if (responsable) clean.responsable = responsable;
+    if (plazo) clean.plazo = plazo;
+    if (estado) clean.estado = estado;
+  }
+  return clean;
+}
+
+/** Campos de seguimiento de una novedad, vacíos si no se llenaron. */
+function followUp(a: Partial<IIsmAnswer> | undefined) {
+  return [a?.responsable ?? "", a?.plazo ?? "", a?.estado ?? ""];
 }
 
 function sameAnswer(a: Partial<IIsmAnswer> | undefined, b: Omit<IIsmAnswer, "at" | "by">) {
@@ -127,7 +150,8 @@ function sameAnswer(a: Partial<IIsmAnswer> | undefined, b: Omit<IIsmAnswer, "at"
     (a.descripcion ?? "") === b.descripcion &&
     (a.accion ?? "") === b.accion &&
     (a.motivo ?? "") === b.motivo &&
-    JSON.stringify(a.evidencia ?? []) === JSON.stringify(b.evidencia)
+    JSON.stringify(a.evidencia ?? []) === JSON.stringify(b.evidencia) &&
+    JSON.stringify(followUp(a)) === JSON.stringify(followUp(b))
   );
 }
 
@@ -170,6 +194,15 @@ export function mergeContext(
   if (typeof incoming.place === "string") next.place = clip(incoming.place, 120);
   if (typeof incoming.name === "string" && incoming.name.trim()) next.filledBy.name = clip(incoming.name, 120);
   if (typeof incoming.position === "string") next.filledBy.position = clip(incoming.position, 20);
+  if (incoming.sectionTimes && typeof incoming.sectionTimes === "object") {
+    const times = { ...(current.sectionTimes ?? {}) };
+    for (const [id, t] of Object.entries(incoming.sectionTimes as Record<string, unknown>)) {
+      if (!/^[a-z_]{1,30}$/.test(id)) continue;
+      if (typeof t === "string" && /^([01]\d|2[0-3]):[0-5]\d$/.test(t)) times[id] = t;
+      else if (t === "") delete times[id];
+    }
+    next.sectionTimes = times;
+  }
   if (incoming.confirmed === true && !next.confirmedAt) next.confirmedAt = new Date();
   return next;
 }
@@ -207,7 +240,7 @@ export function computeFlags(schema: IsmSchema, answers: Record<string, IIsmAnsw
     if (a.value === "no" || a.problem) novedades++;
     if (a.value === "na") noAplica++;
   }
-  return { answered, total: items.length, novedades, noAplica };
+  return { answered, total: items.length, novedades, noAplica, hasNovedad: novedades > 0 };
 }
 
 /** Misma validación que corre en la tablet antes de "Revisar y enviar". */
@@ -222,6 +255,7 @@ export function validateGuided(
   if (!ctx?.activityTime) need("activityTime", "Falta la hora de la actividad");
   if (!ctx?.place) need("place", "Falta el lugar");
   if (!ctx?.filledBy?.name) need("name", "Falta quién hace el chequeo");
+  if (!ctx?.filledBy?.position) need("position", "Falta el cargo");
 
   for (const { section, item } of schemaItems(schema)) {
     const a = record.answers?.[item.id];
@@ -242,6 +276,12 @@ export function validateGuided(
     }
   }
   return missing;
+}
+
+/** Horas por sección, ordenadas; vacío si no hay (no cambia la huella de lo anterior). */
+function sectionTimesKey(times: Record<string, string> | undefined): string[] {
+  const entries = Object.entries(times ?? {}).filter(([, t]) => t).sort(([a], [b]) => a.localeCompare(b));
+  return entries.length ? [entries.map(([k, t]) => `${k}=${t}`).join(",")] : [];
 }
 
 /** Valores vacíos o falsos no cuentan: guardar "nada" no cambia la huella. */
@@ -265,7 +305,11 @@ export function hashContent(record: Pick<IIsmRecord, "code" | "data" | "recordDa
     .sort()
     .map((id) => {
       const a = record.answers[id]!;
-      return [id, a.value, Boolean(a.problem), a.descripcion ?? "", a.accion ?? "", a.motivo ?? "", a.evidencia ?? []];
+      const row: unknown[] = [id, a.value, Boolean(a.problem), a.descripcion ?? "", a.accion ?? "", a.motivo ?? "", a.evidencia ?? []];
+      // El seguimiento entra en la huella solo si existe: las firmas anteriores siguen valiendo.
+      const extra = followUp(a);
+      if (extra.some(Boolean)) row.push(extra);
+      return row;
     })
     .filter((row) => row[1]);
   const ctx = record.context
@@ -276,6 +320,7 @@ export function hashContent(record: Pick<IIsmRecord, "code" | "data" | "recordDa
         record.context.place,
         record.context.filledBy?.name,
         record.context.filledBy?.position,
+        ...sectionTimesKey(record.context.sectionTimes),
       ]
     : null;
   const payload = JSON.stringify({
