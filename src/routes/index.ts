@@ -183,7 +183,8 @@ export default function routerApi(app: Application) {
 
   // En vivo y reportes
   router.get("/live", requireAuth, LEAD, live.livePulse);
-  router.get("/reports/sales", requireAuth, LEAD, reports.salesSummary);
-  router.get("/reports/by-cruise", requireAuth, LEAD, reports.salesByCruise);
+  // Métricas solo para Gerencia (checklist 29-oct, 07): menú, ruta y servidor.
+  router.get("/reports/sales", requireAuth, OWNER, reports.salesSummary);
+  router.get("/reports/by-cruise", requireAuth, OWNER, reports.salesByCruise);
   router.get("/reports/owner", requireAuth, OWNER, reports.ownerPanel);
 }
