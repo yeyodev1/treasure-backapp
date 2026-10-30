@@ -43,7 +43,7 @@ export function requireRole(...roles: UserRole[]) {
       next(unauthorized());
       return;
     }
-    // La dueña puede todo lo que pueden los demás roles.
+    // Gerencia puede todo lo que pueden los demás roles.
     if (req.auth.role !== "duena" && !roles.includes(req.auth.role)) {
       next(forbidden());
       return;
