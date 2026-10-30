@@ -35,8 +35,11 @@ import {
   schemaManagedFields,
   signatureIsValid,
   validateGuided,
+  IsmSigner,
 } from "../services/ismSchema.service";
 import { logEvent } from "../services/audit.service";
+import { CREW_LIST_ROLES, positionLabel, verifyPin } from "../services/ismCrew.service";
+import { notifyRole, notifyUsers } from "../services/ismNotify.service";
 import { badRequest, conflict, forbidden, notFound } from "../errors/httpError";
 import { CREW_POSITIONS, POSITION_LABELS, isManager } from "../utils/roles";
 
@@ -124,6 +127,55 @@ function schemaOf(record: Pick<IIsmRecord, "code" | "schemaVersion">) {
   return record.schemaVersion ? ismSchema(record.code, record.schemaVersion) : null;
 }
 
+/**
+ * Quien hace el chequeo se elige de la lista de tripulantes (falla 3): el
+ * nombre y el cargo salen de su ficha (falla 2), no se escriben a mano.
+ */
+async function applyCrewChoice(ctx: IIsmContext | null, incoming: Record<string, unknown>, req: Request) {
+  if (!ctx || typeof incoming.crewId !== "string") return ctx;
+  if (!Types.ObjectId.isValid(incoming.crewId)) throw badRequest("Elige quién hace el chequeo de la lista");
+  const member = await User.findOne({ _id: incoming.crewId, active: true, role: { $in: CREW_LIST_ROLES } }).select(
+    "name role position",
+  );
+  if (!member) throw badRequest("Esa persona no está en la lista de tripulantes");
+  const fixed = Boolean(member.position);
+  return {
+    ...ctx,
+    filledBy: {
+      user: member._id,
+      accountName: req.auth!.name,
+      name: member.name,
+      role: member.role,
+      position: fixed
+        ? member.position
+        : typeof incoming.position === "string"
+          ? incoming.position.slice(0, 20)
+          : ctx.filledBy.user?.toString() === member._id.toString()
+            ? ctx.filledBy.position
+            : "",
+      fromList: true,
+      positionFixed: fixed,
+    },
+  };
+}
+
+/** Paso de firma del registro guiado según su estado (motor de firmas del esquema). */
+function currentSigner(record: IIsmRecord): IsmSigner | null {
+  const schema = schemaOf(record);
+  return schema?.signers?.find((s) => s.status === record.status) ?? null;
+}
+
+function signerByStep(record: IIsmRecord, step: SignatureStage | null | undefined): IsmSigner | null {
+  return schemaOf(record)?.signers?.find((s) => s.step === step) ?? null;
+}
+
+/** Los registros guiados con firmantes declarados solo se firman con «Firmar» y la clave. */
+function assertNotStepSigned(record: IIsmRecord) {
+  if (schemaOf(record)?.signers?.length) {
+    throw conflict("Este registro se firma con «Firmar» y tu clave de 4 números. Actualiza la app.");
+  }
+}
+
 type ClientSignature = Omit<IIsmSignature, "image"> & { valid: boolean };
 
 /**
@@ -135,12 +187,13 @@ function toClient(record: { toObject?: () => unknown } & Partial<IIsmRecord>) {
     _id: Types.ObjectId;
   };
   const current = raw.data ? hashContent(raw) : "";
-  const { idempotencyKey: _key, signatures, ...rest } = raw;
+  const { idempotencyKey: _key, signatures, annulledSignatures, ...rest } = raw;
   const clientSignatures: ClientSignature[] = (signatures ?? []).map((sig) => {
     const { image: _image, ...plain } = sig;
     return { ...plain, valid: current ? signatureIsValid(plain, current) : true };
   });
-  return { ...rest, signatures: clientSignatures };
+  const annulled = (annulledSignatures ?? []).map(({ image: _image, ...plain }) => plain);
+  return { ...rest, signatures: clientSignatures, annulledSignatures: annulled };
 }
 
 function validSignatures(record: IIsmRecord) {
@@ -276,11 +329,13 @@ export async function createRecord(req: Request, res: Response, next: NextFuncti
             name: req.auth!.name,
             role: req.auth!.role,
             position: user?.position ?? "",
+            fromList: false,
           },
           confirmedAt: null,
         },
         context ?? {},
       );
+      ctx = await applyCrewChoice(ctx, context ?? {}, req);
     }
 
     const cruise = await Cruise.findOne({ status: "abordo" }).select("_id");
@@ -437,7 +492,7 @@ export async function saveData(req: Request, res: Response, next: NextFunction) 
 
     if (schema) {
       if (isObject(context)) {
-        record.context = mergeContext(record.context, context);
+        record.context = await applyCrewChoice(mergeContext(record.context, context), context, req);
         record.markModified("context");
       }
       if (isObject(answers)) {
@@ -534,6 +589,7 @@ export async function sign(req: Request, res: Response, next: NextFunction) {
     if (!canSignStage(req.auth!.role, slot.stage)) {
       throw forbidden(`Esta firma corresponde a: ${slot.label}`);
     }
+    assertNotStepSigned(record);
     if (!stageOpen(record, slot.stage, def.officeOnly)) {
       throw conflict("Esta firma no está habilitada en la etapa actual del registro");
     }
@@ -574,6 +630,7 @@ export async function removeSignature(req: Request, res: Response, next: NextFun
     const record = await IsmRecord.findById(req.params.id);
     if (!record) throw notFound("Registro no encontrado");
     const def = ismDefinition(record.code)!;
+    assertNotStepSigned(record);
     const sig = record.signatures.find((s) => s.field === req.params.field);
     if (!sig) throw notFound("Esa firma no existe");
     if (!stageOpen(record, sig.stage, def.officeOnly)) throw conflict("La firma ya no se puede quitar");
@@ -622,6 +679,7 @@ export async function submit(req: Request, res: Response, next: NextFunction) {
     if (!record) throw notFound("Registro no encontrado");
     if (record.status !== "borrador") throw conflict("El registro ya fue enviado");
     assertCanView(record, req);
+    assertNotStepSigned(record);
     const def = ismDefinition(record.code)!;
     if (!canEdit(record, req.auth!.role, def.officeOnly)) throw forbidden();
 
@@ -676,6 +734,7 @@ export async function approve(req: Request, res: Response, next: NextFunction) {
   try {
     const record = await IsmRecord.findById(req.params.id);
     if (!record) throw notFound("Registro no encontrado");
+    assertNotStepSigned(record);
     const def = ismDefinition(record.code)!;
     const role = req.auth!.role;
 
@@ -727,18 +786,166 @@ export async function approve(req: Request, res: Response, next: NextFunction) {
 }
 
 /**
- * Devolver con motivo y sección afectada: vuelve a borrador; las firmas de
- * etapas posteriores se retiran.
+ * Firma el paso actual de un registro guiado y lo pasa al siguiente
+ * (informe R-14 del 29-oct, pantallas 2, 4 y 5):
+ * - Quien hace el chequeo: se eligió de la lista; firma con el dedo y su
+ *   clave en la tablet del barco (la sesión de la tablet nunca firma) → Capitán.
+ * - Capitán: solo el rol Capitán, desde su cuenta y con su clave → Persona Designada.
+ * - Persona Designada: solo ese rol, con su clave → Archivado (inmutable).
+ * Por firma se guarda usuario, nombre y cargo del momento, rol, hora,
+ * imagen y la huella de los datos firmados.
+ */
+export async function signStep(req: Request, res: Response, next: NextFunction) {
+  try {
+    const { image, pin, newPin, signer: signerId } = req.body as {
+      image?: string;
+      pin?: string;
+      newPin?: string;
+      signer?: string;
+    };
+    if (!image?.startsWith("data:image/png;base64,")) throw badRequest("Firma con el dedo en el recuadro");
+    if (image.length > 400_000) throw badRequest("La firma es demasiado grande");
+
+    const record = await IsmRecord.findById(req.params.id);
+    if (!record) throw notFound("Registro no encontrado");
+    assertCanView(record, req);
+    const step = currentSigner(record);
+    if (!step) throw conflict(record.status === "archivado" ? "El registro ya está archivado" : "Este registro no se firma por pasos");
+    const role = req.auth!.role;
+
+    // Quién firma este paso.
+    let signerUser: Types.ObjectId;
+    if (step.who === "lista") {
+      if (rejectIfIncomplete(record, res)) return;
+      const chosen = record.context?.filledBy;
+      if (!chosen?.fromList || !chosen.user) throw badRequest("Elige quién hace el chequeo de la lista");
+      if (signerId && signerId !== chosen.user.toString()) {
+        throw forbidden("Firma quien hizo el chequeo. Si no eres tú, toca «No soy yo».");
+      }
+      signerUser = new Types.ObjectId(chosen.user.toString());
+    } else {
+      // Nadie firma por otro rol: ni Gerencia ni Administración.
+      if (role !== step.who) {
+        throw forbidden(
+          step.who === "capitan"
+            ? "Solo el Capitán, desde su cuenta, firma este paso"
+            : "Solo la Persona Designada, desde su cuenta, firma este paso",
+        );
+      }
+      const invalid = invalidSignatures(record);
+      if (invalid.length) {
+        throw badRequest(
+          `Firma anulada: ${invalid.map((s) => s.label).join(", ")}. Los datos cambiaron después de firmar; devuélvelo para que se vuelva a firmar.`,
+        );
+      }
+      signerUser = new Types.ObjectId(req.auth!.sub);
+    }
+
+    const person = await User.findOne({ _id: signerUser, active: true }).select("name role position");
+    if (!person) throw forbidden("Esa persona ya no está activa en la lista de tripulantes");
+    // La clave asegura que quien firma es quien dice ser (bloqueo en el servidor).
+    await verifyPin(signerUser, pin, newPin);
+
+    const now = new Date();
+    const sessionUser = new Types.ObjectId(req.auth!.sub);
+    record.signatures = record.signatures.filter((s) => s.field !== step.field) as never;
+    record.signatures.push({
+      field: step.field,
+      stage: step.step,
+      label: step.label,
+      signerName: person.name,
+      user: signerUser,
+      userName: person.name,
+      userRole: person.role,
+      position: step.who === "lista" ? record.context?.filledBy?.position || person.position || "" : person.position || "",
+      capturedBy: sessionUser.equals(signerUser) ? null : sessionUser,
+      capturedByName: sessionUser.equals(signerUser) ? "" : req.auth!.name,
+      method: "clave",
+      image,
+      signedAt: now,
+      dataHash: hashContent(record),
+      hashV: 2,
+    });
+    pushEvent(
+      record,
+      req,
+      `firmó ${step.label}`,
+      sessionUser.equals(signerUser) ? "Con su clave" : `Firma de ${person.name} con su clave, en la sesión de ${req.auth!.name}`,
+    );
+
+    const returned = record.returnInfo;
+    record.returnInfo = null;
+    record.status = step.next;
+    if (step.step === "tripulacion") {
+      record.submittedAt = now;
+      pushEvent(record, req, "enviado al Capitán");
+    } else if (step.step === "capitan") {
+      record.captainApprovedBy = signerUser;
+      record.captainApprovedAt = now;
+    } else {
+      record.officeApprovedBy = signerUser;
+      record.archivedAt = now;
+      record.contentHash = hashRecord(record);
+      pushEvent(record, req, "archivado");
+    }
+    await saveOrConflict(record);
+
+    await logEvent(req.auth, {
+      kind: "registro",
+      title: `${record.code} · firma ${step.label}`,
+      detail: `${record.fileName} · ${person.name} · ${STATUS_LABEL[record.status]}`,
+    });
+
+    if (!record.test) {
+      const who = record.context?.filledBy;
+      const when = record.context ? `${record.context.activityDate} ${record.context.activityTime}` : "";
+      if (record.status === "por_capitan") {
+        await notifyRole("capitan", {
+          kind: "por_firmar_capitan",
+          title: `${record.code} por firmar${returned ? " (corregido)" : ""}`,
+          body: `${who?.name ?? ""}${who?.position ? ` · ${positionLabel(who.position)}` : ""} · ${when} · ${record.context?.place ?? ""}`,
+          record: record._id,
+        });
+      } else if (record.status === "por_oficina") {
+        await notifyRole("designada", {
+          kind: "por_firmar_designada",
+          title: `${record.code} firmado por el Capitán: te toca archivar`,
+          body: record.fileName,
+          record: record._id,
+        });
+      }
+    }
+
+    await record.populate("createdBy", "name role position");
+    res.json({ record: toClient(record) });
+  } catch (err) {
+    next(err);
+  }
+}
+
+/**
+ * Devolver con comentario obligatorio.
+ * Registros guiados: el Capitán devuelve al tripulante (vuelve a Borrador) y
+ * la Persona Designada al Capitán (vuelve a Por firmar · Capitán). Se anulan
+ * las firmas desde el paso devuelto en adelante y quedan en el historial.
+ * Formatos en papel: vuelve a borrador; las firmas de revisión se retiran.
  */
 export async function giveBack(req: Request, res: Response, next: NextFunction) {
   try {
     const { reason, section } = req.body as { reason?: string; section?: string };
-    if (!reason?.trim()) throw badRequest("El motivo es obligatorio");
+    if (!reason?.trim()) throw badRequest("Escribe el comentario: es obligatorio");
+    const record = await IsmRecord.findById(req.params.id);
+    if (!record) throw notFound("Registro no encontrado");
+    const step = currentSigner(record);
+    if (step && (record.status === "por_capitan" || record.status === "por_oficina")) {
+      await giveBackStep(record, step, req, reason, typeof section === "string" ? section : "");
+      await record.populate("createdBy", "name role position");
+      res.json({ record: toClient(record) });
+      return;
+    }
     if (typeof section !== "string" || !section.trim()) throw badRequest("Indica la sección afectada");
     const cleanReason = reason.trim().slice(0, 1000);
     const cleanSection = section.trim().slice(0, 120);
-    const record = await IsmRecord.findById(req.params.id);
-    if (!record) throw notFound("Registro no encontrado");
     const role = req.auth!.role;
     if (record.status === "por_capitan" && role !== "capitan") {
       throw forbidden("Solo el Capitán devuelve este registro");
@@ -765,6 +972,73 @@ export async function giveBack(req: Request, res: Response, next: NextFunction) 
     res.json({ record: toClient(record) });
   } catch (err) {
     next(err);
+  }
+}
+
+async function giveBackStep(
+  record: IIsmRecord & { _id: Types.ObjectId; save: () => Promise<unknown> },
+  step: IsmSigner,
+  req: Request,
+  reason: string,
+  section: string,
+) {
+  if (req.auth!.role !== step.who) {
+    throw forbidden(
+      step.who === "capitan"
+        ? "Solo el Capitán, desde su cuenta, devuelve este registro"
+        : "Solo la Persona Designada, desde su cuenta, devuelve este registro",
+    );
+  }
+  const target = signerByStep(record, step.returnsTo);
+  if (!target) throw conflict("Este paso no se devuelve");
+  const cleanReason = reason.trim().slice(0, 1000);
+  const cleanSection = section.trim().slice(0, 120);
+  const signers = schemaOf(record)?.signers ?? [];
+  const from = signers.findIndex((s) => s.step === target.step);
+  const annulSteps = new Set(signers.slice(from).map((s) => s.field));
+  const now = new Date();
+  const annulled = record.signatures.filter((s) => annulSteps.has(s.field));
+  record.annulledSignatures = [
+    ...(record.annulledSignatures ?? []),
+    ...annulled.map((s) => ({
+      ...(typeof (s as { toObject?: () => unknown }).toObject === "function"
+        ? ((s as unknown as { toObject: () => IIsmSignature }).toObject())
+        : s),
+      annulledAt: now,
+      annulReason: `Devuelto por ${req.auth!.name}: ${cleanReason}`,
+    })),
+  ];
+  record.signatures = record.signatures.filter((s) => !annulSteps.has(s.field)) as never;
+  record.status = target.status;
+  // La firma del Capitán siempre queda anulada al devolver (a él o al tripulante).
+  record.captainApprovedAt = null;
+  record.captainApprovedBy = null;
+  record.returnInfo = {
+    reason: cleanReason,
+    section: cleanSection,
+    byName: req.auth!.name,
+    at: now,
+    toStage: target.step,
+  };
+  pushEvent(record, req, `devuelto a ${target.label}`, cleanReason, cleanSection);
+  for (const s of annulled) pushEvent(record, req, `firma anulada: ${s.label} (${s.signerName})`, "Por la devolución");
+  await saveOrConflict(record);
+  await logEvent(req.auth, {
+    kind: "registro",
+    title: `${record.code} devuelto a ${target.label}`,
+    detail: `${record.fileName} · ${cleanReason}`,
+  });
+  if (!record.test) {
+    const to =
+      target.step === "tripulacion"
+        ? [record.context?.filledBy?.user, record.createdBy]
+        : annulled.filter((s) => s.stage === "capitan").map((s) => s.user);
+    await notifyUsers(to, {
+      kind: "devuelto",
+      title: `Te devolvieron el ${record.code}`,
+      body: `${req.auth!.name}: ${cleanReason}`,
+      record: record._id,
+    });
   }
 }
 
