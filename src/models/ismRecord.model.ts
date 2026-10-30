@@ -90,6 +90,10 @@ export interface IIsmContext {
     name: string;
     role: string;
     position: string;
+    /** Elegido de la lista de tripulantes (no escrito a mano). */
+    fromList?: boolean;
+    /** El cargo vino de su ficha: no se cambia en la tablet. */
+    positionFixed?: boolean;
   };
   /** Hora de la actividad de cada sección ('HH:MM'): la ronda, el zarpe, el arribo y el fondeo no ocurren a la vez. */
   sectionTimes?: Record<string, string>;
@@ -139,13 +143,18 @@ export interface IIsmRecord {
   answers: Record<string, IIsmAnswer>;
   flags: IIsmFlags | null;
   /** Última devolución vigente (se limpia al reenviar). */
-  returnInfo: IIsmReturnInfo | null;
+  returnInfo: (IIsmReturnInfo & { toStage?: SignatureStage }) | null;
   /** Clave del cliente para que un reintento no duplique el registro. */
   idempotencyKey: string | null;
   /** Edición del formato oficial con que se llenó (p. ej. "Edición 00 · Vigencia 01-05-2025"). */
   formEdition?: string;
   /** Registro de prueba: fuera de indicadores y avisos. */
   test?: boolean;
+  /**
+   * Firmas anuladas por una devolución (se anulan desde el paso devuelto en
+   * adelante). Quedan en el historial; nunca se imprimen.
+   */
+  annulledSignatures?: Array<IIsmSignature & { annulledAt: Date; annulReason: string }>;
   createdAt?: Date;
   updatedAt?: Date;
 }
@@ -221,7 +230,7 @@ const ismRecordSchema = new Schema<IIsmRecord>(
     },
     returnInfo: {
       type: new Schema(
-        { reason: String, section: String, byName: String, at: Date },
+        { reason: String, section: String, byName: String, at: Date, toStage: String },
         { _id: false },
       ),
       default: null,
@@ -229,6 +238,19 @@ const ismRecordSchema = new Schema<IIsmRecord>(
     idempotencyKey: { type: String, default: null },
     formEdition: { type: String, default: "" },
     test: { type: Boolean, default: false },
+    annulledSignatures: {
+      type: [
+        new Schema(
+          {
+            ...(signatureSchema.obj as Record<string, unknown>),
+            annulledAt: { type: Date },
+            annulReason: { type: String, default: "" },
+          },
+          { _id: false },
+        ),
+      ],
+      default: undefined,
+    },
   },
   { timestamps: true, minimize: false, optimisticConcurrency: true },
 );
