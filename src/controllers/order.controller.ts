@@ -24,7 +24,7 @@ function describeItems(order: IOrder, picks: IndexQty[]): string {
 
 function assertNotCharged(order: IOrder) {
   if (order.payment) {
-    throw conflict("Este pedido ya fue cobrado: cualquier cambio requiere un reverso autorizado");
+    throw conflict("Este consumo ya fue cobrado: cualquier cambio requiere un reverso autorizado");
   }
 }
 
@@ -80,7 +80,7 @@ export async function createOrder(req: Request, res: Response, next: NextFunctio
     const cruise = await Cruise.findById(cruiseId);
     if (!cruise) throw notFound("Salida no encontrada");
     if (cruise.status !== "abordo") {
-      throw badRequest("Solo se registran pedidos con la salida a bordo. Iníciala en Salidas.");
+      throw badRequest("Solo se registran consumos con el crucero en curso. Dirección de crucero debe iniciarlo.");
     }
     const cabin = cruise.cabins.find((c) => c.number === cabinNumber);
     if (!cabin) throw badRequest("Cabina inválida para esta salida");
@@ -97,7 +97,7 @@ export async function createOrder(req: Request, res: Response, next: NextFunctio
 
     const orderItems = items.map((item) => {
       const product = productMap.get(item.productId);
-      if (!product) throw badRequest("Hay productos inválidos o inactivos en el pedido");
+      if (!product) throw badRequest("Hay productos inválidos o inactivos en el consumo");
       if (product.kind === "fisico" && !product.sellable) {
         throw badRequest(`${product.name} es un insumo y no se vende solo`);
       }
@@ -135,10 +135,10 @@ export async function createOrder(req: Request, res: Response, next: NextFunctio
       throw err;
     }
 
-    await chargesChanged(cruise._id, cabinNumber, req.auth!.sub, "Pedido registrado");
+    await chargesChanged(cruise._id, cabinNumber, req.auth!.sub, "Consumo registrado");
     await logEvent(req.auth, {
       kind: "pedido",
-      title: `Pedido registrado · cabina ${cabinNumber}`,
+      title: `Consumo registrado · cabina ${cabinNumber}`,
       detail: orderItems
         .map((i) => `${i.qty}× ${i.name}${i.courtesy ? " (cortesía)" : ""}`)
         .join(", "),
@@ -163,7 +163,7 @@ export async function deliverOrder(req: Request, res: Response, next: NextFuncti
     if (!key) throw badRequest("Falta la clave de la entrega");
 
     const order = await Order.findById(req.params.id);
-    if (!order) throw notFound("Pedido no encontrado");
+    if (!order) throw notFound("Consumo no encontrado");
     if (order.deliveries.some((d) => d.key === key)) {
       res.json({ order, duplicated: true });
       return;
@@ -179,7 +179,7 @@ export async function deliverOrder(req: Request, res: Response, next: NextFuncti
       await order.save();
     } catch (err) {
       if (err instanceof MongooseError.VersionError) {
-        throw conflict("El pedido cambió mientras lo entregabas. Revisa y vuelve a intentar.");
+        throw conflict("El consumo cambió mientras lo entregabas. Revisa y vuelve a intentar.");
       }
       throw err;
     }
@@ -223,12 +223,12 @@ export async function cancelOrder(req: Request, res: Response, next: NextFunctio
     if (!reason?.trim()) throw badRequest("El motivo de la cancelación es obligatorio");
 
     const order = await Order.findById(req.params.id);
-    if (!order) throw notFound("Pedido no encontrado");
+    if (!order) throw notFound("Consumo no encontrado");
     assertNotCharged(order);
 
     const role = req.auth!.role;
     if (role === "bartender" && order.createdBy.toString() !== req.auth!.sub) {
-      throw forbidden("Solo puedes cancelar pedidos que registraste tú. Pídelo a Dirección.");
+      throw forbidden("Solo puedes cancelar consumos que registraste tú. Pídelo a Dirección de crucero.");
     }
     if (role === "bodega") throw forbidden();
 
@@ -246,7 +246,7 @@ export async function cancelOrder(req: Request, res: Response, next: NextFunctio
       await order.save();
     } catch (err) {
       if (err instanceof MongooseError.VersionError) {
-        throw conflict("El pedido cambió mientras lo cancelabas. Revisa y vuelve a intentar.");
+        throw conflict("El consumo cambió mientras lo cancelabas. Revisa y vuelve a intentar.");
       }
       throw err;
     }
@@ -273,7 +273,7 @@ export async function requestAnnulment(req: Request, res: Response, next: NextFu
     if (!reason?.trim()) throw badRequest("El motivo de la anulación es obligatorio");
 
     const order = await Order.findById(req.params.id);
-    if (!order) throw notFound("Pedido no encontrado");
+    if (!order) throw notFound("Consumo no encontrado");
     assertNotCharged(order);
 
     const item = index !== undefined ? order.items[index] : undefined;
@@ -316,7 +316,7 @@ export async function requestAnnulment(req: Request, res: Response, next: NextFu
 
 /**
  * Dirección aprueba o rechaza la anulación. Devolver la bebida al stock
- * es decisión exclusiva de Paula (administración).
+ * es decisión exclusiva de Gerencia.
  */
 export async function reviewAnnulment(req: Request, res: Response, next: NextFunction) {
   try {
@@ -327,11 +327,11 @@ export async function reviewAnnulment(req: Request, res: Response, next: NextFun
     };
     if (decision !== "aprobar" && decision !== "rechazar") throw badRequest("Decisión inválida");
     if (restock && req.auth!.role !== "duena") {
-      throw forbidden("Solo la dueña puede devolver stock");
+      throw forbidden("Solo Gerencia puede devolver stock");
     }
 
     const order = await Order.findById(req.params.id);
-    if (!order) throw notFound("Pedido no encontrado");
+    if (!order) throw notFound("Consumo no encontrado");
     assertNotCharged(order);
 
     const annulment = order.annulments.find((a) => a._id?.toString() === req.params.annulmentId);
@@ -357,7 +357,7 @@ export async function reviewAnnulment(req: Request, res: Response, next: NextFun
       await order.save();
     } catch (err) {
       if (err instanceof MongooseError.VersionError) {
-        throw conflict("El pedido cambió mientras lo revisabas. Vuelve a intentar.");
+        throw conflict("El consumo cambió mientras lo revisabas. Vuelve a intentar.");
       }
       throw err;
     }
