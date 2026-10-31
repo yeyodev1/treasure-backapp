@@ -1,6 +1,6 @@
 import { NextFunction, Request, Response } from "express";
 import mongoose, { Types } from "mongoose";
-import { chargeableQty, IOrder, Order } from "../models/order.model";
+import { chargeableQty, COURTESY_KINDS, CourtesyKind, IOrder, Order } from "../models/order.model";
 import { Cruise } from "../models/cruise.model";
 import { Product } from "../models/product.model";
 import { Account } from "../models/account.model";
@@ -57,6 +57,15 @@ function correctionBlock(
   return null;
 }
 
+function kindOf(raw: unknown): CourtesyKind {
+  return COURTESY_KINDS.includes(raw as CourtesyKind) ? (raw as CourtesyKind) : "casa";
+}
+
+/** La de agencia se nombra en el motivo; la de la casa queda como siempre. */
+function withKind(kind: CourtesyKind, reason: string) {
+  return kind === "agencia" ? `Cortesía agencia · ${reason}` : reason;
+}
+
 async function accountStatusOf(cruiseId: Types.ObjectId | string, cabinNumber: number) {
   const account = await Account.findOne({ cruise: cruiseId, cabinNumber }).select("status");
   return account?.status ?? "abierta";
@@ -99,6 +108,7 @@ async function cabinSummary(cruiseId: Types.ObjectId | string, cabinNumber: numb
       today: (o.createdAt as Date) >= today,
       qty,
       courtesy: Boolean(item?.courtesy),
+      courtesyKind: item?.courtesy ? (item.courtesyKind ?? "casa") : undefined,
       total: o.items.length === 1 ? o.total : item && !item.courtesy ? round2(qty * item.unitPrice) : 0,
       at: o.clientAt ?? o.createdAt,
       by: (o.createdBy as unknown as { name?: string })?.name ?? "",
@@ -123,7 +133,7 @@ async function cabinSummary(cruiseId: Types.ObjectId | string, cabinNumber: numb
 
 export async function createConsumption(req: Request, res: Response, next: NextFunction) {
   try {
-    const { cruiseId, cabinNumber, productId, qty, courtesy, courtesyReason, idempotencyKey, clientAt } =
+    const { cruiseId, cabinNumber, productId, qty, courtesy, courtesyReason, courtesyKind, idempotencyKey, clientAt } =
       req.body as {
         cruiseId?: string;
         cabinNumber?: number;
@@ -131,6 +141,7 @@ export async function createConsumption(req: Request, res: Response, next: NextF
         qty?: number;
         courtesy?: boolean;
         courtesyReason?: string;
+        courtesyKind?: CourtesyKind;
         idempotencyKey?: string;
         clientAt?: string;
       };
@@ -179,6 +190,7 @@ export async function createConsumption(req: Request, res: Response, next: NextF
       unitPrice: product.price,
       // El bar también registra cortesías (con motivo), no solo Dirección.
       courtesy: Boolean(courtesy),
+      courtesyKind: kindOf(courtesyKind),
       deliveredQty: late ? 0 : units,
       cancelledQty: 0,
       annulledQty: 0,
@@ -187,9 +199,9 @@ export async function createConsumption(req: Request, res: Response, next: NextF
       costComplete: cost.complete,
     };
     const at = clientAt ? new Date(clientAt) : new Date();
-    const courtesyWhy = item.courtesy
-      ? (typeof courtesyReason === "string" ? courtesyReason.trim().slice(0, 200) : "") || "Cortesía registrada en el bar"
-      : "";
+    const typedWhy =
+      (typeof courtesyReason === "string" ? courtesyReason.trim().slice(0, 200) : "") || "Cortesía registrada en el bar";
+    const courtesyWhy = item.courtesy ? withKind(item.courtesyKind, typedWhy) : "";
 
     let order: (IOrder & { _id: Types.ObjectId }) | null = null;
     try {
@@ -360,8 +372,10 @@ export async function undoConsumption(req: Request, res: Response, next: NextFun
  */
 export async function bonifyConsumption(req: Request, res: Response, next: NextFunction) {
   try {
-    const reason = (req.body?.reason as string | undefined)?.trim();
-    if (!reason) throw badRequest("El motivo de la cortesía es obligatorio");
+    const typed = (req.body?.reason as string | undefined)?.trim();
+    if (!typed) throw badRequest("El motivo de la cortesía es obligatorio");
+    const kind = kindOf(req.body?.kind);
+    const reason = withKind(kind, typed);
     const order = await Order.findById(req.params.id);
     if (!order) throw notFound("Consumo no encontrado");
     const blocked = correctionBlock(order, await accountStatusOf(order.cruise, order.cabinNumber), req.auth!.role);
@@ -370,6 +384,7 @@ export async function bonifyConsumption(req: Request, res: Response, next: NextF
     const item = order.items[0]!;
     if (item.courtesy) throw conflict("Ya es cortesía");
     item.courtesy = true;
+    item.courtesyKind = kind;
     order.total = 0;
     order.cancellations.push({ items: [], reason: `Cortesía: ${reason}`, by: req.auth!.sub as never, at: new Date() });
     await order.save();
