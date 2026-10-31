@@ -15,6 +15,7 @@ export interface AccountLineItem {
   chargeableQty: number;
   unitPrice: number;
   courtesy: boolean;
+  courtesyKind?: string;
 }
 
 export interface AccountOrder {
@@ -34,6 +35,16 @@ export interface AccountPayment {
   total: number;
   /** false: pago parcial de una cuenta que aún tiene saldo. */
   settled: boolean;
+  /** Cobro al que pertenece (varias formas de pago = un cobro, una factura). */
+  group: string | null;
+  /** Parte por porcentaje con su propia factura. */
+  part: boolean;
+  /** Lleva la factura del cobro. */
+  head: boolean;
+  /** Quién pagó (datos de la factura). */
+  payer: string;
+  /** Cabinas cobradas juntas (en la cabeza del cobro). */
+  cabins: number[];
   invoiceStatus: string;
   invoiceNumber: string;
   invoiceError: string;
@@ -161,6 +172,7 @@ function mapOrder(order: PopulatedOrder) {
       chargeableQty: live,
       unitPrice: item.unitPrice,
       courtesy: item.courtesy,
+      courtesyKind: item.courtesy ? (item.courtesyKind ?? "casa") : undefined,
     };
   });
   return {
@@ -255,6 +267,11 @@ export async function buildCabinAccount(
       method: p.method,
       total: p.total,
       settled: p.settled !== false,
+      group: p.group ? p.group.toString() : null,
+      part: Boolean(p.part),
+      head: !p.group || p.group.equals(p._id),
+      payer: p.billing?.name ?? "",
+      cabins: p.cabins ?? [],
       invoiceStatus: p.invoiceStatus,
       invoiceNumber: p.invoiceNumber,
       invoiceError: p.invoiceError,
