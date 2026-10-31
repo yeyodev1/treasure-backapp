@@ -16,6 +16,10 @@ export const PRODUCT_CATEGORIES = [
 ] as const;
 export type ProductCategory = (typeof PRODUCT_CATEGORIES)[number];
 
+/** Tipo de vino para dividir la carta del bar (pedido del cliente, 31-oct-2026). */
+export const WINE_STYLES = ["tinto", "blanco", "rosado", "espumante"] as const;
+export type WineStyle = (typeof WINE_STYLES)[number];
+
 export interface IRecipeItem {
   /** Siempre un producto físico; la cantidad va en su unidad base (ml, unidad…). */
   product: Types.ObjectId;
@@ -63,6 +67,9 @@ export interface IProduct {
 
   // ---- Receta ----
   recipe: IRecipeItem[];
+
+  /** Solo vinos: tinto, blanco, rosado o espumante. Vacío = sin clasificar. */
+  wineStyle: WineStyle | "";
 
   isCustom: boolean;
   active: boolean;
@@ -112,6 +119,7 @@ const productSchema = new Schema<IProduct>(
     servingSize: { type: Number, default: 0, min: 0 },
     servingPrice: { type: Number, default: 0, min: 0 },
     recipe: { type: [recipeItemSchema], default: [] },
+    wineStyle: { type: String, enum: [...WINE_STYLES, ""], default: "" },
     isCustom: { type: Boolean, default: false },
     active: { type: Boolean, default: true },
     costPerUnit: { type: Number, default: 0, min: 0 },
