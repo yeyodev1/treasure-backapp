@@ -1,6 +1,7 @@
 import { Types } from "mongoose";
 import { Product, ProductCategory } from "../models/product.model";
 import { StockUnit } from "../utils/units";
+import { wineStyleOf } from "../utils/wineStyle";
 
 /**
  * Catálogo v3 (23-oct-2026): carta de Menu_Treasure.pdf + medidas de
@@ -436,6 +437,7 @@ export async function syncCatalogV3(userId: Types.ObjectId | string) {
       servingSize: def.servingSize ?? 0,
       servingPrice: def.servingPrice ?? 0,
       recipe: [],
+      wineStyle: def.category === "vino" ? wineStyleOf(def.name) : "",
       active: true,
     };
     if (existing) {
@@ -476,6 +478,7 @@ export async function syncCatalogV3(userId: Types.ObjectId | string) {
       containerLabel: "unidad",
       warehouseStock: 0,
       onboardStock: 0,
+      wineStyle: def.category === "vino" ? wineStyleOf(def.name) : "",
       active: true,
     };
     if (existing) {
