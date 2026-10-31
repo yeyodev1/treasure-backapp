@@ -18,6 +18,7 @@ export const REQUISITION_STATUSES = [
   "recibido_parcial",
   "recibido",
   "atendido",
+  "cancelado",
 ] as const;
 export type RequisitionStatus = (typeof REQUISITION_STATUSES)[number];
 
