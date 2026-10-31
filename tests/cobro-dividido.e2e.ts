@@ -136,6 +136,7 @@ async function main() {
   check("Una cuenta pagada no se vuelve a cobrar", tooMuch.status >= 400);
 
   // ---- Pareja por consumos: cada uno paga lo suyo con su factura
+  await consume(1, coke, { courtesy: true, courtesyReason: "Bienvenida" }); // cortesía: $0 para la cabina
   const o1 = (await consume(1, gin)).data.order._id; // Ana 14,50
   const o2 = (await consume(1, coke)).data.order._id; // Ana 6,50
   const o3 = (await consume(1, club)).data.order._id; // Beto 6,75
@@ -164,8 +165,8 @@ async function main() {
   });
   acc1 = await account(1);
   check(
-    "Beto paga lo suyo: la cuenta queda Pagada; dos facturas, cada una a su pagador",
-    beto.status === 201 && beto.data.settled && acc1.status === "cobrada" &&
+    "Beto paga lo suyo: la cuenta queda Pagada (la cortesía no queda abierta); dos facturas, cada una a su pagador",
+    beto.status === 201 && beto.data.settled && acc1.status === "cobrada" && acc1.orders.length === 0 &&
       acc1.payments.filter((p: any) => p.head).map((p: any) => p.payer).join(",") === "Ana,Beto",
     { status: beto.status, msg: beto.data.message },
   );
