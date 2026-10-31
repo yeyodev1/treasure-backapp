@@ -1,7 +1,7 @@
 import { NextFunction, Request, Response } from "express";
 import { isOwner } from "../utils/roles";
 import { Types } from "mongoose";
-import { IProduct, Product, PRODUCT_CATEGORIES, ProductCategory } from "../models/product.model";
+import { IProduct, Product, PRODUCT_CATEGORIES, ProductCategory, WINE_STYLES, WineStyle } from "../models/product.model";
 import { suggestedPrice } from "../services/inventory.service";
 import { logEvent } from "../services/audit.service";
 import { contificoProducts } from "../services/contifico.service";
@@ -41,6 +41,13 @@ interface ProductBody {
   recipe?: Array<{ product: string; qty: number }>;
   active?: boolean;
   contificoId?: string;
+  wineStyle?: WineStyle | "";
+}
+
+function applyWineStyle(product: IProduct, style: WineStyle | "" | undefined) {
+  if (style === undefined) return;
+  if (style !== "" && !WINE_STYLES.includes(style)) throw badRequest("Tipo de vino inválido");
+  product.wineStyle = product.category === "vino" ? style : "";
 }
 
 async function validateRecipe(recipe: Array<{ product: string; qty: number }>) {
@@ -101,6 +108,7 @@ export async function createProduct(req: Request, res: Response, next: NextFunct
       createdBy: req.auth!.sub,
     });
     if (body.kind === "fisico") applyPhysicalFields(product, body);
+    applyWineStyle(product, body.wineStyle);
     if (body.price !== undefined && body.price > 0) applyPrice(product, body.price, req);
     await product.save();
 
@@ -151,6 +159,31 @@ export async function createCustomCocktail(req: Request, res: Response, next: Ne
   }
 }
 
+/**
+ * Quitar de la carta un cóctel creado en el bar (pedido del cliente,
+ * 31-oct-2026: "cuando creo un cóctel no puedo eliminarlo"). Solo los
+ * creados en el bar; se desactiva para conservar el historial de lo vendido.
+ */
+export async function removeCustomCocktail(req: Request, res: Response, next: NextFunction) {
+  try {
+    const product = await Product.findById(req.params.id);
+    if (!product) throw notFound("Cóctel no encontrado");
+    if (!product.isCustom) throw forbidden("Solo se eliminan los cócteles creados en el bar");
+    if (product.active) {
+      product.active = false;
+      await product.save();
+      await logEvent(req.auth, {
+        kind: "catalogo",
+        title: `Cóctel eliminado del bar · ${product.name}`,
+        detail: "Se quita de la carta; lo vendido queda en el historial",
+      });
+    }
+    res.json({ product });
+  } catch (err) {
+    next(err);
+  }
+}
+
 export async function updateProduct(req: Request, res: Response, next: NextFunction) {
   try {
     const body = req.body as ProductBody;
@@ -167,6 +200,11 @@ export async function updateProduct(req: Request, res: Response, next: NextFunct
       product.category = body.category;
     }
     if (body.icon !== undefined) product.icon = body.icon;
+    if (body.wineStyle !== undefined && body.wineStyle !== product.wineStyle) {
+      applyWineStyle(product, body.wineStyle);
+      changes.push(`tipo de vino ${body.wineStyle || "sin tipo"}`);
+    }
+    if (product.category !== "vino") product.wineStyle = "";
     if (body.kind !== undefined && body.kind !== product.kind) {
       if (!PRODUCT_KINDS.includes(body.kind)) throw badRequest("Tipo inválido");
       product.kind = body.kind;
