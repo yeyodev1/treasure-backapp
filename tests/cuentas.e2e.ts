@@ -539,6 +539,20 @@ async function main() {
       recent6.recent[0].canCourtesy === false && recent6.recent[1].canCourtesy === true,
     recent6.recent,
   );
+  check(
+    "El bar ve cada consumo de la cabina con su bebida, precio y si es de hoy (31-oct)",
+    recent6.recent.every((r: any) => r.productId && r.unitPrice > 0 && r.today === true) &&
+      recent6.recent.filter((r: any) => r.productId === coke).length === 3 && recent6.tripTotal === 27.5,
+    recent6.recent.map((r: any) => [r.name, r.unitPrice, r.today]),
+  );
+  // Más consumos que el límite viejo de 8: el bar ve todos, no solo los recientes.
+  await api("dir", "PUT", `/cruises/${cruiseId}/cabins/7/passengers`, { passengers: [{ name: "Lucía", isPayer: true }] });
+  const pilsener = await id("Pilsener");
+  for (let i = 0; i < 9; i++) {
+    await api("bar", "POST", "/consumptions", { cruiseId, cabinNumber: 7, productId: pilsener, idempotencyKey: `c7-${i}` });
+  }
+  const all7 = (await api("bar", "GET", `/consumptions/summary/${cruiseId}/7`)).data.summary;
+  check("El resumen de la cabina trae todos los consumos (9 de 9)", all7.recent.length === 9 && all7.tripTotal === 58.95, all7.recent.length);
   const cokes6 = acc6.orders.filter((o: any) => o.items[0].name === "Coca Cola" && !o.items[0].courtesy);
   const barRetire = await api("bar", "POST", `/consumptions/${cokes6[0].id}/undo`, { reason: "Cabina equivocada" });
   acc6 = (await api("bar", "GET", `/accounts/${cruiseId}/6`)).data.account;
@@ -586,6 +600,38 @@ async function main() {
   const retirePaid = await api("dir", "POST", `/consumptions/${paidOrder.id}/undo`, { reason: "Prueba" });
   const bonifyPaid = await api("dir", "POST", `/consumptions/${paidOrder.id}/bonify`, { reason: "Prueba" });
   check("Lo pagado no se retira ni se marca cortesía (409)", retirePaid.status === 409 && bonifyPaid.status === 409, [retirePaid.status, bonifyPaid.status]);
+
+  // ---- Vinos por tipo y cócteles creados en el bar (31-oct)
+  const wine = async (name: string) => (await Product.findOne({ name }))!.wineStyle;
+  check(
+    "El catálogo trae cada vino con su tipo (tinto, blanco, rosado, espumante)",
+    (await wine("Reservado Merlot (copa)")) === "tinto" && (await wine("Chardonnay Casillero (botella)")) === "blanco" &&
+      (await wine("Rosé D'Anjou (botella)")) === "rosado" && (await wine("Henkell Trocken Dry Piccolo 200ml")) === "espumante",
+  );
+  const merlot = await id("Merlot Casillero (botella)");
+  const restyle = await api("duena", "PATCH", `/products/${merlot}`, { wineStyle: "rosado" });
+  const badStyle = await api("duena", "PATCH", `/products/${merlot}`, { wineStyle: "naranja" });
+  const styleOnBeer = await api("duena", "PATCH", `/products/${await id("Club")}`, { wineStyle: "tinto" });
+  check(
+    "Gerencia cambia el tipo de vino; uno inválido se rechaza y fuera de vinos no aplica",
+    restyle.status === 200 && restyle.data.product.wineStyle === "rosado" && badStyle.status === 400 &&
+      styleOnBeer.status === 200 && styleOnBeer.data.product.wineStyle === "",
+    [restyle.status, badStyle.status, styleOnBeer.data.product?.wineStyle],
+  );
+  const custom = await api("bar", "POST", "/products/custom-cocktail", {
+    name: "Sunset de prueba",
+    recipe: [{ product: await id("Bacardi (botella)"), qty: 60 }, { product: await id("Jugo de naranja"), qty: 90 }],
+  });
+  const notCustom = await api("bar", "POST", `/products/${ginTonic}/remove-custom`);
+  const bodegaRemove = await api("adm", "POST", `/products/${custom.data.product._id}/remove-custom`);
+  const removed = await api("bar", "POST", `/products/${custom.data.product._id}/remove-custom`);
+  const listed = (await api("bar", "GET", "/products")).data.products.some((p: any) => p._id === custom.data.product._id);
+  check(
+    "El bar elimina el cóctel que creó (sale de la carta); los de la carta oficial no",
+    custom.status === 201 && removed.status === 200 && removed.data.product.active === false && !listed &&
+      notCustom.status === 403 && bodegaRemove.status === 403,
+    [custom.status, removed.status, notCustom.status, bodegaRemove.status, listed],
+  );
 
   server.close();
   await mongoose.disconnect();
