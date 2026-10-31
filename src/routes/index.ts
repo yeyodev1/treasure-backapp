@@ -74,6 +74,7 @@ export default function routerApi(app: Application) {
   router.get("/products", requireAuth, ALL, products.listProducts);
   router.post("/products", requireAuth, requireRole("admin", "bodega"), products.createProduct);
   router.post("/products/custom-cocktail", requireAuth, BAR, products.createCustomCocktail);
+  router.post("/products/:id/remove-custom", requireAuth, BAR, products.removeCustomCocktail);
   router.patch("/products/:id", requireAuth, requireRole("admin", "bodega"), products.updateProduct);
 
   // Salidas, ciclo y pasajeros
