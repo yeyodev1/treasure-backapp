@@ -66,6 +66,24 @@ export interface IPayment {
   settled: boolean;
   /** Pago que dejó el saldo en cero (lleva la factura y los consumos). */
   settledBy: Types.ObjectId | null;
+  /**
+   * Cobro al que pertenece (31-oct-2026): un cobro puede tener varias formas
+   * de pago (ej. $10 efectivo + el resto con tarjeta) y una sola factura. Es
+   * el _id del pago "cabeza", que lleva la factura y los consumos. Null en
+   * cobros anteriores.
+   */
+  group: Types.ObjectId | null;
+  /**
+   * Parte de una cuenta dividida en porcentaje: se factura sola a su
+   * pagador y descuenta del saldo como un pago parcial.
+   */
+  part: boolean;
+  /** Fracción de los consumos que cubre la factura (porcentaje). 1 = todo. */
+  share: number;
+  /** Importe de la factura de este cobro (cabeza). Null = el de antes. */
+  invoiceTotal: number | null;
+  /** Cabinas cobradas juntas en este cobro (cabeza). Vacío = una sola. */
+  cabins: number[];
   method: PaymentMethod;
   /** Referencia del pago: voucher, número de transferencia… */
   reference: string;
@@ -124,6 +142,11 @@ const paymentSchema = new Schema<IPayment>(
     accountTotal: { type: Number, default: null },
     settled: { type: Boolean, default: true },
     settledBy: { type: Schema.Types.ObjectId, ref: "Payment", default: null },
+    group: { type: Schema.Types.ObjectId, ref: "Payment", default: null },
+    part: { type: Boolean, default: false },
+    share: { type: Number, default: 1, min: 0, max: 1 },
+    invoiceTotal: { type: Number, default: null },
+    cabins: { type: [Number], default: [] },
     method: { type: String, enum: PAYMENT_METHODS, required: true },
     reference: { type: String, default: "", trim: true },
     cashConfirmed: { type: Boolean, default: false },
@@ -141,6 +164,7 @@ const paymentSchema = new Schema<IPayment>(
 
 paymentSchema.index({ cruise: 1, cabinNumber: 1 });
 paymentSchema.index({ createdAt: -1 });
+paymentSchema.index({ group: 1 });
 
 export const Payment =
   (mongoose.models.Payment as mongoose.Model<IPayment>) ||
