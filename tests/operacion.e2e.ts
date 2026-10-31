@@ -174,16 +174,31 @@ async function main() {
   const rv = await api("bar", "POST", "/requisitions", { kind: "revision", lines: [{ productId: gin, qty: 0 }], note: "Hay una botella abierta en la barra" });
   check("El bar puede pedir revisión de inventario", rv.status === 201 && rv.data.requisition.code.startsWith("RV-"));
 
-  // ---- Deshacer: solo lo propio y con cuenta abierta; revierte cargo y stock
-  const otherUndo = await api("bar2", "POST", `/consumptions/${gt2.data.order._id}/undo`, {});
-  check("Otro bartender no deshace lo ajeno", otherUndo.status === 403);
-  const undo = await api("bar", "POST", `/consumptions/${gt2.data.order._id}/undo`, { reason: "Error de cabina" });
-  check("Deshacer revierte cargo", undo.status === 200 && undo.data.summary.tripTotal === 21, undo.data.summary ?? undo.data);
+  // ---- Retirar consumo: cualquier bartender, con la cuenta sin aprobar; revierte cargo y stock
+  const undo = await api("bar2", "POST", `/consumptions/${gt2.data.order._id}/undo`, { reason: "Error de cabina" });
+  check("Otro bartender retira un consumo de la cuenta abierta y revierte el cargo", undo.status === 200 && undo.data.summary.tripTotal === 21, undo.data.summary ?? undo.data);
+  const undoTwice = await api("bar", "POST", `/consumptions/${gt2.data.order._id}/undo`, { reason: "Error de cabina" });
+  check("Retirar dos veces: la segunda se rechaza", undoTwice.status === 409);
   check("Deshacer devuelve ingredientes (gin +60, tónica +150, limón +1)", (await stock(gin)).abordo === 90 && (await stock(tonic)).abordo === 560 && (await stock(lime)).abordo === 9, [await stock(gin), await stock(tonic), await stock(lime)]);
 
   // ---- Requerimiento: aprobar no suma; recibir traslada lo real
   await api("adm", "POST", "/purchases", { supplier: "D", document: "2", idempotencyKey: "cp-2", lines: [{ productId: coke, containers: 24, containerCost: 0.6 }] })
     .then((r) => api("adm", "POST", `/purchases/${r.data.purchase._id}/receive`, { key: "rx-2", lines: [{ index: 0, containers: 24 }] }));
+  // ---- Cancelar una solicitud propia aún pendiente de aprobación (con motivo)
+  const rqc = await api("bar", "POST", "/requisitions", { lines: [{ productId: coke, qty: 2 }], idempotencyKey: "rq-c" });
+  const rqcId = rqc.data.requisition._id;
+  const otherCancel = await api("bar2", "POST", `/requisitions/${rqcId}/cancel`, { reason: "No es mía" });
+  check("Otro bartender no cancela una solicitud ajena", otherCancel.status === 403);
+  const noReasonCancel = await api("bar", "POST", `/requisitions/${rqcId}/cancel`, {});
+  check("Cancelar sin motivo: se rechaza", noReasonCancel.status === 400);
+  const cancelled = await api("bar", "POST", `/requisitions/${rqcId}/cancel`, { reason: "Ya llegó en la carga" });
+  check(
+    "El bar cancela su solicitud pendiente con motivo",
+    cancelled.status === 200 && cancelled.data.requisition.status === "cancelado" && cancelled.data.requisition.reviewNote === "Ya llegó en la carga",
+    cancelled.data,
+  );
+  const approveCancelled = await api("dir", "POST", `/requisitions/${rqcId}/review`, { decision: "aprobar" });
+  check("Una solicitud cancelada ya no se aprueba", approveCancelled.status === 409);
   const rq = await api("bar", "POST", "/requisitions", { lines: [{ productId: coke, qty: 12 }], idempotencyKey: "rq-1" });
   check("El bar pide en latas y queda en ml", rq.data.requisition.lines[0].qty === 12 * can && rq.data.requisition.lines[0].label.startsWith("12 "), rq.data.requisition.lines[0]);
   const cokeBefore = await stock(coke);
