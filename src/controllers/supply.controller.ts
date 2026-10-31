@@ -8,7 +8,7 @@ import { Cruise } from "../models/cruise.model";
 import { moveStock } from "../services/inventory.service";
 import { nextCode } from "../services/codes.service";
 import { logEvent } from "../services/audit.service";
-import { badRequest, conflict, notFound } from "../errors/httpError";
+import { badRequest, conflict, forbidden, notFound } from "../errors/httpError";
 import { isNonNegativeQty, isPositiveQty, QTY_POSITIVE_ERROR, round2, STOCK_LOCATIONS, StockLocation } from "../utils/units";
 
 /**
@@ -158,6 +158,45 @@ export async function reviewRequisition(req: Request, res: Response, next: NextF
       kind: "requerimiento",
       title: `Solicitud ${requisition.code} ${decision === "aprobar" ? "aprobada" : "rechazada"}`,
       detail: note?.trim() ?? "",
+      cruise: requisition.cruise,
+    });
+    res.json({ requisition: await requisition.populate(REQUISITION_POPULATE) });
+  } catch (err) {
+    next(err);
+  }
+}
+
+/**
+ * Quien pidió cancela su propia solicitud mientras sigue pendiente de
+ * aprobación (con motivo). Lo aprobado o recibido ya no se cancela aquí.
+ */
+export async function cancelRequisition(req: Request, res: Response, next: NextFunction) {
+  try {
+    const reason = (req.body?.reason as string | undefined)?.trim();
+    if (!reason) throw badRequest("El motivo de la cancelación es obligatorio");
+    const current = await Requisition.findById(req.params.id).select("requestedBy status");
+    if (!current) throw notFound("Solicitud no encontrada");
+    if (current.requestedBy.toString() !== req.auth!.sub) {
+      throw forbidden("Solo quien hizo la solicitud puede cancelarla");
+    }
+    const requisition = await Requisition.findOneAndUpdate(
+      { _id: req.params.id, requestedBy: req.auth!.sub, status: "solicitado" },
+      {
+        $set: {
+          status: "cancelado",
+          reviewedBy: req.auth!.sub,
+          reviewedAt: new Date(),
+          reviewNote: reason.slice(0, 300),
+        },
+      },
+      { new: true },
+    );
+    if (!requisition) throw conflict("La solicitud ya fue revisada: no se puede cancelar");
+
+    await logEvent(req.auth, {
+      kind: "requerimiento",
+      title: `Solicitud ${requisition.code} cancelada`,
+      detail: reason,
       cruise: requisition.cruise,
     });
     res.json({ requisition: await requisition.populate(REQUISITION_POPULATE) });
