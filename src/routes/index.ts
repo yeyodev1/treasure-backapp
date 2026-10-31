@@ -27,7 +27,9 @@ import { ismRoutes } from "./ism.routes";
  * - admin (Administración): conteo físico y diferencias, compras y recepciones.
  * - direccion (Dirección de crucero): pasajeros, cabinas, inicio/fin del crucero,
  *   aprobación de cuentas y de abastecimiento, cobros.
- * - bartender: consumos y solicitudes de productos.
+ * - bartender: consumos y solicitudes de productos. Corrige consumos
+ *   (Cortesía / Retirar consumo) solo con la cuenta sin aprobar; aprobar y
+ *   cobrar siguen siendo de Dirección de crucero y Gerencia.
  * - bodega: compras, recepciones, cargas al barco y conteos en tierra.
  */
 export default function routerApi(app: Application) {
@@ -94,7 +96,7 @@ export default function routerApi(app: Application) {
   // Consumo directo: un toque registra lo servido, el cargo y el stock
   router.post("/consumptions", requireAuth, BAR, consumptions.createConsumption);
   router.post("/consumptions/:id/undo", requireAuth, BAR, consumptions.undoConsumption);
-  router.post("/consumptions/:id/bonify", requireAuth, DIRECTOR, consumptions.bonifyConsumption);
+  router.post("/consumptions/:id/bonify", requireAuth, BAR, consumptions.bonifyConsumption);
   router.post("/consumptions/:id/held-review", requireAuth, DIRECTOR, consumptions.reviewHeld);
   router.get(
     "/consumptions/summary/:cruiseId/:cabinNumber",
@@ -109,6 +111,7 @@ export default function routerApi(app: Application) {
   router.get("/requisitions", requireAuth, ALL, supply.listRequisitions);
   router.post("/requisitions", requireAuth, ALL, supply.createRequisition);
   router.post("/requisitions/:id/review", requireAuth, DIRECTOR, supply.reviewRequisition);
+  router.post("/requisitions/:id/cancel", requireAuth, ALL, supply.cancelRequisition);
   router.post("/requisitions/:id/receive", requireAuth, WAREHOUSE, supply.receiveRequisition);
   router.post("/requisitions/:id/resolve", requireAuth, WAREHOUSE, supply.resolveRequisition);
   router.get("/purchases", requireAuth, requireRole("admin", "bodega", "direccion"), supply.listPurchases);
