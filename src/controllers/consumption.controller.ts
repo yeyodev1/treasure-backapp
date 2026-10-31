@@ -32,8 +32,41 @@ function isLead(role: string) {
   return LEADS.has(role);
 }
 
+type Auth = { sub: string; role: string };
+
+/**
+ * Quién corrige un consumo (pedido del cliente, 31-oct-2026): Cortesía y
+ * Retirar consumo los hacen el bar, Dirección de crucero y Gerencia sobre
+ * cualquier consumo de la cuenta. El bar solo con la cuenta abierta (o en
+ * revisión, estado heredado); con la cuenta aprobada solo Dirección o
+ * Gerencia, y la corrección anula la aprobación. Lo cobrado no se toca.
+ */
+function correctionBlock(
+  order: Pick<IOrder, "payment" | "status" | "items">,
+  accountStatus: string,
+  role: string,
+): HttpError | null {
+  if (order.payment || accountStatus === "cobrada") {
+    return conflict("La cuenta ya se cobró: corrígelo con un reverso autorizado");
+  }
+  if (order.status === "retenida") return conflict("Este consumo está retenido para revisión");
+  if (order.items.length !== 1) return conflict("Este pedido tiene varias líneas: corrígelo desde Cuentas");
+  if (accountStatus === "aprobada" && !isLead(role)) {
+    return forbidden("La cuenta ya está aprobada: solo Dirección de crucero o Gerencia la corrigen");
+  }
+  return null;
+}
+
+async function accountStatusOf(cruiseId: Types.ObjectId | string, cabinNumber: number) {
+  const account = await Account.findOne({ cruise: cruiseId, cabinNumber }).select("status");
+  return account?.status ?? "abierta";
+}
+
+/** Consumos recientes que muestra el bar para corregir (Cortesía / Retirar). */
+const RECENT_LIMIT = 8;
+
 /** Totales de la cabina para la barra inferior del bar. */
-async function cabinSummary(cruiseId: Types.ObjectId | string, cabinNumber: number, userId: string) {
+async function cabinSummary(cruiseId: Types.ObjectId | string, cabinNumber: number, auth: Auth) {
   const [orders, account] = await Promise.all([
     Order.find({ cruise: cruiseId, cabinNumber, status: { $in: ["entregada", "pendiente"] } })
       .populate("createdBy", "name")
@@ -49,40 +82,44 @@ async function cabinSummary(cruiseId: Types.ObjectId | string, cabinNumber: numb
     if ((order.createdAt as Date) >= today) todayTotal += order.total;
   }
   const accountStatus = account?.status ?? "abierta";
-  const last = orders.find((o) => !o.undo) ?? null;
-  const lastItem = last?.items[0];
+  const view = (o: (typeof orders)[number]) => {
+    const item = o.items[0];
+    const blocked = correctionBlock(o, accountStatus, auth.role);
+    const open = !blocked && o.status === "entregada" && Boolean(item) && chargeableQty(item!) > 0;
+    return {
+      orderId: o._id.toString(),
+      name: item?.name ?? "",
+      qty: item ? chargeableQty(item) : 0,
+      courtesy: Boolean(item?.courtesy),
+      total: o.total,
+      at: o.clientAt ?? o.createdAt,
+      by: (o.createdBy as unknown as { name?: string })?.name ?? "",
+      canUndo: open,
+      canCourtesy: open && !item?.courtesy,
+    };
+  };
+  const live = orders.filter((o) => !o.undo);
+  const last = live[0] ?? null;
   return {
     cabinNumber,
     tripTotal: round2(trip),
     todayTotal: round2(todayTotal),
     accountStatus,
-    last: last
-      ? {
-          orderId: last._id.toString(),
-          name: lastItem?.name ?? "",
-          qty: lastItem ? chargeableQty(lastItem) : 0,
-          courtesy: Boolean(lastItem?.courtesy),
-          total: last.total,
-          at: last.clientAt ?? last.createdAt,
-          by: (last.createdBy as unknown as { name?: string })?.name ?? "",
-          canUndo:
-            accountStatus === "abierta" &&
-            !last.payment &&
-            (last.createdBy as unknown as { _id: Types.ObjectId })?._id?.toString() === userId,
-        }
-      : null,
+    last: last ? view(last) : null,
+    recent: live.slice(0, RECENT_LIMIT).map(view),
   };
 }
 
 export async function createConsumption(req: Request, res: Response, next: NextFunction) {
   try {
-    const { cruiseId, cabinNumber, productId, qty, courtesy, idempotencyKey, clientAt } =
+    const { cruiseId, cabinNumber, productId, qty, courtesy, courtesyReason, idempotencyKey, clientAt } =
       req.body as {
         cruiseId?: string;
         cabinNumber?: number;
         productId?: string;
         qty?: number;
         courtesy?: boolean;
+        courtesyReason?: string;
         idempotencyKey?: string;
         clientAt?: string;
       };
@@ -99,7 +136,7 @@ export async function createConsumption(req: Request, res: Response, next: NextF
       res.status(200).json({
         order: existing,
         duplicated: true,
-        summary: await cabinSummary(existing.cruise, existing.cabinNumber, req.auth!.sub),
+        summary: await cabinSummary(existing.cruise, existing.cabinNumber, req.auth!),
       });
       return;
     }
@@ -129,7 +166,8 @@ export async function createConsumption(req: Request, res: Response, next: NextF
       name: product.name,
       qty: units,
       unitPrice: product.price,
-      courtesy: Boolean(courtesy) && isLead(req.auth!.role),
+      // El bar también registra cortesías (con motivo), no solo Dirección.
+      courtesy: Boolean(courtesy),
       deliveredQty: late ? 0 : units,
       cancelledQty: 0,
       annulledQty: 0,
@@ -138,6 +176,9 @@ export async function createConsumption(req: Request, res: Response, next: NextF
       costComplete: cost.complete,
     };
     const at = clientAt ? new Date(clientAt) : new Date();
+    const courtesyWhy = item.courtesy
+      ? (typeof courtesyReason === "string" ? courtesyReason.trim().slice(0, 200) : "") || "Cortesía registrada en el bar"
+      : "";
 
     let order: (IOrder & { _id: Types.ObjectId }) | null = null;
     try {
@@ -155,6 +196,9 @@ export async function createConsumption(req: Request, res: Response, next: NextF
           deliveries: late
             ? []
             : [{ key: idempotencyKey, items: [{ index: 0, qty: units }], by: req.auth!.sub, at: new Date() }],
+          cancellations: item.courtesy
+            ? [{ items: [], reason: `Cortesía: ${courtesyWhy}`, by: req.auth!.sub, at: new Date() }]
+            : [],
         });
         await doc.save({ session });
         if (!late) {
@@ -181,7 +225,7 @@ export async function createConsumption(req: Request, res: Response, next: NextF
           res.status(200).json({
             order: dup,
             duplicated: true,
-            summary: await cabinSummary(dup.cruise, dup.cabinNumber, req.auth!.sub),
+            summary: await cabinSummary(dup.cruise, dup.cabinNumber, req.auth!),
           });
           return;
         }
@@ -202,11 +246,18 @@ export async function createConsumption(req: Request, res: Response, next: NextF
       return;
     }
 
-    await chargesChanged(cruise._id, cabinNumber, req.auth!.sub, `Consumo: ${units}× ${product.name}`);
+    await chargesChanged(
+      cruise._id,
+      cabinNumber,
+      req.auth!.sub,
+      item.courtesy
+        ? `Consumo como cortesía: ${units}× ${product.name} · ${courtesyWhy}`
+        : `Consumo: ${units}× ${product.name}`,
+    );
     await logEvent(req.auth, {
       kind: "consumo",
       title: `Consumo · cabina ${cabinNumber}`,
-      detail: `${units}× ${product.name}${item.courtesy ? " (cortesía)" : ""}`,
+      detail: `${units}× ${product.name}${item.courtesy ? ` (cortesía · ${courtesyWhy})` : ""}`,
       amount: saved.total,
       cruise: cruise._id,
       cabinNumber,
@@ -214,7 +265,7 @@ export async function createConsumption(req: Request, res: Response, next: NextF
 
     res.status(201).json({
       order: saved,
-      summary: await cabinSummary(cruise._id, cabinNumber, req.auth!.sub),
+      summary: await cabinSummary(cruise._id, cabinNumber, req.auth!),
     });
   } catch (err) {
     next(err);
@@ -253,25 +304,18 @@ async function reverseOrder(order: IOrder & { _id: Types.ObjectId }, userId: str
 }
 
 /**
- * Deshacer registro por error: solo quien lo registró (o Dirección de crucero) y solo con la
- * cuenta abierta. Devuelve el cargo y los ingredientes con reverso auditable.
+ * Retirar consumo (no se sirvió): el bar, Dirección de crucero o Gerencia,
+ * sobre cualquier consumo de la cuenta y con motivo. Devuelve el cargo y los
+ * ingredientes con reverso auditable. El bar solo con la cuenta sin aprobar;
+ * con la cuenta aprobada lo hace Dirección o Gerencia y la aprobación se anula.
  */
 export async function undoConsumption(req: Request, res: Response, next: NextFunction) {
   try {
     const reason = (req.body?.reason as string | undefined)?.trim() || "Registro por error";
     const order = await Order.findById(req.params.id);
     if (!order) throw notFound("Consumo no encontrado");
-    if (order.payment) throw conflict("La cuenta ya se cobró: corrígelo con un reverso autorizado");
-    if (order.status === "retenida") throw conflict("Este consumo está retenido para revisión");
-
-    const own = order.createdBy.toString() === req.auth!.sub;
-    if (!own && !isLead(req.auth!.role)) {
-      throw forbidden("Solo puedes deshacer lo que registraste tú");
-    }
-    const account = await Account.findOne({ cruise: order.cruise, cabinNumber: order.cabinNumber });
-    if (account && account.status !== "abierta") {
-      throw conflict("La cuenta está en revisión o aprobada: pide a Dirección de crucero que la reabra");
-    }
+    const blocked = correctionBlock(order, await accountStatusOf(order.cruise, order.cabinNumber), req.auth!.role);
+    if (blocked) throw blocked;
 
     await reverseOrder(order, req.auth!.sub, reason);
     const what = `${order.items[0]?.qty ?? 0}× ${order.items[0]?.name ?? ""}`;
@@ -279,19 +323,19 @@ export async function undoConsumption(req: Request, res: Response, next: NextFun
       order.cruise,
       order.cabinNumber,
       req.auth!.sub,
-      isLead(req.auth!.role) ? `Consumo retirado (no se sirvió): ${what} · ${reason}` : `Deshacer: ${what} · ${reason}`,
+      `Consumo retirado (no se sirvió): ${what} · ${reason}`,
     );
     await logEvent(req.auth, {
       kind: "consumo",
-      title: `Registro por error deshecho · cabina ${order.cabinNumber}`,
-      detail: `${order.items[0]?.qty ?? 0}× ${order.items[0]?.name ?? ""} · ${reason}`,
+      title: `Consumo retirado · cabina ${order.cabinNumber}`,
+      detail: `${what} · ${reason}`,
       cruise: order.cruise,
       cabinNumber: order.cabinNumber,
     });
 
     res.json({
       order: await Order.findById(order._id),
-      summary: await cabinSummary(order.cruise, order.cabinNumber, req.auth!.sub),
+      summary: await cabinSummary(order.cruise, order.cabinNumber, req.auth!),
     });
   } catch (err) {
     next(err);
@@ -300,7 +344,8 @@ export async function undoConsumption(req: Request, res: Response, next: NextFun
 
 /**
  * Marcar como cortesía una bebida que sí se consumió: deja de cobrarse pero
- * conserva la salida de ingredientes. Solo Dirección de crucero o Gerencia, con motivo.
+ * conserva la salida de ingredientes. El bar, Dirección o Gerencia, con
+ * motivo; mismas reglas de cuenta que Retirar consumo.
  */
 export async function bonifyConsumption(req: Request, res: Response, next: NextFunction) {
   try {
@@ -308,7 +353,8 @@ export async function bonifyConsumption(req: Request, res: Response, next: NextF
     if (!reason) throw badRequest("El motivo de la cortesía es obligatorio");
     const order = await Order.findById(req.params.id);
     if (!order) throw notFound("Consumo no encontrado");
-    if (order.payment) throw conflict("La cuenta ya se cobró");
+    const blocked = correctionBlock(order, await accountStatusOf(order.cruise, order.cabinNumber), req.auth!.role);
+    if (blocked) throw blocked;
     if (order.status !== "entregada") throw conflict("Solo se marca como cortesía un consumo servido");
     const item = order.items[0]!;
     if (item.courtesy) throw conflict("Ya es cortesía");
@@ -325,7 +371,7 @@ export async function bonifyConsumption(req: Request, res: Response, next: NextF
       cruise: order.cruise,
       cabinNumber: order.cabinNumber,
     });
-    res.json({ order });
+    res.json({ order, summary: await cabinSummary(order.cruise, order.cabinNumber, req.auth!) });
   } catch (err) {
     next(err);
   }
@@ -409,7 +455,7 @@ export async function reviewHeld(req: Request, res: Response, next: NextFunction
 export async function getCabinSummary(req: Request, res: Response, next: NextFunction) {
   try {
     const { cruiseId, cabinNumber } = req.params;
-    res.json({ summary: await cabinSummary(String(cruiseId), Number(cabinNumber), req.auth!.sub) });
+    res.json({ summary: await cabinSummary(String(cruiseId), Number(cabinNumber), req.auth!) });
   } catch (err) {
     next(err);
   }
