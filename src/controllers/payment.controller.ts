@@ -276,9 +276,14 @@ export async function collectCabin(req: Request, res: Response, next: NextFuncti
         mode === "grupo" ||
         (mode === "cuenta" && !isAbono) ||
         (mode === "porcentaje" && !isPart) ||
-        (mode === "consumos" && orderIds!.length === summary.orders.length);
+        // Lo que queda sin elegir son solo cortesías ($0): la cuenta se completa.
+        (mode === "consumos" && summary.orders.every((o) => orderIds!.includes(o.id) || o.total <= 0));
       scopeOrderIds =
-        mode === "consumos" ? orderIds! : summaries.flatMap((s) => s.orders.map((o) => o.id));
+        mode === "consumos"
+          ? accountSettled
+            ? summary.orders.map((o) => o.id)
+            : orderIds!
+          : summaries.flatMap((s) => s.orders.map((o) => o.id));
       const scopeAmount = mode === "consumos" ? subsetTotal : round2(summaries.reduce((a, s) => a + s.total, 0));
       // Factura: lo cobrado ahora más los parciales sin factura propia que completa.
       const rolledIn = accountSettled && mode !== "consumos" ? round2(abonosBefore.reduce((a, b) => a + b, 0)) : 0;
