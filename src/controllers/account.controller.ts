@@ -265,3 +265,56 @@ export async function proforma(req: Request, res: Response, next: NextFunction) 
     next(err);
   }
 }
+
+/**
+ * Cortesías de agencia de un crucero (pedido del cliente, 31-oct-2026): no
+ * se cobran a la cabina; se juntan aquí para facturarlas a la agencia al
+ * final del crucero. Importe = precio vigente al registrar × unidades.
+ */
+export async function agencyCourtesies(req: Request, res: Response, next: NextFunction) {
+  try {
+    const cruiseId = String(req.params.cruiseId);
+    if (!Types.ObjectId.isValid(cruiseId)) throw badRequest("Crucero inválido");
+    const orders = await Order.find({
+      cruise: cruiseId,
+      status: { $nin: ["cancelada", "retenida"] },
+      items: { $elemMatch: { courtesy: true, courtesyKind: "agencia" } },
+    })
+      .populate("createdBy", "name")
+      .sort({ createdAt: 1 });
+
+    const items: Array<{
+      orderId: string;
+      cabinNumber: number;
+      name: string;
+      qty: number;
+      unitPrice: number;
+      total: number;
+      reason: string;
+      by: string;
+      at: Date;
+    }> = [];
+    for (const order of orders) {
+      const reason =
+        [...order.cancellations].reverse().find((c) => /cortes/i.test(c.reason))?.reason.replace(/^Cortesía:\s*/, "") ?? "";
+      for (const item of order.items) {
+        const qty = chargeableQty(item);
+        if (!item.courtesy || item.courtesyKind !== "agencia" || qty <= 0) continue;
+        items.push({
+          orderId: order._id.toString(),
+          cabinNumber: order.cabinNumber,
+          name: item.name,
+          qty,
+          unitPrice: item.unitPrice,
+          total: round2(qty * item.unitPrice),
+          reason,
+          by: (order.createdBy as unknown as { name?: string })?.name ?? "",
+          at: (order.clientAt ?? order.createdAt) as Date,
+        });
+      }
+    }
+    res.json({ items, total: round2(items.reduce((s, i) => s + i.total, 0)) });
+  } catch (err) {
+    next(err);
+  }
+}
