@@ -83,6 +83,7 @@ export default function routerApi(app: Application) {
   router.get("/cruises/cycle-settings", requireAuth, LEAD, cruises.cycleSettings);
   router.put("/cruises/cycle-settings", requireAuth, LEAD, cruises.updateCycleSettings);
   router.post("/cruises/generate", requireAuth, LEAD, cruises.generateCycle);
+  router.get("/cruises/plan/options", requireAuth, LEAD, cruises.newCruiseOptions);
   router.get("/cruises/plan", requireAuth, LEAD, cruises.previewNewCruise);
   router.post("/cruises/plan", requireAuth, LEAD, cruises.createNewCruise);
   router.post("/cruises", requireAuth, LEAD, cruises.createCruise);
@@ -135,6 +136,7 @@ export default function routerApi(app: Application) {
 
   // Cuentas: revisión y aprobación antes de cobrar
   router.get("/accounts/:cruiseId", requireAuth, BAR, accounts.cruiseAccounts);
+  router.get("/accounts/:cruiseId/agency-courtesies", requireAuth, DIRECTOR, accounts.agencyCourtesies);
   router.get("/accounts/:cruiseId/:cabinNumber", requireAuth, BAR, orders.cabinAccount);
   router.post("/accounts/:cruiseId/:cabinNumber/submit", requireAuth, BAR, accounts.submitForReview);
   router.post("/accounts/:cruiseId/:cabinNumber/approve", requireAuth, DIRECTOR, accounts.approveAccount);
