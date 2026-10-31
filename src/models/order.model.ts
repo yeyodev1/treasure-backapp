@@ -17,12 +17,21 @@ export interface IAppliedIngredient {
   unitCost: number;
 }
 
+/**
+ * Quién paga una cortesía (pedido del cliente, 31-oct-2026): la casa la
+ * absorbe; la de agencia se le factura a la agencia al final del crucero.
+ */
+export const COURTESY_KINDS = ["casa", "agencia"] as const;
+export type CourtesyKind = (typeof COURTESY_KINDS)[number];
+
 export interface IOrderItem {
   product: Types.ObjectId;
   name: string;
   qty: number;
   unitPrice: number;
   courtesy: boolean;
+  /** Solo con cortesía: casa (default) o agencia. */
+  courtesyKind: CourtesyKind;
   deliveredQty: number;
   cancelledQty: number;
   annulledQty: number;
@@ -109,6 +118,7 @@ const orderItemSchema = new Schema<IOrderItem>(
     qty: { type: Number, required: true, min: 1 },
     unitPrice: { type: Number, required: true, min: 0 },
     courtesy: { type: Boolean, default: false },
+    courtesyKind: { type: String, enum: COURTESY_KINDS, default: "casa" },
     deliveredQty: { type: Number, default: 0, min: 0 },
     cancelledQty: { type: Number, default: 0, min: 0 },
     annulledQty: { type: Number, default: 0, min: 0 },
