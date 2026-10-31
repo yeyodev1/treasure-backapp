@@ -514,6 +514,79 @@ async function main() {
   acc5 = (await api("dir", "GET", `/accounts/${cruiseId}/5`)).data.account;
   check("Aprobar → Cobrar en el mismo flujo: Pagada", pay5.status === 201 && acc5.status === "cobrada" && acc5.paid === 21 && acc5.due === 0, pay5.data.message);
 
+  // ---- Pedido 31-oct: el bar corrige en cuenta abierta (Cortesía / Retirar consumo); aprobar y cobrar no
+  await api("dir", "PUT", `/cruises/${cruiseId}/cabins/6/passengers`, {
+    passengers: [{ name: "Pasajero Seis", isPayer: true, idNumber: "P666" }],
+  });
+  for (const [i, pid] of [coke, coke, ginTonic].entries()) {
+    await api("bar", "POST", "/consumptions", { cruiseId, cabinNumber: 6, productId: pid, idempotencyKey: `c6-${i}` });
+  }
+  const barCourtesyTap = await api("bar", "POST", "/consumptions", {
+    cruiseId, cabinNumber: 6, productId: coke, courtesy: true, courtesyReason: "Cumpleaños del pasajero", idempotencyKey: "c6-gift",
+  });
+  let acc6 = (await api("bar", "GET", `/accounts/${cruiseId}/6`)).data.account;
+  check(
+    "El bar registra una bebida directo como cortesía (con motivo): no suma al total",
+    barCourtesyTap.status === 201 && barCourtesyTap.data.order.total === 0 && barCourtesyTap.data.order.items[0].courtesy === true &&
+      acc6.due === 27.5 && acc6.courtesyTotal === 6.5 &&
+      acc6.history.some((h: any) => h.reason === "Consumo como cortesía: 1× Coca Cola · Cumpleaños del pasajero" && h.by === "Bar"),
+    { due: acc6.due, courtesy: acc6.courtesyTotal },
+  );
+  const recent6 = (await api("bar", "GET", `/consumptions/summary/${cruiseId}/6`)).data.summary;
+  check(
+    "La barra del bar lista los consumos recientes con Cortesía / Retirar disponibles",
+    recent6.recent.length === 4 && recent6.recent.every((r: any) => r.canUndo) &&
+      recent6.recent[0].canCourtesy === false && recent6.recent[1].canCourtesy === true,
+    recent6.recent,
+  );
+  const cokes6 = acc6.orders.filter((o: any) => o.items[0].name === "Coca Cola" && !o.items[0].courtesy);
+  const barRetire = await api("bar", "POST", `/consumptions/${cokes6[0].id}/undo`, { reason: "Cabina equivocada" });
+  acc6 = (await api("bar", "GET", `/accounts/${cruiseId}/6`)).data.account;
+  check(
+    "El bar retira cualquier consumo de la cuenta abierta: total recalculado y en el historial",
+    barRetire.status === 200 && acc6.due === 21 &&
+      acc6.history.some((h: any) => h.reason === "Consumo retirado (no se sirvió): 1× Coca Cola · Cabina equivocada" && h.by === "Bar"),
+    { status: barRetire.status, due: acc6.due, msg: barRetire.data.message },
+  );
+  const barBonify = await api("bar", "POST", `/consumptions/${cokes6[1].id}/bonify`, { reason: "Cortesía de la casa" });
+  acc6 = (await api("bar", "GET", `/accounts/${cruiseId}/6`)).data.account;
+  check(
+    "El bar marca cortesía en la cuenta abierta: total recalculado",
+    barBonify.status === 200 && acc6.due === 14.5 && acc6.courtesyTotal === 13 &&
+      acc6.history.some((h: any) => h.reason === "Cortesía: 1× Coca Cola · Cortesía de la casa" && h.by === "Bar"),
+    { status: barBonify.status, due: acc6.due, msg: barBonify.data.message },
+  );
+  const barNoReason = await api("bar", "POST", `/consumptions/${cokes6[1].id}/bonify`, {});
+  check("Cortesía sin motivo: se rechaza", barNoReason.status === 400);
+  const barApprove6 = await api("bar", "POST", `/accounts/${cruiseId}/6/approve`);
+  check("El bar no aprueba (403)", barApprove6.status === 403);
+  const approve6 = await api("dir", "POST", `/accounts/${cruiseId}/6/approve`);
+  check("Dirección aprueba directo desde abierta", approve6.status === 200 && approve6.data.account.status === "aprobada");
+  const gin6 = acc6.orders.find((o: any) => o.items[0].name === "Gin Tonic");
+  const barRetireApproved = await api("bar", "POST", `/consumptions/${gin6.id}/undo`, { reason: "Prueba" });
+  const barBonifyApproved = await api("bar", "POST", `/consumptions/${gin6.id}/bonify`, { reason: "Prueba" });
+  check(
+    "Con la cuenta aprobada el bar ya no retira ni marca cortesía (403)",
+    barRetireApproved.status === 403 && barBonifyApproved.status === 403,
+    [barRetireApproved.status, barBonifyApproved.status],
+  );
+  const recentApproved = (await api("bar", "GET", `/consumptions/summary/${cruiseId}/6`)).data.summary;
+  check("En el bar la cuenta aprobada no ofrece correcciones", recentApproved.recent.every((r: any) => !r.canUndo && !r.canCourtesy));
+  const barCollect6 = await api("bar", "POST", "/payments/collect", { cruiseId, cabinNumber: 6, method: "efectivo", cashConfirmed: true });
+  check("El bar no cobra (403)", barCollect6.status === 403);
+  const dirBonifyApproved = await api("dir", "POST", `/consumptions/${gin6.id}/bonify`, { reason: "Compensación al pasajero" });
+  acc6 = (await api("dir", "GET", `/accounts/${cruiseId}/6`)).data.account;
+  check(
+    "Dirección corrige la cuenta aprobada: cortesía recalcula y anula la aprobación",
+    dirBonifyApproved.status === 200 && acc6.status === "abierta" && acc6.due === 0 && !acc6.readyToCollect &&
+      acc6.history.some((h: any) => h.action === "invalidada" && /^Aprobación anulada: Cortesía/.test(h.reason)),
+    { status: acc6.status, due: acc6.due },
+  );
+  const paidOrder = acc5.paidOrders[0];
+  const retirePaid = await api("dir", "POST", `/consumptions/${paidOrder.id}/undo`, { reason: "Prueba" });
+  const bonifyPaid = await api("dir", "POST", `/consumptions/${paidOrder.id}/bonify`, { reason: "Prueba" });
+  check("Lo pagado no se retira ni se marca cortesía (409)", retirePaid.status === 409 && bonifyPaid.status === 409, [retirePaid.status, bonifyPaid.status]);
+
   server.close();
   await mongoose.disconnect();
   await repl.stop();
