@@ -259,7 +259,12 @@ function cobroOf(payment: CobroSource) {
  * parciales (uno por medio de pago). Un cobro antiguo es uno solo.
  */
 async function invoicePayments(payment: IPayment & { _id: Types.ObjectId }): Promise<CobroSource[]> {
-  const group = await Payment.find({ settledBy: payment._id, status: "vigente" })
+  // Formas de pago del mismo cobro y parciales que esta factura completa
+  // (las partes por porcentaje tienen su propia factura).
+  const group = await Payment.find({
+    status: "vigente",
+    $or: [{ group: payment._id }, { settledBy: payment._id, part: { $ne: true }, group: { $ne: payment._id } }],
+  })
     .select("method reference total createdAt")
     .sort({ createdAt: 1 });
   return group.length ? group : [payment];
@@ -271,8 +276,8 @@ export async function invoiceCobros(payment: IPayment & { _id: Types.ObjectId })
 }
 
 /** Importe de la factura: el total de la cuenta liquidada (todos sus pagos). */
-export function invoiceAmount(payment: Pick<IPayment, "total" | "accountTotal">): number {
-  return payment.accountTotal ?? payment.total;
+export function invoiceAmount(payment: Pick<IPayment, "total" | "accountTotal"> & { invoiceTotal?: number | null }): number {
+  return payment.invoiceTotal ?? payment.accountTotal ?? payment.total;
 }
 
 async function invoiceLines(payment: IPayment): Promise<DraftLine[]> {
@@ -317,7 +322,22 @@ async function invoiceLines(payment: IPayment): Promise<DraftLine[]> {
       `Productos sin vincular con Contífico: ${[...unlinked].join(", ")}. Vincúlalos en Catálogo y reintenta.`,
     );
   }
-  return lines;
+  return prorate(lines, payment.share ?? 1, invoiceAmount(payment));
+}
+
+/**
+ * Cuenta dividida en porcentaje: cada línea a su parte del precio; el
+ * centavo de diferencia va a la línea más grande para que cuadre exacto.
+ */
+function prorate(lines: DraftLine[], share: number, expected: number): DraftLine[] {
+  if (!(share > 0) || share >= 1 || !lines.length) return lines;
+  const out = lines.map((l) => ({ ...l, gross: round6(l.gross * share) }));
+  const diff = round2(expected - out.reduce((s, l) => s + l.qty * l.gross, 0));
+  if (diff !== 0) {
+    const biggest = out.reduce((b, l) => (l.qty * l.gross > b.qty * b.gross ? l : b), out[0]!);
+    biggest.gross = round6(biggest.gross + diff / biggest.qty);
+  }
+  return out;
 }
 
 function errorText(err: unknown): string {
@@ -412,7 +432,9 @@ async function emitInvoice(payment: IPayment & { _id: Types.ObjectId }): Promise
       caja_id: null,
       cliente: buildClient(payment.billing),
       vendedor: null,
-      descripcion: `Consumos bar · ${cruise?.code || cruise?.name || "salida"} · cabina ${payment.cabinNumber}`,
+      descripcion: `Consumos bar · ${cruise?.code || cruise?.name || "salida"} · ${
+        payment.cabins?.length > 1 ? `cabinas ${payment.cabins.join(", ")}` : `cabina ${payment.cabinNumber}`
+      }${payment.share < 1 ? ` · ${Math.round(payment.share * 100)}% de la cuenta` : ""}`,
       subtotal_0: totals.subtotal0,
       subtotal_12: totals.subtotalTaxed,
       iva: totals.iva,
