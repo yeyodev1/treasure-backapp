@@ -62,10 +62,11 @@ async function accountStatusOf(cruiseId: Types.ObjectId | string, cabinNumber: n
   return account?.status ?? "abierta";
 }
 
-/** Consumos recientes que muestra el bar para corregir (Cortesía / Retirar). */
-const RECENT_LIMIT = 8;
-
-/** Totales de la cabina para la barra inferior del bar. */
+/**
+ * Totales y consumos de la cabina para el bar (pedido del cliente,
+ * 31-oct-2026): el bar ve todo lo que lleva la cuenta sin entrar a Cuentas,
+ * agrupado por bebida, con el total de hoy y el del viaje.
+ */
 async function cabinSummary(cruiseId: Types.ObjectId | string, cabinNumber: number, auth: Auth) {
   const [orders, account] = await Promise.all([
     Order.find({ cruise: cruiseId, cabinNumber, status: { $in: ["entregada", "pendiente"] } })
@@ -82,22 +83,32 @@ async function cabinSummary(cruiseId: Types.ObjectId | string, cabinNumber: numb
     if ((order.createdAt as Date) >= today) todayTotal += order.total;
   }
   const accountStatus = account?.status ?? "abierta";
-  const view = (o: (typeof orders)[number]) => {
-    const item = o.items[0];
+  type OrderDoc = (typeof orders)[number];
+  /** Una fila por línea del pedido (los consumos directos tienen una sola). */
+  const row = (o: OrderDoc, index: number) => {
+    const item = o.items[index];
     const blocked = correctionBlock(o, accountStatus, auth.role);
     const open = !blocked && o.status === "entregada" && Boolean(item) && chargeableQty(item!) > 0;
+    const qty = item ? chargeableQty(item) : 0;
     return {
       orderId: o._id.toString(),
+      line: index,
+      productId: item?.product?.toString() ?? "",
       name: item?.name ?? "",
-      qty: item ? chargeableQty(item) : 0,
+      unitPrice: item?.unitPrice ?? 0,
+      today: (o.createdAt as Date) >= today,
+      qty,
       courtesy: Boolean(item?.courtesy),
-      total: o.total,
+      total: o.items.length === 1 ? o.total : item && !item.courtesy ? round2(qty * item.unitPrice) : 0,
       at: o.clientAt ?? o.createdAt,
       by: (o.createdBy as unknown as { name?: string })?.name ?? "",
       canUndo: open,
       canCourtesy: open && !item?.courtesy,
     };
   };
+  const view = (o: OrderDoc) => row(o, 0);
+  const rows = (o: OrderDoc) =>
+    o.items.length <= 1 ? [view(o)] : o.items.map((_, i) => row(o, i)).filter((r) => r.qty > 0);
   const live = orders.filter((o) => !o.undo);
   const last = live[0] ?? null;
   return {
@@ -106,7 +117,7 @@ async function cabinSummary(cruiseId: Types.ObjectId | string, cabinNumber: numb
     todayTotal: round2(todayTotal),
     accountStatus,
     last: last ? view(last) : null,
-    recent: live.slice(0, RECENT_LIMIT).map(view),
+    recent: live.flatMap(rows),
   };
 }
 
