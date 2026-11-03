@@ -17,6 +17,7 @@ import * as publicCtrl from "../controllers/public.controller";
 import * as ism from "../controllers/ism.controller";
 import * as consumptions from "../controllers/consumption.controller";
 import * as supply from "../controllers/supply.controller";
+import * as commissions from "../controllers/commission.controller";
 import { ismRoutes } from "./ism.routes";
 
 /**
@@ -202,4 +203,9 @@ export default function routerApi(app: Application) {
   router.get("/reports/sales", requireAuth, OWNER, reports.salesSummary);
   router.get("/reports/by-cruise", requireAuth, OWNER, reports.salesByCruise);
   router.get("/reports/owner", requireAuth, OWNER, reports.ownerPanel);
+
+  // Comisiones del bartender: se acumulan por crucero y se pagan juntas (solo Gerencia).
+  router.get("/commissions", requireAuth, OWNER, commissions.listCommissions);
+  router.post("/commissions/payments", requireAuth, OWNER, commissions.createCommissionPayment);
+  router.post("/commissions/payments/:id/void", requireAuth, OWNER, commissions.voidCommissionPayment);
 }
