@@ -26,6 +26,9 @@ export interface AccountOrder {
   status: string;
   items: AccountLineItem[];
   total: number;
+  /** Pasajero de la cabina que lo consumió (null = sin asignar). */
+  consumerId: string | null;
+  consumerName: string;
 }
 
 export interface AccountPayment {
@@ -183,6 +186,8 @@ function mapOrder(order: PopulatedOrder) {
       status: order.status,
       items,
       total: round2(total),
+      consumerId: order.consumer ? order.consumer.toString() : null,
+      consumerName: order.consumer ? (order.consumerName ?? "") : "",
     },
     total,
     courtesy,
