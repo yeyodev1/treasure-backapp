@@ -243,6 +243,71 @@ export async function returnAccount(req: Request, res: Response, next: NextFunct
 }
 
 /**
+ * Quién consumió qué (pedido del cliente, 3-nov-2026): cada consumo sin
+ * pagar se asigna a un pasajero de la cabina (o se deja sin asignar) antes
+ * de aprobar. No es un cargo: no sube la versión ni anula la aprobación.
+ * Body: { assignments: [{ orderId, passengerId | null }] }.
+ */
+export async function assignConsumers(req: Request, res: Response, next: NextFunction) {
+  try {
+    const { cruiseId, cabinNumber } = params(req);
+    const list = (req.body as { assignments?: Array<{ orderId?: string; passengerId?: string | null }> })?.assignments;
+    if (!Array.isArray(list) || !list.length) throw badRequest("Indica qué consumo es de quién");
+
+    const cruise = await Cruise.findById(cruiseId).select("cabins status");
+    if (!cruise) throw notFound("Crucero no encontrado");
+    const cabin = cruise.cabins.find((c) => c.number === cabinNumber);
+    if (!cabin) throw notFound(`La cabina ${cabinNumber} no existe en este crucero`);
+    const people = new Map(cabin.passengers.filter((p) => p._id).map((p) => [p._id!.toString(), p.name]));
+
+    const wanted = new Map<string, string | null>();
+    for (const a of list) {
+      const orderId = String(a?.orderId ?? "");
+      if (!Types.ObjectId.isValid(orderId)) throw badRequest("Consumo inválido");
+      const passengerId = a?.passengerId ? String(a.passengerId) : null;
+      if (passengerId && !people.has(passengerId)) throw badRequest(`Esa persona no está en la cabina ${cabinNumber}`);
+      wanted.set(orderId, passengerId);
+    }
+
+    const orders = await Order.find({
+      _id: { $in: [...wanted.keys()] },
+      cruise: cruiseId,
+      cabinNumber,
+      status: { $nin: ["cancelada", "retenida"] },
+    }).select("payment consumer");
+    if (orders.length !== wanted.size) throw conflict("Hay consumos que ya no están en esta cuenta: actualiza la cuenta");
+    if (orders.some((o) => o.payment)) throw conflict("Un consumo ya cobrado no se reasigna");
+
+    await Order.bulkWrite(
+      [...wanted].map(([orderId, passengerId]) => ({
+        updateOne: {
+          filter: { _id: new Types.ObjectId(orderId), payment: null },
+          update: {
+            $set: {
+              consumer: passengerId ? new Types.ObjectId(passengerId) : null,
+              consumerName: passengerId ? people.get(passengerId)! : "",
+            },
+          },
+        },
+      })),
+    );
+
+    const names = [...new Set([...wanted.values()].map((id) => (id ? people.get(id)! : "sin asignar")))];
+    await logEvent(req.auth, {
+      kind: "cuenta",
+      title: `Consumos asignados · cabina ${cabinNumber}`,
+      detail: `${wanted.size} consumo(s) → ${names.join(", ")}`,
+      cruise: cruiseId,
+      cabinNumber,
+    });
+
+    res.json({ account: await buildCabinAccount(cruiseId, cabinNumber) });
+  } catch (err) {
+    next(err);
+  }
+}
+
+/**
  * Prefactura en inglés (PDF), antes o después de pagar. Solo genera el
  * archivo: no envía correo ni llama a Contífico (checklist 29-oct, 02).
  */
