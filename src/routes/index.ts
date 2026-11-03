@@ -141,6 +141,7 @@ export default function routerApi(app: Application) {
   router.post("/accounts/:cruiseId/:cabinNumber/submit", requireAuth, BAR, accounts.submitForReview);
   router.post("/accounts/:cruiseId/:cabinNumber/approve", requireAuth, DIRECTOR, accounts.approveAccount);
   router.post("/accounts/:cruiseId/:cabinNumber/return", requireAuth, DIRECTOR, accounts.returnAccount);
+  router.post("/accounts/:cruiseId/:cabinNumber/assign", requireAuth, BAR, accounts.assignConsumers);
   // Prefactura en inglés (PDF): sin correo ni Contífico.
   router.get("/accounts/:cruiseId/:cabinNumber/proforma", requireAuth, DIRECTOR, accounts.proforma);
 
