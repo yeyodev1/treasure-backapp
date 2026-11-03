@@ -102,6 +102,13 @@ export interface IOrder {
   undo: { by: Types.ObjectId; at: Date; reason: string } | null;
   /** Revisión de un consumo retenido (envío tardío). */
   heldReview: { by: Types.ObjectId; at: Date; decision: "aceptado" | "rechazado"; reason: string } | null;
+  /**
+   * Quién de la cabina lo consumió (pedido del cliente, 3-nov-2026): se
+   * asigna antes de aprobar para que "cada uno paga lo suyo" salga solo.
+   * null = sin asignar. No es un cargo: no cambia la versión de la cuenta.
+   */
+  consumer: Types.ObjectId | null;
+  consumerName: string;
   createdAt?: Date;
   updatedAt?: Date;
 }
@@ -214,6 +221,8 @@ const orderSchema = new Schema<IOrder>(
       ),
       default: null,
     },
+    consumer: { type: Schema.Types.ObjectId, default: null },
+    consumerName: { type: String, default: "" },
   },
   // Dos entregas simultáneas del mismo pedido: la segunda falla en vez de duplicar.
   { timestamps: true, optimisticConcurrency: true },
