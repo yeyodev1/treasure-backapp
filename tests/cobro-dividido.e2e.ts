@@ -141,6 +141,31 @@ async function main() {
   const o2 = (await consume(1, coke)).data.order._id; // Ana 6,50
   const o3 = (await consume(1, club)).data.order._id; // Beto 6,75
   await approve(1);
+  // Quién consumió qué: se asigna aun con la cuenta aprobada y no la invalida
+  const { Cruise } = await import("../src/models/cruise.model");
+  const cab1 = (await Cruise.findById(cruiseId))!.cabins.find((c) => c.number === 1)!;
+  const [anaId, betoId] = cab1.passengers.map((p) => p._id!.toString());
+  const assigned = await api("dir", "POST", `/accounts/${cruiseId}/1/assign`, {
+    assignments: [{ orderId: o1, passengerId: anaId }, { orderId: o2, passengerId: anaId }, { orderId: o3, passengerId: betoId }],
+  });
+  const byId = new Map((assigned.data.account?.orders ?? []).map((o: any) => [o.id, o.consumerName]));
+  check(
+    "Asignar consumos: cada uno con su persona y la cuenta sigue aprobada y lista para cobrar",
+    assigned.status === 200 && byId.get(o1) === "Ana" && byId.get(o2) === "Ana" && byId.get(o3) === "Beto" &&
+      assigned.data.account.status === "aprobada" && assigned.data.account.readyToCollect,
+    { status: assigned.status, msg: assigned.data.message },
+  );
+  const stranger = await api("dir", "POST", `/accounts/${cruiseId}/1/assign`, {
+    assignments: [{ orderId: o1, passengerId: new mongoose.Types.ObjectId().toString() }],
+  });
+  const unassign = await api("bar", "POST", `/accounts/${cruiseId}/1/assign`, { assignments: [{ orderId: o3, passengerId: null }] });
+  await api("dir", "POST", `/accounts/${cruiseId}/1/assign`, { assignments: [{ orderId: o3, passengerId: betoId }] });
+  check(
+    "No se asigna a alguien de otra cabina; el bar también puede asignar o dejar sin asignar",
+    stranger.status === 400 && unassign.status === 200 &&
+      unassign.data.account.orders.find((o: any) => o.id === o3).consumerId === null,
+    { stranger: stranger.data.message, unassign: unassign.status },
+  );
   const ana = await api("dir", "POST", "/payments/collect", {
     cruiseId,
     cabinNumber: 1,
@@ -159,6 +184,8 @@ async function main() {
     cruiseId, cabinNumber: 1, orderIds: [o1], lines: [{ method: "tarjeta" }],
   });
   check("Un consumo ya pagado no se vuelve a cobrar", wrongOrder.status === 409, wrongOrder.data.message);
+  const reassignPaid = await api("dir", "POST", `/accounts/${cruiseId}/1/assign`, { assignments: [{ orderId: o1, passengerId: betoId }] });
+  check("Un consumo ya cobrado no se reasigna", reassignPaid.status === 409, reassignPaid.data.message);
   const beto = await api("dir", "POST", "/payments/collect", {
     cruiseId, cabinNumber: 1, orderIds: [o3], billing: { name: "Beto", idNumber: "P2" },
     lines: [{ method: "efectivo", cashConfirmed: true }],
