@@ -66,7 +66,11 @@ export async function commissionSummary() {
       };
     })
     .filter((c) => c.sales > 0)
-    .sort((a, b) => new Date(a.startDate).getTime() - new Date(b.startDate).getTime());
+    // Orden real de operación: cuándo se inició (o su fecha programada si no consta).
+    .sort(
+      (a, b) =>
+        new Date(a.startedAt ?? a.startDate).getTime() - new Date(b.startedAt ?? b.startDate).getTime(),
+    );
 
   let pool = paidTotal;
   let generated = 0;
