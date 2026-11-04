@@ -10,6 +10,7 @@ import {
   mergeDeltas,
 } from "../services/inventory.service";
 import { buildCabinAccount, chargesChanged } from "../services/account.service";
+import { claimBartender } from "../services/commission.service";
 import { logEvent } from "../services/audit.service";
 import { badRequest, conflict, forbidden, notFound } from "../errors/httpError";
 
@@ -135,6 +136,7 @@ export async function createOrder(req: Request, res: Response, next: NextFunctio
       throw err;
     }
 
+    await claimBartender(cruise._id, req.auth!);
     await chargesChanged(cruise._id, cabinNumber, req.auth!.sub, "Consumo registrado");
     await logEvent(req.auth, {
       kind: "pedido",
