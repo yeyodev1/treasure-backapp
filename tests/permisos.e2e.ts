@@ -75,6 +75,13 @@ async function main() {
     check("Ver como Bar: no ve métricas", (await asRole("bartender", "GET", "/reports/owner")) === 403);
     check("Ver como Administración: no aprueba conteos", (await asRole("admin", "POST", `/counts/${fake}/approve`)) === 403);
     check("Ver como Bodega: no ve el equipo", (await asRole("bodega", "GET", "/users")) === 403);
+    check("Ver como Administración: no aprueba el pedido semanal", (await asRole("admin", "POST", `/weekly-orders/${fake}/approve`)) === 403);
+    check("Ver como Administración: no finaliza cruceros", (await asRole("admin", "POST", `/cruises/${fake}/finish`)) === 403);
+    check("Ver como Bar: no recibe compras", (await asRole("bartender", "POST", `/purchases/${fake}/receive`)) === 403);
+    check("Ver como Bar: no aprueba cuentas", (await asRole("bartender", "POST", `/accounts/${fake}/1/approve`)) === 403);
+    check("Ver como Bar: no cobra", (await asRole("bartender", "POST", "/payments/collect")) === 403);
+    check("Ver como Dirección: no anula cobros", (await asRole("direccion", "POST", `/payments/${fake}/reverse`)) === 403);
+    check("Ver como Dirección: no ve facturación a la agencia", (await asRole("direccion", "GET", "/agency-billing")) === 403);
     check("Ver como no cambia la sesión real", (await asRole("bartender", "GET", "/auth/me")) === 200);
     check("Sin ver como, Gerencia sigue viendo métricas", (await api("duena", "GET", "/reports/owner")).status === 200);
   }
