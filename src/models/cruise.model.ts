@@ -54,6 +54,9 @@ export interface ICruise {
   closedBy: Types.ObjectId | null;
   /** Cierre excepcional (equipo sin responder o envíos pendientes). */
   closeReason: string;
+  /** Bartender del crucero: se le acredita la comisión de sus ventas (4-nov-2026). */
+  bartender: Types.ObjectId | null;
+  bartenderName: string;
   createdBy?: Types.ObjectId;
   createdAt?: Date;
   updatedAt?: Date;
@@ -100,6 +103,8 @@ const cruiseSchema = new Schema<ICruise>(
     closedAt: { type: Date, default: null },
     closedBy: { type: Schema.Types.ObjectId, ref: "User", default: null },
     closeReason: { type: String, default: "" },
+    bartender: { type: Schema.Types.ObjectId, ref: "User", default: null },
+    bartenderName: { type: String, default: "" },
     createdBy: { type: Schema.Types.ObjectId, ref: "User" },
   },
   { timestamps: true },
