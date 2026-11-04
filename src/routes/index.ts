@@ -18,6 +18,7 @@ import * as ism from "../controllers/ism.controller";
 import * as consumptions from "../controllers/consumption.controller";
 import * as supply from "../controllers/supply.controller";
 import * as commissions from "../controllers/commission.controller";
+import * as agency from "../controllers/agency.controller";
 import * as weeklyOrders from "../controllers/weeklyOrder.controller";
 import { ismRoutes } from "./ism.routes";
 
@@ -140,7 +141,6 @@ export default function routerApi(app: Application) {
   // Cuentas: revisión y aprobación antes de cobrar
   router.get("/accounts/:cruiseId", requireAuth, BAR, accounts.cruiseAccounts);
   router.get("/accounts/:cruiseId/agency-courtesies", requireAuth, DIRECTOR, accounts.agencyCourtesies);
-  router.post("/accounts/:cruiseId/agency-courtesies/send", requireAuth, DIRECTOR, accounts.sendAgencyCourtesies);
   router.get("/accounts/:cruiseId/:cabinNumber", requireAuth, BAR, orders.cabinAccount);
   router.post("/accounts/:cruiseId/:cabinNumber/submit", requireAuth, BAR, accounts.submitForReview);
   router.post("/accounts/:cruiseId/:cabinNumber/approve", requireAuth, DIRECTOR, accounts.approveAccount);
@@ -221,4 +221,9 @@ export default function routerApi(app: Application) {
   router.get("/commissions", requireAuth, OWNER, commissions.listCommissions);
   router.post("/commissions/payments", requireAuth, OWNER, commissions.createCommissionPayment);
   router.post("/commissions/payments/:id/void", requireAuth, OWNER, commissions.voidCommissionPayment);
+
+  // Factura mensual a la agencia (cortesías de agencia)
+  router.get("/agency-billing", requireAuth, OWNER, agency.listAgencyBilling);
+  router.post("/agency-billing/invoices", requireAuth, OWNER, agency.createAgencyInvoice);
+  router.post("/agency-billing/invoices/:id/void", requireAuth, OWNER, agency.voidAgencyInvoice);
 }

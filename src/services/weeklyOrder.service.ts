@@ -144,7 +144,8 @@ export async function buildLines(cutAt: Date): Promise<IWeeklyOrderLine[]> {
       consumption: Math.max(0, consumed.get(id) ?? 0),
       lowThreshold: p.lowStockThreshold ?? 0,
     });
-    if (!result || result.suggested === 0) continue;
+    // Lo vendido en la semana siempre se muestra (aunque sugiera 0): el bar decide cuánto reponer (4-nov-2026).
+    if (!result || (result.suggested === 0 && result.basis !== "consumo")) continue;
     lines.push(newLine(p, atCut, {
       target: p.stockTarget ?? 0,
       incoming: incoming.get(id) ?? 0,
