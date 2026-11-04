@@ -9,8 +9,20 @@ import mongoose, { Schema, Types } from "mongoose";
 export const COMMISSION_PAYMENT_STATUSES = ["vigente", "anulado"] as const;
 export type CommissionPaymentStatus = (typeof COMMISSION_PAYMENT_STATUSES)[number];
 
+/** Crucero pagado en este pago (detalle de la prefactura, fijo al registrar). */
+export interface ICommissionPaymentItem {
+  cruise: Types.ObjectId;
+  code: string;
+  sales: number;
+  amount: number;
+}
+
 export interface ICommissionPayment {
   amount: number;
+  /** Desde el 4-nov-2026 cada pago es de un bartender y de cruceros elegidos; los anteriores no tienen items. */
+  bartender: Types.ObjectId | null;
+  bartenderName: string;
+  items: ICommissionPaymentItem[];
   /** Día en que se le pagó (puede ser anterior al registro). */
   paidAt: Date;
   note: string;
@@ -25,6 +37,22 @@ export interface ICommissionPayment {
 const commissionPaymentSchema = new Schema<ICommissionPayment>(
   {
     amount: { type: Number, required: true, min: 0.01 },
+    bartender: { type: Schema.Types.ObjectId, ref: "User", default: null },
+    bartenderName: { type: String, default: "" },
+    items: {
+      type: [
+        new Schema(
+          {
+            cruise: { type: Schema.Types.ObjectId, ref: "Cruise", required: true },
+            code: { type: String, default: "" },
+            sales: { type: Number, default: 0 },
+            amount: { type: Number, required: true },
+          },
+          { _id: false },
+        ),
+      ],
+      default: [],
+    },
     paidAt: { type: Date, required: true },
     note: { type: String, default: "", trim: true, maxlength: 300 },
     status: { type: String, enum: COMMISSION_PAYMENT_STATUSES, default: "vigente" },
