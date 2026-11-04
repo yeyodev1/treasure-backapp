@@ -13,6 +13,7 @@ import {
   onboardAvailability,
 } from "../services/inventory.service";
 import { chargesChanged } from "../services/account.service";
+import { claimBartender } from "../services/commission.service";
 import { logEvent } from "../services/audit.service";
 import { badRequest, conflict, forbidden, HttpError, notFound } from "../errors/httpError";
 import { startOfDayEcuador } from "../utils/dates";
@@ -269,6 +270,7 @@ export async function createConsumption(req: Request, res: Response, next: NextF
       return;
     }
 
+    await claimBartender(cruise._id, req.auth!);
     await chargesChanged(
       cruise._id,
       cabinNumber,
