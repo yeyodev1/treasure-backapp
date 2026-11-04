@@ -30,6 +30,8 @@ export interface IPurchaseLine {
 
 export interface IPurchaseReceipt {
   key: string;
+  /** Dónde llegó: una misma factura puede recibirse en Quito y en Puerto. */
+  location?: StockLocation;
   lines: Array<{ index: number; qty: number }>;
   note: string;
   by: Types.ObjectId;
@@ -42,6 +44,8 @@ export interface IPurchase {
   document: string;
   documentDate: Date | null;
   destination: StockLocation;
+  /** Pedido semanal aprobado del que sale esta compra (si aplica). */
+  weeklyOrder?: Types.ObjectId | null;
   lines: IPurchaseLine[];
   total: number;
   status: PurchaseStatus;
@@ -72,6 +76,7 @@ const lineSchema = new Schema<IPurchaseLine>(
 const receiptSchema = new Schema<IPurchaseReceipt>(
   {
     key: { type: String, required: true },
+    location: { type: String, enum: STOCK_LOCATIONS },
     lines: {
       type: [
         new Schema(
@@ -94,7 +99,8 @@ const purchaseSchema = new Schema<IPurchase>(
     supplier: { type: String, required: true, trim: true },
     document: { type: String, required: true, trim: true },
     documentDate: { type: Date, default: null },
-    destination: { type: String, enum: STOCK_LOCATIONS, default: "bodega" },
+    destination: { type: String, enum: STOCK_LOCATIONS, default: "puerto" },
+    weeklyOrder: { type: Schema.Types.ObjectId, ref: "WeeklyOrder", default: null },
     lines: { type: [lineSchema], default: [] },
     total: { type: Number, default: 0, min: 0 },
     status: { type: String, enum: PURCHASE_STATUSES, default: "registrada" },
@@ -108,6 +114,7 @@ const purchaseSchema = new Schema<IPurchase>(
 );
 
 purchaseSchema.index({ status: 1, createdAt: -1 });
+purchaseSchema.index({ weeklyOrder: 1 });
 purchaseSchema.index(
   { idempotencyKey: 1 },
   { unique: true, partialFilterExpression: { idempotencyKey: { $type: "string" } } },
