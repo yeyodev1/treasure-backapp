@@ -9,5 +9,16 @@
       "includeFiles": "assets/**"
     }
   },
-  "rewrites": [{ "source": "/(.*)", "destination": "/api" }]
+  "rewrites": [
+    {
+      "source": "/(.*)",
+      "destination": "/api"
+    }
+  ],
+  "crons": [
+    {
+      "path": "/api/cron/weekly-order",
+      "schedule": "0 21 * * 3"
+    }
+  ]
 }
