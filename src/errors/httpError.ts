@@ -23,7 +23,7 @@ export const conflict = (message: string) => new HttpError(409, message);
 export const insufficientStock = (productId: string, name: string, location: string) =>
   new HttpError(
     409,
-    `No hay suficiente ${name} ${location === "bodega" ? "en bodega" : "a bordo"}`,
+    `No hay suficiente ${name} ${location === "abordo" ? "a bordo" : location === "quito" ? "en Quito" : location === "puerto" ? "en el puerto" : "en bodega"}`,
     "sin_stock",
     { productId, name, location },
   );
