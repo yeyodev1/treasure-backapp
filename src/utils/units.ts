@@ -21,9 +21,25 @@ export type StockUnit = (typeof STOCK_UNITS)[number];
 export const PRODUCT_KINDS = ["fisico", "receta", "servicio"] as const;
 export type ProductKind = (typeof PRODUCT_KINDS)[number];
 
-/** Ubicaciones de inventario. */
-export const STOCK_LOCATIONS = ["bodega", "abordo"] as const;
+/**
+ * Ubicaciones de inventario (guía Inventario y pedidos, 4-nov-2026): Quito
+ * (UIO), puerto en Galápagos y a bordo, cada una con su cantidad. "bodega" es
+ * el saldo anterior sin separar: no recibe mercadería nueva y se cierra cuando
+ * Quito y Puerto tienen su conteo físico aprobado.
+ */
+export const STOCK_LOCATIONS = ["quito", "puerto", "abordo", "bodega"] as const;
 export type StockLocation = (typeof STOCK_LOCATIONS)[number];
+/** Donde llega o se guarda mercadería nueva. */
+export const ACTIVE_LOCATIONS = ["quito", "puerto", "abordo"] as const;
+export const LOCATION_LABELS: Record<StockLocation, string> = {
+  quito: "Quito",
+  puerto: "Puerto en Galápagos",
+  abordo: "A bordo",
+  bodega: "Bodega sin separar",
+};
+export function isActiveLocation(value: unknown): value is (typeof ACTIVE_LOCATIONS)[number] {
+  return (ACTIVE_LOCATIONS as readonly unknown[]).includes(value);
+}
 
 /** Mensaje único de cantidad inválida (checklist 29-oct, 16). */
 export const QTY_POSITIVE_ERROR = "Introduce una cantidad mayor que cero.";
