@@ -4,10 +4,10 @@ import { Types } from "mongoose";
 import { StockCount } from "../models/stockCount.model";
 import { Product } from "../models/product.model";
 import { Cruise } from "../models/cruise.model";
-import { applyMovement } from "../services/inventory.service";
+import { applyMovement, LOCATION_FIELD } from "../services/inventory.service";
 import { logEvent } from "../services/audit.service";
 import { badRequest, conflict, forbidden, notFound } from "../errors/httpError";
-import { round2, STOCK_LOCATIONS, StockLocation } from "../utils/units";
+import { LOCATION_LABELS, round2, STOCK_LOCATIONS, StockLocation } from "../utils/units";
 
 const POPULATE_PEOPLE = [
   { path: "createdBy", select: "name" },
@@ -74,7 +74,7 @@ export async function createCount(req: Request, res: Response, next: NextFunctio
 
     const cruise =
       location === "abordo" ? await Cruise.findOne({ status: "abordo" }).select("_id") : null;
-    const field = location === "bodega" ? "warehouseStock" : "onboardStock";
+    const field = LOCATION_FIELD[location];
     const products = await Product.find({ kind: "fisico", active: true })
       .select(`name stockUnit ${field}`)
       .sort({ category: 1, name: 1 });
@@ -98,7 +98,7 @@ export async function createCount(req: Request, res: Response, next: NextFunctio
     await logEvent(req.auth, {
       kind: "conteo",
       title: `Conteo ${count.code} abierto`,
-      detail: location === "abordo" ? "A bordo" : "Bodega",
+      detail: LOCATION_LABELS[location],
       cruise: cruise?._id ?? null,
     });
     res.status(201).json({ count: await withContainers(await count.populate(POPULATE_PEOPLE)) });
