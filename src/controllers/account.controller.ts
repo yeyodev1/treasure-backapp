@@ -9,6 +9,8 @@ import { logEvent } from "../services/audit.service";
 import { proformaData, proformaFileName, proformaPdf } from "../services/proforma.service";
 import { badRequest, conflict, notFound } from "../errors/httpError";
 import { round2 } from "../utils/units";
+import { EMAIL_ERROR, isValidOptionalEmail } from "../utils/email";
+import { mailerConfigured, sendMail } from "../services/mailer.service";
 
 /**
  * Resumen de todas las cabinas de una salida: estado, consumos, pagado y
@@ -336,10 +338,9 @@ export async function proforma(req: Request, res: Response, next: NextFunction) 
  * se cobran a la cabina; se juntan aquí para facturarlas a la agencia al
  * final del crucero. Importe = precio vigente al registrar × unidades.
  */
-export async function agencyCourtesies(req: Request, res: Response, next: NextFunction) {
-  try {
-    const cruiseId = String(req.params.cruiseId);
-    if (!Types.ObjectId.isValid(cruiseId)) throw badRequest("Crucero inválido");
+async function agencyItems(cruiseId: string) {
+  if (!Types.ObjectId.isValid(cruiseId)) throw badRequest("Crucero inválido");
+  {
     const orders = await Order.find({
       cruise: cruiseId,
       status: { $nin: ["cancelada", "retenida"] },
@@ -378,7 +379,67 @@ export async function agencyCourtesies(req: Request, res: Response, next: NextFu
         });
       }
     }
-    res.json({ items, total: round2(items.reduce((s, i) => s + i.total, 0)) });
+    return { items, total: round2(items.reduce((s, i) => s + i.total, 0)) };
+  }
+}
+
+export async function agencyCourtesies(req: Request, res: Response, next: NextFunction) {
+  try {
+    res.json(await agencyItems(String(req.params.cruiseId)));
+  } catch (err) {
+    next(err);
+  }
+}
+
+const esc = (v: string) => v.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
+const money = (v: number) => `$${v.toFixed(2)}`;
+const cell = 'style="padding:6px 8px;border-bottom:1px solid #eee"';
+
+/**
+ * Envía a la agencia el detalle de sus cortesías con el total (pedido del
+ * cliente, 4-nov-2026). No es factura: la factura se emite aparte en Contífico.
+ */
+export async function sendAgencyCourtesies(req: Request, res: Response, next: NextFunction) {
+  try {
+    const cruiseId = String(req.params.cruiseId);
+    const to = String((req.body as { to?: unknown })?.to ?? "").trim();
+    if (!to || !isValidOptionalEmail(to)) throw badRequest(EMAIL_ERROR);
+    if (!mailerConfigured()) throw badRequest("El envío de correos no está configurado");
+    const { items, total } = await agencyItems(cruiseId);
+    if (!items.length) throw badRequest("Este crucero no tiene cortesías de agencia");
+    const cruise = await Cruise.findById(cruiseId).select("code name");
+    const label = cruise?.code || cruise?.name || "crucero";
+
+    const rows = items
+      .map(
+        (i) =>
+          `<tr><td ${cell}>Cabina ${i.cabinNumber}</td>` +
+          `<td ${cell}>${i.qty} × ${esc(i.name)}${i.reason ? `<br><small style="color:#777">${esc(i.reason)}</small>` : ""}</td>` +
+          `<td ${cell} align="right">${money(i.total)}</td></tr>`,
+      )
+      .join("");
+    const html =
+      `<div style="font-family:Arial,sans-serif;color:#222;max-width:640px">` +
+      `<h2 style="margin:0 0 4px">Cortesías de agencia · Crucero ${esc(label)}</h2>` +
+      `<p style="margin:0 0 16px;color:#555">Detalle de las cortesías servidas a pedido de la agencia. La factura se envía por separado.</p>` +
+      `<table style="width:100%;border-collapse:collapse;font-size:14px">${rows}` +
+      `<tr><td colspan="2" style="padding:10px 8px"><b>Total</b></td><td style="padding:10px 8px" align="right"><b>${money(total)}</b></td></tr>` +
+      `</table></div>`;
+    const text = [
+      `Cortesías de agencia · Crucero ${label}`,
+      ...items.map((i) => `Cabina ${i.cabinNumber} · ${i.qty} × ${i.name} · ${money(i.total)}`),
+      `Total: ${money(total)}`,
+    ].join("\n");
+
+    await sendMail({ to, subject: `Cortesías de agencia · Crucero ${label} · ${money(total)}`, html, text });
+    await logEvent(req.auth, {
+      kind: "cuenta",
+      title: `Cortesías de agencia enviadas · ${label}`,
+      detail: `A ${to}`,
+      amount: total,
+      cruise: cruiseId,
+    });
+    res.json({ to, total });
   } catch (err) {
     next(err);
   }

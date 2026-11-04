@@ -78,6 +78,8 @@ interface CollectBody {
   cashConfirmed?: boolean;
   expectedDue?: number;
   billing?: { name?: string; idNumber?: string; email?: string; country?: string; passengerId?: string };
+  /** false: no se le envía el resumen por correo al cliente (4-nov-2026). */
+  notify?: boolean;
 }
 
 type CollectMode = "cuenta" | "consumos" | "porcentaje" | "grupo";
@@ -422,9 +424,9 @@ export async function collectCabin(req: Request, res: Response, next: NextFuncti
       cabinNumber: cabinList[0],
     });
 
-    // Resumen al pagador: nunca rompe el cobro.
+    // Resumen al pagador: nunca rompe el cobro. Quien cobra puede apagarlo.
     let email = null;
-    if (accountSettled) {
+    if (accountSettled && body.notify !== false) {
       try {
         email = await sendAccountSummary(headId, req.auth);
       } catch (err) {

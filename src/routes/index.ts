@@ -140,6 +140,7 @@ export default function routerApi(app: Application) {
   // Cuentas: revisión y aprobación antes de cobrar
   router.get("/accounts/:cruiseId", requireAuth, BAR, accounts.cruiseAccounts);
   router.get("/accounts/:cruiseId/agency-courtesies", requireAuth, DIRECTOR, accounts.agencyCourtesies);
+  router.post("/accounts/:cruiseId/agency-courtesies/send", requireAuth, DIRECTOR, accounts.sendAgencyCourtesies);
   router.get("/accounts/:cruiseId/:cabinNumber", requireAuth, BAR, orders.cabinAccount);
   router.post("/accounts/:cruiseId/:cabinNumber/submit", requireAuth, BAR, accounts.submitForReview);
   router.post("/accounts/:cruiseId/:cabinNumber/approve", requireAuth, DIRECTOR, accounts.approveAccount);
