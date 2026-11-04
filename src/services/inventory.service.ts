@@ -68,6 +68,17 @@ export const LOCATION_FIELD: Record<StockLocation, "warehouseStock" | "quitoStoc
   bodega: "warehouseStock",
 };
 
+/**
+ * La bodega de Quito solo guarda botellas: vinos, licores y botellas de insumo
+ * (vermut, Campari…). Aguas, gaseosas, cervezas y jugos van en Galápagos
+ * (pedido del cliente, 4-nov-2026). Lo que ya tenga stock en Quito se muestra igual.
+ */
+export function belongsInQuito(p: Pick<IProduct, "category" | "containerLabel" | "stockUnit" | "quitoStock">): boolean {
+  if (p.quitoStock) return true;
+  if (p.category === "vino" || p.category === "licor") return true;
+  return p.category === "insumo" && p.containerLabel === "botella" && p.stockUnit === "ml";
+}
+
 /** Existencias de un producto en todas las ubicaciones (unidad base). */
 export function stockOf(p: Pick<IProduct, "quitoStock" | "puertoStock" | "onboardStock" | "warehouseStock">) {
   return {

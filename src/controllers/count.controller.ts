@@ -4,7 +4,7 @@ import { Types } from "mongoose";
 import { StockCount } from "../models/stockCount.model";
 import { Product } from "../models/product.model";
 import { Cruise } from "../models/cruise.model";
-import { applyMovement, LOCATION_FIELD } from "../services/inventory.service";
+import { applyMovement, belongsInQuito, LOCATION_FIELD } from "../services/inventory.service";
 import { logEvent } from "../services/audit.service";
 import { badRequest, conflict, forbidden, notFound } from "../errors/httpError";
 import { LOCATION_LABELS, round2, STOCK_LOCATIONS, StockLocation } from "../utils/units";
@@ -75,9 +75,10 @@ export async function createCount(req: Request, res: Response, next: NextFunctio
     const cruise =
       location === "abordo" ? await Cruise.findOne({ status: "abordo" }).select("_id") : null;
     const field = LOCATION_FIELD[location];
-    const products = await Product.find({ kind: "fisico", active: true })
-      .select(`name stockUnit ${field}`)
+    const all = await Product.find({ kind: "fisico", active: true })
+      .select(`name stockUnit category containerLabel quitoStock ${field}`)
       .sort({ category: 1, name: 1 });
+    const products = location === "quito" ? all.filter(belongsInQuito) : all;
 
     const count = await StockCount.create({
       code: await nextCode(),

@@ -60,6 +60,25 @@ async function main() {
     tokens[key] = r.data.token;
   }
 
+  // "Ver como" (4-nov-2026): Gerencia mirando como otro rol tiene los permisos de ese rol.
+  async function asRole(role: string, method: string, path: string, body?: unknown) {
+    const r = await fetch(base + path, {
+      method,
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${tokens.duena}`, "X-View-As": role },
+      body: body ? JSON.stringify(body) : undefined,
+    });
+    return r.status;
+  }
+  {
+    const fake = "000000000000000000000000";
+    check("Ver como Bar: no finaliza cruceros", (await asRole("bartender", "POST", `/cruises/${fake}/finish`)) === 403);
+    check("Ver como Bar: no ve métricas", (await asRole("bartender", "GET", "/reports/owner")) === 403);
+    check("Ver como Administración: no aprueba conteos", (await asRole("admin", "POST", `/counts/${fake}/approve`)) === 403);
+    check("Ver como Bodega: no ve el equipo", (await asRole("bodega", "GET", "/users")) === 403);
+    check("Ver como no cambia la sesión real", (await asRole("bartender", "GET", "/auth/me")) === 200);
+    check("Sin ver como, Gerencia sigue viendo métricas", (await api("duena", "GET", "/reports/owner")).status === 200);
+  }
+
   // 07 · Métricas solo Gerencia
   for (const path of ["/reports/sales", "/reports/by-cruise", "/reports/owner"]) {
     check(`Gerencia ve ${path}`, (await api("duena", "GET", path)).status === 200);
