@@ -1,5 +1,5 @@
 import { NextFunction, Request, Response } from "express";
-import { isOwner } from "../utils/roles";
+import { canSeeCosts, isOwner } from "../utils/roles";
 import { Types } from "mongoose";
 import { IProduct, Product, PRODUCT_CATEGORIES, ProductCategory, WINE_STYLES, WineStyle } from "../models/product.model";
 import { suggestedPrice } from "../services/inventory.service";
@@ -16,6 +16,7 @@ export async function listProducts(req: Request, res: Response, next: NextFuncti
     if (req.query.all !== "1") filter.active = true;
     if (typeof req.query.kind === "string") filter.kind = req.query.kind;
     const products = await Product.find(filter)
+      .select(canSeeCosts(req.auth?.role) ? "" : "-costPerUnit -costUpdatedAt")
       .populate("recipe.product", RECIPE_POPULATE)
       .populate("priceHistory.changedBy", "name")
       .sort({ category: 1, name: 1 });
@@ -36,6 +37,7 @@ interface ProductBody {
   containerSize?: number;
   containerLabel?: string;
   lowStockThreshold?: number;
+  stockTarget?: number;
   servingSize?: number;
   servingPrice?: number;
   recipe?: Array<{ product: string; qty: number }>;
@@ -83,6 +85,10 @@ function applyPhysicalFields(product: IProduct, body: ProductBody) {
   if (body.containerLabel !== undefined) product.containerLabel = body.containerLabel;
   if (body.sellable !== undefined) product.sellable = body.sellable;
   if (body.lowStockThreshold !== undefined) product.lowStockThreshold = body.lowStockThreshold;
+  if (body.stockTarget !== undefined) {
+    if (!(Number(body.stockTarget) >= 0)) throw badRequest("El objetivo debe ser cero o más envases");
+    product.stockTarget = Number(body.stockTarget);
+  }
   if (body.servingSize !== undefined) product.servingSize = body.servingSize;
   if (body.servingPrice !== undefined) product.servingPrice = body.servingPrice;
 }
