@@ -61,10 +61,22 @@ interface ApplyInput {
   unitCost?: number;
 }
 
-const LOCATION_FIELD: Record<StockLocation, "warehouseStock" | "onboardStock"> = {
-  bodega: "warehouseStock",
+export const LOCATION_FIELD: Record<StockLocation, "warehouseStock" | "quitoStock" | "puertoStock" | "onboardStock"> = {
+  quito: "quitoStock",
+  puerto: "puertoStock",
   abordo: "onboardStock",
+  bodega: "warehouseStock",
 };
+
+/** Existencias de un producto en todas las ubicaciones (unidad base). */
+export function stockOf(p: Pick<IProduct, "quitoStock" | "puertoStock" | "onboardStock" | "warehouseStock">) {
+  return {
+    quito: p.quitoStock ?? 0,
+    puerto: p.puertoStock ?? 0,
+    abordo: p.onboardStock ?? 0,
+    bodega: p.warehouseStock ?? 0,
+  };
+}
 
 /** Mueve stock en una ubicación y deja cada movimiento en la bitácora. */
 export async function applyMovement(input: ApplyInput) {
