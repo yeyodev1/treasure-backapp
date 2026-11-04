@@ -71,14 +71,15 @@ async function main() {
   const can = (await Product.findById(coke))!.containerSize || 1;
   const stock = async (pid: string) => {
     const p = await Product.findById(pid).lean();
-    return { bodega: p!.warehouseStock, abordo: p!.onboardStock };
+    // "bodega" = Puerto en Galápagos desde la separación Quito/Puerto (4-nov-2026).
+    return { bodega: p!.puertoStock, abordo: p!.onboardStock };
   };
 
   // ---- Compra en dos pasos: la factura no suma; la recepción sí, con costo
   const purchase = await api("adm", "POST", "/purchases", {
     supplier: "Distribuidora",
     document: "001-001-123",
-    destination: "bodega",
+    destination: "puerto",
     idempotencyKey: "cp-1",
     lines: [
       { productId: gin, containers: 2, containerCost: 18 },
@@ -102,6 +103,8 @@ async function main() {
   // ---- Cargar al barco: bodega − y a bordo +, total sin cambio
   const t = await api("adm", "POST", "/inventory/transfer", {
     key: "tr-1",
+    from: "puerto",
+    to: "abordo",
     items: [
       { productId: gin, qty: 1500 },
       { productId: tonic, qty: 710 },
