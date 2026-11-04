@@ -20,6 +20,16 @@ export async function listUsers(_req: Request, res: Response, next: NextFunction
   }
 }
 
+/** Bartenders activos: la Dirección elige el de cada crucero (comisiones, 4-nov-2026). */
+export async function listBartenders(_req: Request, res: Response, next: NextFunction) {
+  try {
+    const bartenders = await User.find({ role: "bartender", active: true }).select("name").sort({ name: 1 });
+    res.json({ bartenders });
+  } catch (err) {
+    next(err);
+  }
+}
+
 export async function createUser(req: Request, res: Response, next: NextFunction) {
   try {
     const { name, email, password, role, isCashier, position } = req.body as {
