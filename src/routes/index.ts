@@ -18,6 +18,7 @@ import * as ism from "../controllers/ism.controller";
 import * as consumptions from "../controllers/consumption.controller";
 import * as supply from "../controllers/supply.controller";
 import * as commissions from "../controllers/commission.controller";
+import * as weeklyOrders from "../controllers/weeklyOrder.controller";
 import { ismRoutes } from "./ism.routes";
 
 /**
@@ -68,6 +69,7 @@ export default function routerApi(app: Application) {
 
   // Equipo
   router.get("/users", requireAuth, OWNER, users.listUsers);
+  router.get("/users/bartenders", requireAuth, LEAD, users.listBartenders);
   router.post("/users", requireAuth, OWNER, users.createUser);
   router.patch("/users/:id", requireAuth, OWNER, users.updateUser);
 
@@ -167,6 +169,16 @@ export default function routerApi(app: Application) {
     inventory.transferToBoard,
   );
   router.get("/inventory/movements", requireAuth, ALL, inventory.listMovements);
+  router.post("/inventory/close-unsplit", requireAuth, OWNER, inventory.closeUnsplitStock);
+
+  // Pedido semanal (guía Inventario y pedidos, 4-nov-2026): el bar revisa, la directora aprueba.
+  router.get("/cron/weekly-order", weeklyOrders.weeklyOrderCron);
+  router.get("/weekly-orders/current", requireAuth, ALL, weeklyOrders.currentWeeklyOrder);
+  router.get("/weekly-orders/:id", requireAuth, ALL, weeklyOrders.getWeeklyOrder);
+  router.put("/weekly-orders/:id/lines", requireAuth, BAR, weeklyOrders.saveWeeklyOrder);
+  router.post("/weekly-orders/:id/send", requireAuth, BAR, weeklyOrders.sendWeeklyOrder);
+  router.post("/weekly-orders/:id/approve", requireAuth, DIRECTOR, weeklyOrders.approveWeeklyOrder);
+  router.post("/weekly-orders/:id/cancel", requireAuth, DIRECTOR, weeklyOrders.cancelWeeklyOrder);
 
   // Conteos físicos: Administración cuenta y documenta; Gerencia autoriza
   router.get("/counts", requireAuth, COUNTERS, counts.listCounts);
