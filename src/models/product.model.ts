@@ -53,8 +53,13 @@ export interface IProduct {
   containerSize: number;
   containerLabel: string;
   /** Stock en unidad base. Puede quedar negativo: se resuelve con conteo físico. */
+  /** Saldo anterior de bodega, sin separar entre Quito y Puerto. */
   warehouseStock: number;
+  quitoStock: number;
+  puertoStock: number;
   onboardStock: number;
+  /** Cuánto mantener en total, en envases (pedido semanal). 0 = sin objetivo. */
+  stockTarget: number;
   /** Alerta de stock bajo (unidad base). 0 = sin alerta. */
   lowStockThreshold: number;
 
@@ -114,7 +119,10 @@ const productSchema = new Schema<IProduct>(
     containerSize: { type: Number, default: 1, min: 0 },
     containerLabel: { type: String, default: "unidad" },
     warehouseStock: { type: Number, default: 0 },
+    quitoStock: { type: Number, default: 0 },
+    puertoStock: { type: Number, default: 0 },
     onboardStock: { type: Number, default: 0 },
+    stockTarget: { type: Number, default: 0, min: 0 },
     lowStockThreshold: { type: Number, default: 0, min: 0 },
     servingSize: { type: Number, default: 0, min: 0 },
     servingPrice: { type: Number, default: 0, min: 0 },
