@@ -65,6 +65,11 @@ export const POSITION_LABELS: Record<CrewPosition, string> = {
   DIR: "Dirección de crucero",
 };
 
+/** Costos de inventario: Gerencia, Administración y Bodega (registran compras con costo). */
+export function canSeeCosts(role: string | undefined): boolean {
+  return role === "duena" || role === "admin" || role === "bodega";
+}
+
 /** Gerencia puede todo; Administración conserva lo operativo. */
 export function isOwner(role: string | undefined): boolean {
   return role === "duena";
