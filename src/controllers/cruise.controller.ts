@@ -17,6 +17,19 @@ import { logEvent } from "../services/audit.service";
 import { badRequest, conflict, HttpError, notFound } from "../errors/httpError";
 import { addDaysKey, commercialDateKey, ecuadorDateTime, TIMEZONE } from "../utils/dates";
 import { EMAIL_ERROR, isValidOptionalEmail } from "../utils/email";
+import { Types } from "mongoose";
+import { User } from "../models/user.model";
+import { CommissionPayment } from "../models/commissionPayment.model";
+
+/** Bartender del crucero: un usuario activo con rol bartender, o null para quitarlo. */
+async function resolveBartender(id: unknown) {
+  if (id === null || id === "") return { bartender: null, bartenderName: "" };
+  const user = typeof id === "string" && Types.ObjectId.isValid(id)
+    ? await User.findOne({ _id: id, role: "bartender", active: true }).select("name")
+    : null;
+  if (!user) throw badRequest("Elige un bartender activo");
+  return { bartender: user._id, bartenderName: user.name };
+}
 
 export async function listCruises(req: Request, res: Response, next: NextFunction) {
   try {
@@ -292,8 +305,9 @@ export async function newCruiseOptions(_req: Request, res: Response, next: NextF
  */
 export async function createNewCruise(req: Request, res: Response, next: NextFunction) {
   try {
-    const { leg, startDate } = req.body as { leg?: string; startDate?: string };
+    const { leg, startDate, bartender } = req.body as { leg?: string; startDate?: string; bartender?: string };
     const { plan, cabinCount } = await reviewNewCruise(leg, startDate);
+    const crew = bartender ? await resolveBartender(bartender) : {};
     // Pedido del cliente (31-oct-2026): los cruceros solo inician y terminan
     // sábado o martes; cada tipo zarpa en su día, sin excepciones.
     if (!plan.weekday.ok) {
@@ -315,6 +329,7 @@ export async function createNewCruise(req: Request, res: Response, next: NextFun
       startDate: plan.startDate,
       endDate: plan.endDate,
       cabins: Array.from({ length: cabinCount }, (_, i) => ({ number: i + 1 })),
+      ...crew,
       createdBy: req.auth!.sub,
     });
     await logEvent(req.auth, {
@@ -422,10 +437,11 @@ export async function createCruise(req: Request, res: Response, next: NextFuncti
 
 export async function updateCruise(req: Request, res: Response, next: NextFunction) {
   try {
-    const { name, status, notes } = req.body as {
+    const { name, status, notes, bartender } = req.body as {
       name?: string;
       status?: CruiseStatus;
       notes?: string;
+      bartender?: string | null;
     };
     const cruise = await Cruise.findById(req.params.id);
     if (!cruise) throw notFound("Crucero no encontrado");
@@ -435,6 +451,13 @@ export async function updateCruise(req: Request, res: Response, next: NextFuncti
 
     if (name !== undefined) cruise.name = name;
     if (notes !== undefined) cruise.notes = notes;
+    if (bartender !== undefined && String(bartender ?? "") !== String(cruise.bartender ?? "")) {
+      // La comisión ya pagada queda a nombre de quien la cobró.
+      if (await CommissionPayment.exists({ status: "vigente", "items.cruise": cruise._id })) {
+        throw conflict("La comisión de este crucero ya se pagó: anula ese pago para cambiar el bartender");
+      }
+      Object.assign(cruise, await resolveBartender(bartender));
+    }
     await cruise.save();
     res.json({ cruise });
   } catch (err) {
