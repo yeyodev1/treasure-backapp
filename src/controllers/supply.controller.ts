@@ -9,7 +9,16 @@ import { moveStock } from "../services/inventory.service";
 import { nextCode } from "../services/codes.service";
 import { logEvent } from "../services/audit.service";
 import { badRequest, conflict, forbidden, notFound } from "../errors/httpError";
-import { isNonNegativeQty, isPositiveQty, QTY_POSITIVE_ERROR, round2, STOCK_LOCATIONS, StockLocation } from "../utils/units";
+import { WeeklyOrder } from "../models/weeklyOrder.model";
+import {
+  isActiveLocation,
+  isNonNegativeQty,
+  isPositiveQty,
+  LOCATION_LABELS,
+  QTY_POSITIVE_ERROR,
+  round2,
+  StockLocation,
+} from "../utils/units";
 
 /**
  * Abastecimiento (guía auditada 27-oct-2026):
@@ -43,7 +52,7 @@ const REQUISITION_POPULATE = [
   { path: "reviewedBy", select: "name" },
   { path: "receipts.by", select: "name" },
   { path: "cruise", select: "code name" },
-  { path: "lines.product", select: "name stockUnit containerSize containerLabel icon warehouseStock onboardStock" },
+  { path: "lines.product", select: "name stockUnit containerSize containerLabel icon warehouseStock quitoStock puertoStock onboardStock" },
 ];
 
 export async function createRequisition(req: Request, res: Response, next: NextFunction) {
@@ -207,15 +216,19 @@ export async function cancelRequisition(req: Request, res: Response, next: NextF
 
 /**
  * Recepción física de un requerimiento aprobado: traslada la cantidad real
- * de bodega al barco (sin dejar bodega en negativo) y descuenta lo pendiente.
+ * del origen (Puerto por defecto; también Quito o la bodega sin separar) al
+ * barco, sin dejar el origen en negativo, y descuenta lo pendiente.
  */
 export async function receiveRequisition(req: Request, res: Response, next: NextFunction) {
   try {
-    const { key, lines, note } = req.body as {
+    const { key, lines, note, from: rawFrom } = req.body as {
       key?: string;
       lines?: Array<{ index: number; qty: number }>;
       note?: string;
+      from?: StockLocation;
     };
+    const from: StockLocation = rawFrom ?? "puerto";
+    if (!["quito", "puerto", "bodega"].includes(from)) throw badRequest("Origen inválido");
     if (!key) throw badRequest("Falta la clave de la recepción");
     if (!lines?.length) throw badRequest("Indica qué llegó");
 
@@ -264,9 +277,9 @@ export async function receiveRequisition(req: Request, res: Response, next: Next
       await moveStock({
         ...base,
         guard: true,
-        location: "bodega",
+        location: from,
         deltas: new Map([...deltas].map(([id, q]) => [id, -q] as [string, number])),
-        reason: `${requisition.code}: sale de bodega`,
+        reason: `${requisition.code}: sale de ${LOCATION_LABELS[from]}`,
       });
       await moveStock({ ...base, guard: false, location: "abordo", deltas, reason: `${requisition.code}: llega al barco` });
 
@@ -329,16 +342,18 @@ const PURCHASE_POPULATE = [
   { path: "createdBy", select: "name" },
   { path: "receipts.by", select: "name" },
   { path: "lines.product", select: "name stockUnit containerSize containerLabel icon" },
+  { path: "weeklyOrder", select: "code week" },
 ];
 
 /** Registrar la factura: guarda cantidades, conversión y costo. No mueve stock. */
 export async function createPurchase(req: Request, res: Response, next: NextFunction) {
   try {
-    const { supplier, document, documentDate, destination, lines, note, idempotencyKey } = req.body as {
+    const { supplier, document, documentDate, destination, lines, note, idempotencyKey, weeklyOrderId } = req.body as {
       supplier?: string;
       document?: string;
       documentDate?: string;
       destination?: StockLocation;
+      weeklyOrderId?: string;
       lines?: Array<{ productId: string; containers: number; containerCost?: number }>;
       note?: string;
       idempotencyKey?: string;
@@ -346,8 +361,19 @@ export async function createPurchase(req: Request, res: Response, next: NextFunc
     if (!supplier?.trim()) throw badRequest("Indica el proveedor");
     if (!document?.trim()) throw badRequest("Indica el número de factura o guía");
     if (!lines?.length) throw badRequest("Agrega al menos un producto");
-    const target: StockLocation = destination ?? "bodega";
-    if (!STOCK_LOCATIONS.includes(target)) throw badRequest("Almacén destino inválido");
+    const target: StockLocation = destination ?? "puerto";
+    if (!isActiveLocation(target)) throw badRequest("Elige dónde llega: Quito, Puerto o a bordo");
+    // Compra desde el pedido semanal aprobado: solo productos de ese pedido.
+    let orderId = null;
+    if (weeklyOrderId) {
+      const order = await WeeklyOrder.findById(weeklyOrderId).select("status lines.product code");
+      if (!order) throw notFound("Pedido semanal no encontrado");
+      if (order.status !== "aprobado") throw conflict(`El pedido ${order.code} aún no está aprobado para comprar`);
+      const inOrder = new Set(order.lines.map((l) => l.product.toString()));
+      const outside = lines.find((l) => !inOrder.has(l.productId));
+      if (outside) throw badRequest("Hay productos que no están en el pedido: regístralos en una compra aparte");
+      orderId = order._id;
+    }
 
     if (idempotencyKey) {
       const existing = await Purchase.findOne({ idempotencyKey });
@@ -383,6 +409,7 @@ export async function createPurchase(req: Request, res: Response, next: NextFunc
       document: document.trim(),
       documentDate: documentDate ? new Date(`${documentDate}T12:00:00-05:00`) : null,
       destination: target,
+      weeklyOrder: orderId,
       lines: clean,
       total: round2(clean.reduce((s, l) => s + l.containers * l.containerCost, 0)),
       note: note?.trim() ?? "",
@@ -393,7 +420,7 @@ export async function createPurchase(req: Request, res: Response, next: NextFunc
     await logEvent(req.auth, {
       kind: "compra",
       title: `Compra ${purchase.code} registrada · ${purchase.supplier}`,
-      detail: `Doc. ${purchase.document} · ${clean.length} producto(s) · llega a ${target === "bodega" ? "bodega" : "a bordo"}`,
+      detail: `Doc. ${purchase.document} · ${clean.length} producto(s) · llega a ${LOCATION_LABELS[target]}`,
       amount: purchase.total || null,
     });
     res.status(201).json({ purchase: await purchase.populate(PURCHASE_POPULATE) });
@@ -404,10 +431,11 @@ export async function createPurchase(req: Request, res: Response, next: NextFunc
 
 export async function listPurchases(req: Request, res: Response, next: NextFunction) {
   try {
-    const { status, before, limit } = req.query as Record<string, string>;
+    const { status, before, limit, weeklyOrder } = req.query as Record<string, string>;
     const filter: Record<string, unknown> = {};
     if (status) filter.status = { $in: status.split(",") };
     if (before) filter.createdAt = { $lt: new Date(before) };
+    if (weeklyOrder) filter.weeklyOrder = weeklyOrder;
     const pageSize = Math.min(Number(limit) || 40, 200);
     const rows = await Purchase.find(filter)
       .populate(PURCHASE_POPULATE)
@@ -424,10 +452,10 @@ export async function listPurchases(req: Request, res: Response, next: NextFunct
 async function updateCost(productId: string, qty: number, costPerUnit: number, session: ClientSession) {
   if (!(costPerUnit > 0) || !(qty > 0)) return;
   const product = await Product.findById(productId)
-    .select("warehouseStock onboardStock costPerUnit")
+    .select("warehouseStock quitoStock puertoStock onboardStock costPerUnit")
     .session(session);
   if (!product) return;
-  const onHand = Math.max(0, product.warehouseStock + product.onboardStock);
+  const onHand = Math.max(0, product.warehouseStock + product.quitoStock + product.puertoStock + product.onboardStock);
   const next =
     product.costPerUnit > 0 && onHand > 0
       ? (onHand * product.costPerUnit + qty * costPerUnit) / (onHand + qty)
@@ -445,13 +473,15 @@ async function updateCost(productId: string, qty: number, costPerUnit: number, s
  */
 export async function receivePurchase(req: Request, res: Response, next: NextFunction) {
   try {
-    const { key, lines, note } = req.body as {
+    const { key, lines, note, location } = req.body as {
       key?: string;
       lines?: Array<{ index: number; containers: number }>;
       note?: string;
+      location?: StockLocation;
     };
     if (!key) throw badRequest("Falta la clave de la recepción");
     if (!lines?.length) throw badRequest("Indica qué llegó");
+    if (location !== undefined && !isActiveLocation(location)) throw badRequest("Elige dónde llegó: Quito, Puerto o a bordo");
 
     const current = await Purchase.findById(req.params.id);
     if (!current) throw notFound("Compra no encontrada");
@@ -466,6 +496,9 @@ export async function receivePurchase(req: Request, res: Response, next: NextFun
       if (!["registrada", "recibida_parcial"].includes(purchase.status)) {
         throw conflict("Esta compra ya se recibió completa, está anulada o se cerró");
       }
+      // Una compra antigua iba a la bodega sin separar: ahora se dice dónde llegó.
+      const arrived: StockLocation | undefined = location ?? (isActiveLocation(purchase.destination) ? purchase.destination : undefined);
+      if (!arrived) throw badRequest("Elige dónde llegó: Quito, Puerto o a bordo");
       const picks: Array<{ index: number; qty: number }> = [];
       for (const pick of lines) {
         const line = purchase.lines[pick.index];
@@ -487,11 +520,11 @@ export async function receivePurchase(req: Request, res: Response, next: NextFun
           session,
           guard: false,
           type: "compra",
-          location: purchase.destination,
+          location: arrived,
           deltas: new Map([[line.product.toString(), qty]]),
           userId: req.auth!.sub,
           purchase: purchase._id,
-          cruise: purchase.destination === "abordo" ? await activeCruiseId() : null,
+          cruise: arrived === "abordo" ? await activeCruiseId() : null,
           reason: `${purchase.code}: ${pick.containers} ${line.containerLabel}`,
           supplier: purchase.supplier,
           document: purchase.document,
@@ -507,6 +540,7 @@ export async function receivePurchase(req: Request, res: Response, next: NextFun
         : "recibida_parcial";
       purchase.receipts.push({
         key,
+        location: arrived,
         lines: picks,
         note: note?.trim() ?? "",
         by: req.auth!.sub as never,
