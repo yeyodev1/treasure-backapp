@@ -25,11 +25,18 @@ async function nextCode(): Promise<string> {
 export async function listCounts(_req: Request, res: Response, next: NextFunction) {
   try {
     const counts = await StockCount.find()
-      .select("-lines")
       .populate(POPULATE_PEOPLE)
       .sort({ createdAt: -1 })
-      .limit(60);
-    res.json({ counts });
+      .limit(60)
+      .lean();
+    // Informe de diferencias: cuántos productos se contaron y cuántos no coincidieron.
+    res.json({
+      counts: counts.map(({ lines, ...c }) => ({
+        ...c,
+        countedLines: lines.filter((l) => l.physical !== null).length,
+        differences: lines.filter((l) => l.physical !== null && round2(l.physical - l.digitalAtCut) !== 0).length,
+      })),
+    });
   } catch (err) {
     next(err);
   }
@@ -174,6 +181,70 @@ export async function submitCount(req: Request, res: Response, next: NextFunctio
 }
 
 /**
+ * Una sola diferencia por producto contado (físico − digital al corte) sobre
+ * el stock actual: se conservan los movimientos posteriores al corte (sistema
+ * 20, físico 18; luego salen 2 → queda 16). Lo no contado no se toca.
+ */
+async function applyDifferences(count: InstanceType<typeof StockCount>, userId: string) {
+  let adjusted = 0;
+  for (const line of count.lines) {
+    if (line.physical === null) continue;
+    const diff = round2(line.physical - line.digitalAtCut);
+    if (!diff) continue;
+    adjusted += 1;
+    await applyMovement({
+      type: "ajuste",
+      location: count.location,
+      deltas: new Map([[line.product.toString(), diff]]),
+      userId,
+      cruise: count.cruise,
+      count: count._id,
+      reason: `${count.code} · ${line.reason || "Conteo físico"}`,
+    });
+  }
+  return adjusted;
+}
+
+/**
+ * "Confirmar inventario del barco" (guía 4 perfiles, 4-nov-2026): quien cuenta
+ * confirma y el conteo físico pasa a ser la referencia, sin enviarlo a otra
+ * persona ni esperar aprobación. Queda la diferencia con autor y fecha; una
+ * segunda confirmación no repite el ajuste.
+ */
+export async function confirmCount(req: Request, res: Response, next: NextFunction) {
+  try {
+    const draft = await StockCount.findById(req.params.id).select("lines status");
+    if (!draft) throw notFound("Conteo no encontrado");
+    if (!draft.lines.some((l) => l.physical !== null)) throw badRequest("Cuenta al menos un producto antes de confirmar");
+    const now = new Date();
+    const count = await StockCount.findOneAndUpdate(
+      { _id: req.params.id, status: { $in: ["borrador", "rechazado"] } },
+      {
+        $set: {
+          status: "aprobado",
+          submittedBy: req.auth!.sub,
+          submittedAt: now,
+          reviewedBy: req.auth!.sub,
+          reviewedAt: now,
+        },
+      },
+      { new: true },
+    );
+    if (!count) throw conflict("Este conteo ya se confirmó");
+    const adjusted = await applyDifferences(count, req.auth!.sub);
+    await logEvent(req.auth, {
+      kind: "conteo",
+      title: `Conteo ${count.code} confirmado`,
+      detail: `${adjusted} diferencia(s) · el conteo físico es la nueva referencia`,
+      cruise: count.cruise,
+    });
+    res.json({ count: await withContainers(await count.populate(POPULATE_PEOPLE)) });
+  } catch (err) {
+    next(err);
+  }
+}
+
+/**
  * Solo Gerencia aprueba. Por cada producto se registra una sola diferencia
  * (físico − digital al corte) sobre el stock actual, así se conservan los
  * movimientos ocurridos después del corte.
@@ -189,22 +260,7 @@ export async function approveCount(req: Request, res: Response, next: NextFuncti
     );
     if (!count) throw conflict("El conteo no está pendiente de aprobación");
 
-    let adjusted = 0;
-    for (const line of count.lines) {
-      if (line.physical === null) continue;
-      const diff = round2(line.physical - line.digitalAtCut);
-      if (!diff) continue;
-      adjusted += 1;
-      await applyMovement({
-        type: "ajuste",
-        location: count.location,
-        deltas: new Map([[line.product.toString(), diff]]),
-        userId: req.auth!.sub,
-        cruise: count.cruise,
-        count: count._id,
-        reason: `${count.code} · ${line.reason}`,
-      });
-    }
+    const adjusted = await applyDifferences(count, req.auth!.sub);
 
     await logEvent(req.auth, {
       kind: "conteo",
