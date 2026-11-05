@@ -152,12 +152,18 @@ export async function chargesChanged(
 
 type PopulatedOrder = IOrder & { _id: Types.ObjectId };
 
-/** Líneas de un pedido con su estado de entrega y lo que sigue contando. */
+/** Lo paga la agencia: va a su factura, nunca a la cuenta ni a la prefactura de la cabina. */
+const isAgencyCourtesy = (item: { courtesy: boolean; courtesyKind?: string }) =>
+  item.courtesy && item.courtesyKind === "agencia";
+
+/** Líneas de un pedido con su estado de entrega y lo que sigue contando (sin las de agencia). */
 function mapOrder(order: PopulatedOrder) {
   let total = 0;
   let courtesy = 0;
   let pending = 0;
+  // Se filtra después de mapear: cada línea conserva su índice real en el pedido (correcciones).
   const items = order.items.map((item, index) => {
+    if (isAgencyCourtesy(item)) return null;
     const live = chargeableQty(item);
     const waiting = pendingQty(item);
     pending += waiting;
@@ -177,7 +183,7 @@ function mapOrder(order: PopulatedOrder) {
       courtesy: item.courtesy,
       courtesyKind: item.courtesy ? (item.courtesyKind ?? "casa") : undefined,
     };
-  });
+  }).filter((i) => i !== null);
   return {
     order: {
       id: order._id.toString(),
@@ -226,6 +232,8 @@ export async function buildCabinAccount(
 
   for (const order of orders as PopulatedOrder[]) {
     const mapped = mapOrder(order);
+    // Pedido solo de cortesías de agencia: no es de la cabina.
+    if (!mapped.order.items.length) continue;
     courtesyAll += mapped.courtesy;
     if (order.payment) {
       paidTotal += mapped.total;

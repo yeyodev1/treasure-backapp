@@ -680,6 +680,15 @@ async function main() {
     byAgency.status === 201 && byAgency.data.order?.total === 0 && agencyWet,
     [byAgency.status, byAgency.data.order?.total, agencyList.status],
   );
+  const cabinAcc = (await api("dir", "GET", `/accounts/${live!._id}/${wetCabin}`)).data.account;
+  const accLines = (cabinAcc?.orders ?? []).flatMap((o: any) => o.items);
+  check(
+    "La cortesía de agencia no aparece en la cuenta ni en las cortesías de la cabina; lo de la cabina sí",
+    accLines.some((i: any) => i.name.startsWith("Wetsuit") && !i.courtesy) &&
+      !accLines.some((i: any) => i.courtesyKind === "agencia") &&
+      !(cabinAcc.orders as any[]).some((o) => o.id === byAgency.data.order?._id),
+    accLines.map((i: any) => [i.name, i.courtesyKind]),
+  );
 
   server.close();
   await mongoose.disconnect();

@@ -274,10 +274,11 @@ async function main() {
   const agency = await api("dir", "GET", `/accounts/${cruiseId}/agency-courtesies`);
   const acc2b = await account(2);
   check(
-    "Cortesías de agencia: van a su cuenta ($13) y no se cobran a la cabina; la de la casa no entra",
+    "Cortesías de agencia: van a su cuenta ($13) y no aparecen en la de la cabina (5-nov-2026); la de la casa no entra",
     agency.status === 200 && agency.data.total === 13 && agency.data.items.length === 2 &&
       agency.data.items.every((i: any) => i.cabinNumber === 2 && /agencia/i.test(i.reason)) &&
-      acc2b.total === 0 && acc2b.orders.some((o: any) => o.items[0].courtesyKind === "agencia"),
+      acc2b.total === 0 && !acc2b.orders.some((o: any) => o.items.some((i: any) => i.courtesyKind === "agencia")) &&
+      acc2b.orders.some((o: any) => o.items.some((i: any) => i.courtesyKind === "casa")),
     { status: agency.status, total: agency.data.total, items: agency.data.items?.length },
   );
   const barAgency = await api("bar", "GET", `/accounts/${cruiseId}/agency-courtesies`);
