@@ -257,7 +257,11 @@ export async function appendGuidedAnnex(
     : [fb?.name || "-", label(fb?.position)];
   const textX = left + boxW + 12;
   page.drawText(safe(who.filter(Boolean).join(" · ")), { x: textX, y: y - 16, size: 9.5, font: bold, color: INK });
-  page.drawText(safe("Firma con el dedo, confirmada con su clave de 4 números."), {
+  const how =
+    crewSig?.method === "sesion"
+      ? "Firma registrada, puesta desde su propia cuenta (entró con su usuario y clave)."
+      : "Firma con el dedo, confirmada con su clave de 4 números.";
+  page.drawText(safe(how), {
     x: textX,
     y: y - 30,
     size: 8,

@@ -175,6 +175,34 @@ export async function crewSignature(req: Request, res: Response, next: NextFunct
 }
 
 /**
+ * Firmas de la tripulación (pedido del cliente, 5-nov-2026): la Persona
+ * Designada recoge la firma de cada persona (la dibuja ella misma en la
+ * tablet) y queda asignada a su usuario. Desde su cuenta, «Firmar» la pone.
+ */
+export async function setCrewSignature(req: Request, res: Response, next: NextFunction) {
+  try {
+    assertKeeper(req);
+    const { image } = req.body as { image?: unknown };
+    if (typeof image !== "string" || !image.startsWith("data:image/png;base64,")) throw badRequest("Firma con el dedo en el recuadro");
+    if (image.length > 400_000) throw badRequest("La firma es demasiado grande");
+    const user = Types.ObjectId.isValid(String(req.params.id))
+      ? await User.findById(req.params.id).select("name role active sharedDevice")
+      : null;
+    if (!user || !CREW_LIST_ROLES.includes(user.role as never) || !user.active || user.sharedDevice) {
+      throw notFound("Tripulante no encontrado");
+    }
+    const profile = await crewProfile(user._id);
+    profile.signatureImage = image;
+    profile.signatureSetAt = new Date();
+    await profile.save();
+    await logEvent(req.auth, { kind: "equipo", title: `Firma registrada · ${user.name}` });
+    res.json({ ok: true });
+  } catch (err) {
+    next(err);
+  }
+}
+
+/**
  * Clave temporal de un solo uso. Se muestra una sola vez a la Persona
  * Designada; el tripulante la cambia en su primera firma. También desbloquea.
  * Queda quién y cuándo la restableció: si fue en las 24 h previas a una

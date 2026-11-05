@@ -46,7 +46,7 @@ import {
 import { logEvent } from "../services/audit.service";
 import { freezeArchivedPdf, readArchivedPdf, tryFreezeArchivedPdf } from "../services/ismArchive.service";
 import { syncNovedades } from "../services/ismNovedad.service";
-import { CREW_LIST_ROLES, PIN_RESET_WINDOW_MS, positionLabel, verifyPin } from "../services/ismCrew.service";
+import { CREW_LIST_ROLES, crewProfile, PIN_RESET_WINDOW_MS, positionLabel, verifyPin } from "../services/ismCrew.service";
 import { notifyRole, notifyUsers } from "../services/ismNotify.service";
 import { badRequest, conflict, forbidden, notFound } from "../errors/httpError";
 import { CREW_POSITIONS, POSITION_LABELS, ROLE_LABELS, isManager } from "../utils/roles";
@@ -966,10 +966,14 @@ export async function signStep(req: Request, res: Response, next: NextFunction) 
     // Antes de la clave: sin firma guardada hay que dibujarla (no se gasta un intento).
     if (!image) {
       const saved = await IsmCrew.exists({ user: signerUser, signatureImage: { $nin: ["", null] } });
-      if (!saved) throw badRequest("Dibuja tu firma en el recuadro: la primera vez queda guardada");
+      if (!saved) throw badRequest("Aún no tienes firma registrada: dibújala en el recuadro o pide a la Persona Designada que la registre");
     }
-    // La clave asegura que quien firma es quien dice ser (bloqueo en el servidor).
-    const profile = await verifyPin(signerUser, pin, newPin);
+    const sessionUser = new Types.ObjectId(req.auth!.sub);
+    // Quien firma desde su propia sesión ya probó quién es al entrar con su usuario y clave
+    // (pedido del cliente, 5-nov-2026): un toque en «Firmar» pone su firma. En una tablet
+    // con la sesión de otra persona se sigue pidiendo la clave.
+    const ownSession = sessionUser.equals(signerUser);
+    const profile = ownSession ? await crewProfile(signerUser) : await verifyPin(signerUser, pin, newPin);
     // Firma dibujada: queda guardada para las siguientes; sin dibujo, se usa la guardada.
     const signatureImage = image || profile.signatureImage!;
     if (image) {
@@ -979,7 +983,6 @@ export async function signStep(req: Request, res: Response, next: NextFunction) 
     }
 
     const now = new Date();
-    const sessionUser = new Types.ObjectId(req.auth!.sub);
     // Clave restablecida poco antes de firmar: queda en la firma (y en el anexo).
     const resetAt = profile.pinResetAt ? new Date(profile.pinResetAt) : null;
     const recentReset = resetAt && now.getTime() - resetAt.getTime() <= PIN_RESET_WINDOW_MS ? resetAt : null;
@@ -995,7 +998,7 @@ export async function signStep(req: Request, res: Response, next: NextFunction) 
       position: step.who === "lista" ? record.context?.filledBy?.position || person.position || "" : person.position || "",
       capturedBy: sessionUser.equals(signerUser) ? null : sessionUser,
       capturedByName: sessionUser.equals(signerUser) ? "" : req.auth!.name,
-      method: "clave",
+      method: ownSession ? "sesion" : "clave",
       ...(recentReset ? { pinResetAt: recentReset, pinResetByName: profile.pinResetByName || "" } : {}),
       ...(deviceTime(deviceAt) ? { deviceAt: deviceTime(deviceAt) } : {}),
       image: signatureImage,

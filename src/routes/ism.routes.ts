@@ -21,6 +21,7 @@ export function ismRoutes(router: Router, crewRoles: RequestHandler) {
   router.post("/ism/crew/me/pin", requireAuth, crewRoles, crew.changeMyPin);
   router.patch("/ism/crew/:id", requireAuth, crewRoles, crew.updateCrewMember);
   router.get("/ism/crew/:id/signature", requireAuth, crewRoles, crew.crewSignature);
+  router.put("/ism/crew/:id/signature", requireAuth, crewRoles, crew.setCrewSignature);
   router.post("/ism/crew/:id/temporary-pin", requireAuth, crewRoles, crew.temporaryPin);
 
   // Plantilla (informe ISM, criterio 5): novedades como colección y métricas.

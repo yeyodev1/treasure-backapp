@@ -321,10 +321,9 @@ async function main() {
   );
   const again = await api("tri", "POST", `/ism/records/${r1}/sign-step`, { image: PNG, pin: "5826", signer: juan.id });
   check("Corrige, firma de nuevo y vuelve al Capitán", again.data.record?.status === "por_capitan", [again.status, again.data.message]);
-  const wrongCap = await api("cap", "POST", `/ism/records/${r1}/sign-step`, { image: PNG, pin: "1111" });
-  check("El Capitán con clave errada no firma", wrongCap.status === 403, wrongCap.status);
-  const capSign = await api("cap", "POST", `/ism/records/${r1}/sign-step`, { image: PNG, pin: "7391" });
-  check("El Capitán firma con su cuenta y su clave", capSign.data.record?.status === "por_oficina", [capSign.status, capSign.data.message]);
+  // Desde su propia cuenta ya probó quién es al entrar: no vuelve a poner la clave (5-nov-2026).
+  const capSign = await api("cap", "POST", `/ism/records/${r1}/sign-step`, { image: PNG });
+  check("El Capitán firma desde su cuenta sin volver a poner la clave", capSign.data.record?.status === "por_oficina", [capSign.status, capSign.data.message]);
   for (const who of ["duena", "cap", "tri"]) {
     const r = await api(who, "POST", `/ism/records/${r1}/sign-step`, { image: PNG, pin: "2468" });
     check(`${people[who][1]} no firma como Persona Designada (API)`, r.status === 403, r.status);
@@ -499,6 +498,8 @@ async function main() {
   check("La firma dibujada queda guardada", (await api("tri", "GET", `/ism/crew/${juan.id}/signature`)).data.image === PNG);
   check("La lista dice quién tiene firma guardada", legacyList.find((c) => c.id === juan.id)?.hasSignature === true && ana.hasSignature === false);
   const rSaved = await fullR14("r14-firma-guardada", juan.id, "07:10");
+  const wrongShared = await api("tri", "POST", `/ism/records/${rSaved}/sign-step`, { pin: "1111", signer: juan.id });
+  check("En la sesión de otra persona se sigue pidiendo la clave", wrongShared.status === 403, wrongShared.status);
   const stamped = await api("tri", "POST", `/ism/records/${rSaved}/sign-step`, { pin: "5826", signer: juan.id });
   check("Con firma guardada basta tocar Firmar y poner la clave", stamped.data.record?.status === "por_capitan", [stamped.status, stamped.data.message]);
   const savedDoc = await IsmRecord.findById(rSaved).select("signatures");
@@ -509,6 +510,25 @@ async function main() {
   const anaSign = await api("ana", "POST", `/ism/records/${rSaved}/sign-step`, { image: ANA_PNG, pin: "4729" });
   check("El Capitán que entró con usuario y clave firma su paso", anaSign.data.record?.status === "por_oficina", [anaSign.status, anaSign.data.message]);
   check("Y su firma queda guardada", (await api("des", "GET", `/ism/crew/${ana.id}/signature`)).data.image === ANA_PNG);
+
+  // La Persona Designada recoge la firma de cada uno y queda asignada a su usuario (5-nov-2026).
+  const ANA_PNG2 = PNG.replace("ErkJggg==", "ErkJggB=");
+  const notKeeper = await api("tri", "PUT", `/ism/crew/${ana.id}/signature`, { image: ANA_PNG2 });
+  check("Solo la Persona Designada registra firmas", notKeeper.status === 403, notKeeper.status);
+  const badSig = await api("des", "PUT", `/ism/crew/${ana.id}/signature`, { image: "hola" });
+  check("Firma que no es imagen no pasa", badSig.status === 400, badSig.status);
+  const setSig = await api("des", "PUT", `/ism/crew/${ana.id}/signature`, { image: ANA_PNG2 });
+  check("La Persona Designada registra la firma de Ana", setSig.status === 200, [setSig.status, setSig.data.message]);
+  const rTap = await fullR14("r14-un-toque", juan.id, "08:10");
+  await api("tri", "POST", `/ism/records/${rTap}/sign-step`, { pin: "5826", signer: juan.id });
+  const tap = await api("ana", "POST", `/ism/records/${rTap}/sign-step`, {});
+  const tapDoc = await IsmRecord.findById(rTap).select("signatures");
+  const tapSig = tapDoc?.signatures.find((s) => s.stage === "capitan");
+  check(
+    "Desde su cuenta, un toque en Firmar pone la firma registrada",
+    tap.data.record?.status === "por_oficina" && tapSig?.image === ANA_PNG2 && tapSig?.method === "sesion",
+    [tap.status, tap.data.message, tapSig?.method],
+  );
 
   server.close();
   await mongoose.disconnect();
