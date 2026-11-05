@@ -25,6 +25,7 @@ async function main() {
   process.env.MONGODB_URI = repl.getUri("treasure");
   process.env.CONTIFICO_API_KEY = "";
   process.env.CONTIFICO_API_TOKEN = "";
+  process.env.RESEND_API_KEY = ""; // las pruebas nunca envían correos reales
 
   const mongoose = (await import("mongoose")).default;
   const { createApp } = await import("../src/app");

@@ -24,6 +24,9 @@ export interface IIsmCrew {
   pinResetAt?: Date | null;
   pinResetBy?: Types.ObjectId | null;
   pinResetByName?: string;
+  /** Firma dibujada por la persona (PNG en data URL); se estampa en sus siguientes firmas con su clave. */
+  signatureImage?: string;
+  signatureSetAt?: Date | null;
   createdAt?: Date;
   updatedAt?: Date;
 }
@@ -41,6 +44,8 @@ const ismCrewSchema = new Schema<IIsmCrew>(
     pinResetAt: { type: Date, default: null },
     pinResetBy: { type: Schema.Types.ObjectId, ref: "User", default: null },
     pinResetByName: { type: String, default: "" },
+    signatureImage: { type: String, default: "" },
+    signatureSetAt: { type: Date, default: null },
   },
   { timestamps: true },
 );

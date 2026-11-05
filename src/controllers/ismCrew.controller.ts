@@ -8,7 +8,17 @@ import { IsmNotice } from "../models/ismNotice.model";
 import { badRequest, forbidden, notFound } from "../errors/httpError";
 import { CREW_POSITIONS } from "../utils/roles";
 import { logEvent } from "../services/audit.service";
-import { CREW_LIST_ROLES, changeOwnPin, crewProfile, issueTemporaryPin, listCrew } from "../services/ismCrew.service";
+import {
+  CREW_LIST_ROLES,
+  changeOwnPin,
+  crewProfile,
+  freeUsername,
+  hasRealEmail,
+  issueTemporaryPin,
+  listCrew,
+  placeholderEmail,
+} from "../services/ismCrew.service";
+import { EMAIL_ERROR, isValidOptionalEmail } from "../utils/email";
 import { sweepOverdue } from "../services/ismNotify.service";
 
 /**
@@ -37,29 +47,57 @@ export async function listCrewMembers(req: Request, res: Response, next: NextFun
   }
 }
 
+const cleanText = (v: unknown, max = 60) => (typeof v === "string" ? v.trim().replace(/\s+/g, " ").slice(0, max) : "");
+
+/** Correo opcional: vacío = sin correo (avisos solo dentro de la app). */
+async function emailFor(raw: unknown, userId?: Types.ObjectId): Promise<string | null> {
+  const email = typeof raw === "string" ? raw.trim().toLowerCase() : "";
+  if (!email) return null;
+  if (!isValidOptionalEmail(email)) throw badRequest(EMAIL_ERROR);
+  const taken = await User.exists({ email, ...(userId ? { _id: { $ne: userId } } : {}) });
+  if (taken) throw badRequest("Ese correo ya lo usa otra cuenta");
+  return email;
+}
+
+/** Cargo Capitán → rol de Capitán (firma el paso del Capitán); el resto, tripulante. */
+const roleForPosition = (position: string) => (position === "CAP" ? "capitan" : "tripulante");
+
 /**
- * Alta de un tripulante. Sin correo, la persona no inicia sesión: firma en
- * la tablet del barco eligiéndose de la lista y poniendo su clave.
+ * Alta de un tripulante con nombre y apellido: se le crea un usuario
+ * (nombre.apellido) para entrar con su clave de 4 números. El correo es
+ * opcional: sin correo, sus avisos quedan solo dentro de la app.
  */
 export async function createCrewMember(req: Request, res: Response, next: NextFunction) {
   try {
     assertKeeper(req);
-    const { name, position, onboard } = req.body as { name?: string; position?: string; onboard?: boolean };
-    const clean = (name ?? "").trim().replace(/\s+/g, " ").slice(0, 120);
-    if (clean.length < 3) throw badRequest("Escribe el nombre completo");
+    const { firstName, lastName, email, position, onboard } = req.body as {
+      firstName?: string;
+      lastName?: string;
+      email?: string;
+      position?: string;
+      onboard?: boolean;
+    };
+    const first = cleanText(firstName);
+    const last = cleanText(lastName);
+    if (first.length < 2) throw badRequest("Escribe el nombre");
+    if (last.length < 2) throw badRequest("Escribe el apellido");
     if (!validPosition(position)) throw badRequest("Elige el cargo");
+    const clean = `${first} ${last}`;
     const exists = await User.findOne({
       role: { $in: CREW_LIST_ROLES },
       active: true,
       name: { $regex: `^${clean.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`, $options: "i" },
     });
     if (exists) throw badRequest("Ya hay un tripulante con ese nombre en la lista");
+    const realEmail = await emailFor(email);
     const user = await User.create({
       name: clean,
-      email: `tripulante-${crypto.randomUUID()}@sin-cuenta.treasure.ec`,
-      // Contraseña aleatoria que nadie conoce: esta persona no inicia sesión.
+      email: realEmail ?? placeholderEmail(),
+      username: await freeUsername(first, last),
+      crewManaged: true,
+      // Contraseña aleatoria que nadie conoce: entra con su usuario y su clave de 4 números.
       passwordHash: await bcrypt.hash(crypto.randomBytes(24).toString("hex"), 10),
-      role: "tripulante",
+      role: roleForPosition(position),
       position,
       createdBy: req.auth!.sub,
     });
@@ -75,30 +113,37 @@ export async function createCrewMember(req: Request, res: Response, next: NextFu
   }
 }
 
-/** Nombre, cargo, a bordo y activo. El rol de las cuentas lo cambia Gerencia. */
+/** Nombre, correo, cargo, a bordo y activo. El rol de las cuentas con contraseña lo cambia Gerencia. */
 export async function updateCrewMember(req: Request, res: Response, next: NextFunction) {
   try {
     assertKeeper(req);
     const user = await User.findById(req.params.id);
     if (!user || !CREW_LIST_ROLES.includes(user.role as never)) throw notFound("Tripulante no encontrado");
-    const { name, position, onboard, active, sharedDevice } = req.body as {
+    const { name, email, position, onboard, active, sharedDevice } = req.body as {
       name?: string;
+      email?: string;
       position?: string;
       onboard?: boolean;
       active?: boolean;
       sharedDevice?: boolean;
     };
+    // Altas de Tripulantes (y las antiguas sin correo): las maneja la Persona Designada.
+    const managed = Boolean(user.crewManaged) || !hasRealEmail(user.email);
     if (typeof name === "string") {
-      const clean = name.trim().replace(/\s+/g, " ").slice(0, 120);
+      const clean = cleanText(name, 120);
       if (clean.length < 3) throw badRequest("Escribe el nombre completo");
       user.name = clean;
+    }
+    if (typeof email === "string" && managed) {
+      user.email = (await emailFor(email, user._id)) ?? (hasRealEmail(user.email) ? placeholderEmail() : user.email);
+      user.crewManaged = true;
     }
     if (position !== undefined) {
       if (position !== "" && !validPosition(position)) throw badRequest("Cargo inválido");
       user.position = position;
+      if (managed && user.role !== "designada" && position) user.role = roleForPosition(position);
     }
-    // Solo se desactiva a quien no tiene cuenta propia (las cuentas las maneja Gerencia).
-    if (typeof active === "boolean" && user.email.endsWith("@sin-cuenta.treasure.ec")) user.active = active;
+    if (typeof active === "boolean" && managed) user.active = active;
     // Cuenta compartida (tablet del barco): solo se marca a mano, nunca por el nombre o el correo.
     if (typeof sharedDevice === "boolean") {
       if (sharedDevice && user.role !== "tripulante") throw badRequest("Solo una cuenta de tripulante puede ser la tablet compartida");
@@ -114,6 +159,16 @@ export async function updateCrewMember(req: Request, res: Response, next: NextFu
     }
     const crew = await listCrew({ includeInactive: true, includeShared: true });
     res.json({ member: crew.find((c) => c.id === user._id.toString()) });
+  } catch (err) {
+    next(err);
+  }
+}
+
+/** Firma guardada de una persona de la lista, para estamparla con su clave (vacía si aún no dibujó). */
+export async function crewSignature(req: Request, res: Response, next: NextFunction) {
+  try {
+    const p = await IsmCrew.findOne({ user: req.params.id }).select("signatureImage");
+    res.json({ image: p?.signatureImage ?? "" });
   } catch (err) {
     next(err);
   }

@@ -42,6 +42,7 @@ async function main() {
   process.env.MONGODB_URI = repl.getUri("treasure");
   process.env.CONTIFICO_API_KEY = "";
   process.env.CONTIFICO_API_TOKEN = "";
+  process.env.RESEND_API_KEY = ""; // las pruebas nunca envían correos reales
 
   const mongoose = (await import("mongoose")).default;
   const { createApp } = await import("../src/app");
@@ -190,10 +191,10 @@ async function main() {
 
   // ---- Lista de tripulantes y claves (bloque 2) ----
   const PNG = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAAABJRU5ErkJggg==";
-  const noAdd = await api("tri", "POST", "/ism/crew", { name: "Juan Pérez", position: "TIM_01" });
+  const noAdd = await api("tri", "POST", "/ism/crew", { firstName: "Juan", lastName: "Pérez", position: "TIM_01" });
   check("Un tripulante no edita la lista de tripulantes", noAdd.status === 403, noAdd.status);
-  const juan = (await api("des", "POST", "/ism/crew", { name: "Juan Pérez", position: "TIM_01", onboard: true })).data.member;
-  const pedro = (await api("des", "POST", "/ism/crew", { name: "Pedro Gómez", position: "MAQ" })).data.member;
+  const juan = (await api("des", "POST", "/ism/crew", { firstName: "Juan", lastName: "Pérez", position: "TIM_01", onboard: true })).data.member;
+  const pedro = (await api("des", "POST", "/ism/crew", { firstName: "Pedro", lastName: "Gómez", position: "MAQ" })).data.member;
   check("La Persona Designada da de alta tripulantes", Boolean(juan?.id && pedro?.id), juan);
   const list = await api("tri", "GET", "/ism/crew?onboard=1");
   check("La tablet ve la lista con nombre y cargo", list.data.crew?.some((c: any) => c.name === "Juan Pérez" && c.positionLabel === "Timonel 1"));
@@ -455,6 +456,59 @@ async function main() {
     m.data,
   );
   check("Gerencia también ve las métricas", (await api("duena", "GET", "/ism/metrics")).status === 200);
+
+  // ---- Usuario + clave sin correo y firma guardada (5-nov-2026) ----
+  const ana = (await api("des", "POST", "/ism/crew", { firstName: "Ána", lastName: "López", email: "ana@correo.com", position: "CAP" })).data.member;
+  check("Se crea el usuario nombre.apellido sin tildes", ana?.username === "ana.lopez", ana?.username);
+  check("Cargo Capitán → rol de Capitán", ana?.role === "capitan", ana?.role);
+  check("El correo opcional queda y no es cuenta con contraseña", ana?.email === "ana@correo.com" && ana?.hasAccount === false, ana);
+  const ana2 = (await api("des", "POST", "/ism/crew", { firstName: "Ana", lastName: "Lopez Ruiz", position: "COC" })).data.member;
+  check("Sin correo: email vacío y rol tripulante", ana2?.email === "" && ana2?.role === "tripulante", ana2);
+  const ana3 = (await api("des", "POST", "/ism/crew", { firstName: "Ána", lastName: "López", position: "BAR" }));
+  check("Mismo nombre ya en la lista: no se duplica", ana3.status === 400, ana3.status);
+  const ana4 = (await api("des", "POST", "/ism/crew", { firstName: "Ana", lastName: "Lopéz Ruiz", position: "BAR" }));
+  check("Usuario repetido lleva número", ana4.data.member?.username === "ana.lopezruiz2", [ana4.status, ana4.data.member?.username]);
+  const noLast = await api("des", "POST", "/ism/crew", { firstName: "Luis", lastName: "", position: "BAR" });
+  check("Pide el apellido", noLast.status === 400, noLast.status);
+  const badMail = await api("des", "POST", "/ism/crew", { firstName: "Luis", lastName: "Mora", email: "luis@", position: "BAR" });
+  check("Correo mal escrito no pasa", badMail.status === 400, badMail.status);
+  const takenMail = await api("des", "POST", "/ism/crew", { firstName: "Luis", lastName: "Mora", email: "ANA@correo.com", position: "BAR" });
+  check("Correo de otra cuenta no pasa", takenMail.status === 400, takenMail.status);
+  const legacyList = (await api("des", "GET", "/ism/crew?all=1")).data.crew as any[];
+  check("Las altas antiguas reciben usuario", legacyList.find((c) => c.id === juan.id)?.username === "juan.perez", legacyList.find((c) => c.id === juan.id)?.username);
+
+  async function crewLogin(body: unknown) {
+    const r = await fetch(base + "/auth/login/crew", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    return { status: r.status, data: (await r.json().catch(() => ({}))) as any };
+  }
+  const anaTemp = (await api("des", "POST", `/ism/crew/${ana.id}/temporary-pin`)).data.pin as string;
+  const lt = await crewLogin({ username: " ANA.Lopez ", pin: anaTemp });
+  check("Entrar con clave temporal pide crear la propia", lt.status === 428 && lt.data.code === "clave_temporal", [lt.status, lt.data.code]);
+  const ln = await crewLogin({ username: "ana.lopez", pin: anaTemp, newPin: "4729" });
+  check("Entra con usuario y clave nueva, como Capitán", ln.status === 200 && ln.data.user?.role === "capitan" && Boolean(ln.data.token), [ln.status, ln.data.message]);
+  tokens.ana = ln.data.token;
+  check("La sesión de usuario y clave sirve", (await api("ana", "GET", "/auth/me")).status === 200);
+  const lw = await crewLogin({ username: "ana.lopez", pin: "1111" });
+  check("Clave errada al entrar", lw.status === 403 && lw.data.code === "clave_incorrecta", [lw.status, lw.data.code]);
+  const lu = await crewLogin({ username: "nadie.aqui", pin: "4729" });
+  check("Usuario que no existe", lu.status === 401, lu.status);
+  const ls = await crewLogin({ username: "tablet.barco", pin: "4729" });
+  check("La tablet compartida no entra con usuario y clave", ls.status === 401, ls.status);
+
+  // Juan dibujó su firma al firmar: queda guardada y la siguiente se estampa con su clave.
+  check("La firma dibujada queda guardada", (await api("tri", "GET", `/ism/crew/${juan.id}/signature`)).data.image === PNG);
+  check("La lista dice quién tiene firma guardada", legacyList.find((c) => c.id === juan.id)?.hasSignature === true && ana.hasSignature === false);
+  const rSaved = await fullR14("r14-firma-guardada", juan.id, "07:10");
+  const stamped = await api("tri", "POST", `/ism/records/${rSaved}/sign-step`, { pin: "5826", signer: juan.id });
+  check("Con firma guardada basta tocar Firmar y poner la clave", stamped.data.record?.status === "por_capitan", [stamped.status, stamped.data.message]);
+  const savedDoc = await IsmRecord.findById(rSaved).select("signatures");
+  check("Se estampa la firma guardada", savedDoc?.signatures.find((s) => s.stage === "tripulacion")?.image === PNG);
+  const noSaved = await api("ana", "POST", `/ism/records/${rSaved}/sign-step`, { pin: "4729" });
+  check("Sin firma guardada hay que dibujarla", noSaved.status === 400, [noSaved.status, noSaved.data.message]);
+  const ANA_PNG = PNG.replace("ErkJggg==", "ErkJggA=");
+  const anaSign = await api("ana", "POST", `/ism/records/${rSaved}/sign-step`, { image: ANA_PNG, pin: "4729" });
+  check("El Capitán que entró con usuario y clave firma su paso", anaSign.data.record?.status === "por_oficina", [anaSign.status, anaSign.data.message]);
+  check("Y su firma queda guardada", (await api("des", "GET", `/ism/crew/${ana.id}/signature`)).data.image === ANA_PNG);
 
   server.close();
   await mongoose.disconnect();

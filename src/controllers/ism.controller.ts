@@ -10,6 +10,7 @@ import {
 } from "../models/ismRecord.model";
 import { Cruise } from "../models/cruise.model";
 import { User } from "../models/user.model";
+import { IsmCrew } from "../models/ismCrew.model";
 import {
   activityFileName,
   buildFileName,
@@ -920,8 +921,11 @@ export async function signStep(req: Request, res: Response, next: NextFunction) 
       signer?: string;
       deviceAt?: string;
     };
-    if (!image?.startsWith("data:image/png;base64,")) throw badRequest("Firma con el dedo en el recuadro");
-    if (image.length > 400_000) throw badRequest("La firma es demasiado grande");
+    // Sin dibujo se estampa la firma guardada de la persona (con su clave, igual que siempre).
+    if (image) {
+      if (!image.startsWith("data:image/png;base64,")) throw badRequest("Firma con el dedo en el recuadro");
+      if (image.length > 400_000) throw badRequest("La firma es demasiado grande");
+    }
 
     const record = await IsmRecord.findById(req.params.id);
     if (!record) throw notFound("Registro no encontrado");
@@ -959,8 +963,20 @@ export async function signStep(req: Request, res: Response, next: NextFunction) 
     const person = await User.findOne({ _id: signerUser, active: true }).select("name role position sharedDevice");
     if (!person) throw forbidden("Esa persona ya no está activa en la lista de tripulantes");
     if (person.sharedDevice) throw forbidden("La tablet compartida no firma: elige a la persona que hizo el chequeo");
+    // Antes de la clave: sin firma guardada hay que dibujarla (no se gasta un intento).
+    if (!image) {
+      const saved = await IsmCrew.exists({ user: signerUser, signatureImage: { $nin: ["", null] } });
+      if (!saved) throw badRequest("Dibuja tu firma en el recuadro: la primera vez queda guardada");
+    }
     // La clave asegura que quien firma es quien dice ser (bloqueo en el servidor).
     const profile = await verifyPin(signerUser, pin, newPin);
+    // Firma dibujada: queda guardada para las siguientes; sin dibujo, se usa la guardada.
+    const signatureImage = image || profile.signatureImage!;
+    if (image) {
+      profile.signatureImage = image;
+      profile.signatureSetAt = new Date();
+      await profile.save();
+    }
 
     const now = new Date();
     const sessionUser = new Types.ObjectId(req.auth!.sub);
@@ -982,7 +998,7 @@ export async function signStep(req: Request, res: Response, next: NextFunction) 
       method: "clave",
       ...(recentReset ? { pinResetAt: recentReset, pinResetByName: profile.pinResetByName || "" } : {}),
       ...(deviceTime(deviceAt) ? { deviceAt: deviceTime(deviceAt) } : {}),
-      image,
+      image: signatureImage,
       signedAt: now,
       dataHash: hashContent(record),
       hashV: 2,
@@ -991,7 +1007,7 @@ export async function signStep(req: Request, res: Response, next: NextFunction) 
       record,
       req,
       `firmó ${step.label}`,
-      sessionUser.equals(signerUser) ? "Con su clave" : `Firma de ${person.name} con su clave, en la sesión de ${req.auth!.name}`,
+      `${sessionUser.equals(signerUser) ? "Con su clave" : `Firma de ${person.name} con su clave, en la sesión de ${req.auth!.name}`}${image ? "" : " y su firma guardada"}`,
     );
 
     const returned = record.returnInfo;

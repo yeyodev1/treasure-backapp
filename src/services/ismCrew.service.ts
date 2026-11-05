@@ -27,10 +27,35 @@ export async function crewProfile(userId: Types.ObjectId | string) {
   );
 }
 
+/** Correo de relleno de quien no tiene correo: sin correo los avisos quedan solo dentro de la app. */
+export const NO_EMAIL_DOMAIN = "@sin-cuenta.treasure.ec";
+export const hasRealEmail = (email: string | undefined | null) => Boolean(email) && !email!.endsWith(NO_EMAIL_DOMAIN);
+export const placeholderEmail = () => `tripulante-${crypto.randomUUID()}${NO_EMAIL_DOMAIN}`;
+
+function slug(text: string): string {
+  return text.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/[^a-z0-9]+/g, "");
+}
+
+/** Usuario libre «nombre.apellido» (juan.perez, juan.perez2…). */
+export async function freeUsername(first: string, last: string): Promise<string> {
+  const base = [slug(first), slug(last)].filter(Boolean).join(".") || "tripulante";
+  for (let i = 1; ; i++) {
+    const candidate = i === 1 ? base : `${base}${i}`;
+    if (!(await User.exists({ username: candidate }))) return candidate;
+  }
+}
+
+/** Nombre completo → nombre y apellido para el usuario (primera y última palabra). */
+export function splitName(name: string): [string, string] {
+  const parts = name.trim().split(/\s+/).filter(Boolean);
+  return [parts[0] ?? "", parts.length > 1 ? parts[parts.length - 1]! : ""];
+}
+
 /**
  * Lista de tripulantes: cuentas activas con rol de tripulación, su cargo y si
  * están a bordo. Las cuentas compartidas (tablet del barco) no son personas:
  * solo salen en la vista de administración (`includeShared`) para marcarlas.
+ * A quien aún no tiene usuario se le crea aquí (altas anteriores al usuario).
  */
 export async function listCrew(opts: { onboardOnly?: boolean; includeInactive?: boolean; includeShared?: boolean } = {}) {
   const users = await User.find({
@@ -38,9 +63,23 @@ export async function listCrew(opts: { onboardOnly?: boolean; includeInactive?: 
     ...(opts.includeInactive ? {} : { active: true }),
     ...(opts.includeShared ? {} : { sharedDevice: { $ne: true } }),
   })
-    .select("name email role position active sharedDevice")
+    .select("name email role position active sharedDevice username crewManaged")
     .sort({ name: 1 });
-  const profiles = await IsmCrew.find({ user: { $in: users.map((u) => u._id) } });
+  for (const u of users) {
+    if (u.sharedDevice) continue;
+    if (!u.username) {
+      u.username = await freeUsername(...splitName(u.name));
+      await User.updateOne({ _id: u._id, username: { $exists: false } }, { $set: { username: u.username } });
+    }
+    // Altas antiguas con cargo Capitán quedaron como tripulante: el cargo manda (firma el paso del Capitán).
+    const managed = u.crewManaged || !hasRealEmail(u.email);
+    if (managed && u.position === "CAP" && u.role === "tripulante") {
+      u.role = "capitan";
+      await User.updateOne({ _id: u._id }, { $set: { role: "capitan" } });
+    }
+  }
+  // La imagen de la firma no viaja en la lista (pesa); basta saber si hay una guardada.
+  const profiles = await IsmCrew.find({ user: { $in: users.map((u) => u._id) } }).select("-signatureImage");
   const byUser = new Map(profiles.map((p) => [p.user.toString(), p]));
   const now = Date.now();
   return users
@@ -49,16 +88,20 @@ export async function listCrew(opts: { onboardOnly?: boolean; includeInactive?: 
       return {
         id: u._id.toString(),
         name: u.name,
+        username: u.username ?? "",
         role: u.role,
         position: u.position ?? "",
         positionLabel: positionLabel(u.position),
         active: u.active,
-        // Sin correo propio: solo firma en la tablet del barco con su clave.
-        hasAccount: !u.email.endsWith("@sin-cuenta.treasure.ec"),
+        // Cuenta con contraseña propia (la maneja Gerencia). Las altas de Tripulantes entran con usuario y clave.
+        hasAccount: !u.crewManaged && hasRealEmail(u.email),
+        // Con correo, los avisos también le llegan por correo; sin correo, solo dentro de la app.
+        email: hasRealEmail(u.email) ? u.email : "",
         sharedDevice: Boolean(u.sharedDevice),
         onboard: p?.onboard ?? true,
         hasPin: Boolean(p?.pinHash),
         pinTemporary: Boolean(p?.pinTemporary),
+        hasSignature: Boolean(p?.signatureSetAt),
         lockedUntil: p?.lockedUntil && p.lockedUntil.getTime() > now ? p.lockedUntil : null,
       };
     })
@@ -132,7 +175,7 @@ export async function verifyPin(userId: Types.ObjectId | string, pin: unknown, n
 
   if (profile.pinTemporary) {
     if (newPin === undefined || newPin === null || newPin === "") {
-      throw pinError(428, "Es tu primera firma: crea tu clave de 4 números.", "clave_temporal");
+      throw pinError(428, "Es la primera vez: crea tu clave de 4 números.", "clave_temporal");
     }
     if (!isValidNewPin(newPin)) {
       throw pinError(400, "Elige otra clave: 4 números que no sean seguidos ni repetidos.", "clave_debil");

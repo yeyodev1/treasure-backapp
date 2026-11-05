@@ -5,6 +5,7 @@ import { env } from "../config/env";
 import { IUser, User } from "../models/user.model";
 import { badRequest, unauthorized } from "../errors/httpError";
 import { Types } from "mongoose";
+import { CREW_LIST_ROLES, verifyPin } from "../services/ismCrew.service";
 
 function signToken(user: IUser & { _id: Types.ObjectId }, remember: boolean): string {
   return jwt.sign(
@@ -39,6 +40,34 @@ export async function login(req: Request, res: Response, next: NextFunction) {
       throw unauthorized("Credenciales incorrectas");
     }
 
+    res.json({ token: signToken(user, Boolean(remember)), user: publicUser(user) });
+  } catch (err) {
+    next(err);
+  }
+}
+
+/**
+ * Tripulación: entra con su usuario (nombre.apellido) y su clave de 4 números,
+ * sin correo. Misma clave y mismo bloqueo que al firmar (5 intentos → 15 min).
+ * Con clave temporal pide crear la propia en el mismo paso (`newPin`).
+ */
+export async function crewLogin(req: Request, res: Response, next: NextFunction) {
+  try {
+    const { username, pin, newPin, remember } = req.body as {
+      username?: string;
+      pin?: string;
+      newPin?: string;
+      remember?: boolean;
+    };
+    if (typeof username !== "string" || !username.trim()) throw badRequest("Escribe tu usuario");
+    const user = await User.findOne({
+      username: username.toLowerCase().trim(),
+      active: true,
+      role: { $in: CREW_LIST_ROLES },
+      sharedDevice: { $ne: true },
+    });
+    if (!user) throw unauthorized("Usuario o clave incorrectos");
+    await verifyPin(user._id, pin, newPin);
     res.json({ token: signToken(user, Boolean(remember)), user: publicUser(user) });
   } catch (err) {
     next(err);

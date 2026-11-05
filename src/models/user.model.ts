@@ -17,6 +17,10 @@ export interface IUser {
    * firma. Se marca a mano en Tripulantes; nunca se deduce del nombre.
    */
   sharedDevice?: boolean;
+  /** Usuario para entrar con usuario + clave de 4 números (tripulación, sin correo). */
+  username?: string;
+  /** Alta hecha en Tripulantes: no tiene contraseña propia; entra con usuario y clave. */
+  crewManaged?: boolean;
   createdBy: Types.ObjectId | null;
   updatedBy: Types.ObjectId | null;
   createdAt?: Date;
@@ -33,6 +37,8 @@ const userSchema = new Schema<IUser>(
     isCashier: { type: Boolean, default: false },
     position: { type: String, enum: ["", ...CREW_POSITIONS], default: "" },
     sharedDevice: { type: Boolean, default: false },
+    username: { type: String, unique: true, sparse: true, lowercase: true, trim: true },
+    crewManaged: { type: Boolean, default: false },
     createdBy: { type: Schema.Types.ObjectId, ref: "User", default: null },
     updatedBy: { type: Schema.Types.ObjectId, ref: "User", default: null },
   },
