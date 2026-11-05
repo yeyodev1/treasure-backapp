@@ -180,6 +180,10 @@ export default function routerApi(app: Application) {
   router.post("/weekly-orders/:id/send", requireAuth, BAR, weeklyOrders.sendWeeklyOrder);
   router.post("/weekly-orders/:id/approve", requireAuth, DIRECTOR, weeklyOrders.approveWeeklyOrder);
   router.post("/weekly-orders/:id/cancel", requireAuth, DIRECTOR, weeklyOrders.cancelWeeklyOrder);
+  // Cada responsable confirma su parte del pedido aprobado (guía 4 perfiles).
+  router.post("/weekly-orders/:id/deliver", requireAuth, requireRole("admin"), weeklyOrders.deliverWeeklyOrder);
+  router.post("/weekly-orders/:id/ship", requireAuth, OWNER, weeklyOrders.shipWeeklyOrder);
+  router.post("/weekly-orders/:id/deliveries/:key/arrive", requireAuth, LEAD, weeklyOrders.arriveWeeklyOrder);
 
   // Conteos físicos: Administración cuenta y documenta; Gerencia autoriza
   router.get("/counts", requireAuth, COUNTERS, counts.listCounts);
@@ -187,6 +191,8 @@ export default function routerApi(app: Application) {
   router.get("/counts/:id", requireAuth, COUNTERS, counts.getCount);
   router.patch("/counts/:id", requireAuth, COUNTERS, counts.saveCount);
   router.post("/counts/:id/submit", requireAuth, COUNTERS, counts.submitCount);
+  // Quien cuenta confirma y el físico queda como referencia (administradora; la dueña en Quito).
+  router.post("/counts/:id/confirm", requireAuth, requireRole("admin", "bodega"), counts.confirmCount);
   router.post("/counts/:id/approve", requireAuth, OWNER, counts.approveCount);
   router.post("/counts/:id/reject", requireAuth, OWNER, counts.rejectCount);
 
