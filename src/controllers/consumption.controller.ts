@@ -537,13 +537,13 @@ export async function heartbeat(req: Request, res: Response, next: NextFunction)
 /**
  * Wetsuits (pedido del cliente, 5-nov-2026): se alquilan por persona y se
  * suman a la cuenta de la cabina como una bebida más, o los paga la agencia
- * (cortesía de agencia → su factura). Precio por trayecto: A y B $50 + IVA,
- * C $80 + IVA. Son dos productos de servicio del catálogo (Gerencia cambia el
+ * (cortesía de agencia → su factura). Precio por trayecto, IVA incluido
+ * (corrección del cliente, 5-nov-2026): A y B $50, C $80. Son dos productos de servicio del catálogo (Gerencia cambia el
  * precio y los vincula con Contífico); si faltan se crean con esos precios.
  */
 const WETSUIT_DEFAULTS = [
-  { name: "Wetsuit (cruceros A y B)", legs: ["A", "B"], price: 57.5 },
-  { name: "Wetsuit (crucero C)", legs: ["C"], price: 92 },
+  { name: "Wetsuit (cruceros A y B)", legs: ["A", "B"], price: 50, wrongPrice: 57.5 },
+  { name: "Wetsuit (crucero C)", legs: ["C"], price: 80, wrongPrice: 92 },
 ];
 
 async function ensureWetsuits(userId: string) {
@@ -566,6 +566,11 @@ async function ensureWetsuits(userId: string) {
         },
       },
       { upsert: true, setDefaultsOnInsert: true },
+    );
+    // Los creados con el IVA sumado de más pasan al precio correcto; si Gerencia ya lo cambió, no se toca.
+    await Product.updateOne(
+      { legs: def.legs, price: def.wrongPrice },
+      { $set: { price: def.price }, $push: { priceHistory: { price: def.price, changedBy: userId, at: new Date() } } },
     );
   }
 }
