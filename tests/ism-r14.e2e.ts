@@ -60,6 +60,8 @@ async function main() {
     tri2: ["tripulante", "Maquinista", "MAQ"],
     des: ["designada", "Persona Designada", ""],
     adm: ["admin", "Administración", ""],
+    tri3: ["tripulante", "Timonel Dos", "TIM_02"],
+    dir: ["direccion", "Directora", "DIR"],
   };
   for (const [key, [role, name, position]] of Object.entries(people)) {
     await User.create({ email: `${key}@t`, role, name, passwordHash: hash, active: true, position });
@@ -566,6 +568,50 @@ async function main() {
   check("Cubierta abre el R-23 de timoneles; el Capitán, de cualquiera", cubCat.fillPositions.join() === "TIM_01,TIM_02" && (await api("cap", "GET", "/ism/catalog")).data.fillPositions === null, cubCat.fillPositions);
   const cubCook = await api("tri", "POST", "/ism/records", { code: "R-23", recordDate: "2026-10-29", position: "COC", idempotencyKey: "cub-r23-coc" });
   check("Cubierta no abre el R-23 de Cocina", cubCook.status === 403, cubCook.status);
+
+  // R-07 (5-nov): el saliente lo envía a quien recibe; sale de su lista y el que recibe firma y lo pasa al Capitán.
+  const tri3Id = String((await User.findOne({ email: "tri3@t" }))!._id);
+  const r07 = (await api("tri", "POST", "/ism/records", { code: "R-07", recordDate: "2026-10-29", position: "TIM_01", idempotencyKey: "r07-handoff" })).data.record._id;
+  const early = await api("tri", "POST", `/ism/records/${r07}/handoff`, { to: tri3Id });
+  check("R-07: sin firmar como saliente no se envía", early.status === 400, early.data.message);
+  await api("tri", "POST", `/ism/records/${r07}/signatures`, { field: "Signature Field 8", image: PNG, signerName: "Timonel Uno" });
+  const alone = await api("tri", "POST", `/ism/records/${r07}/submit`);
+  check("R-07: el saliente no lo envía al Capitán sin la firma de quien recibe", alone.status === 400, alone.data.message);
+  const hand = await api("tri", "POST", `/ism/records/${r07}/handoff`, { to: tri3Id });
+  check("R-07: se envía a quien recibe el cargo", hand.status === 200, hand.data.message);
+  const goneFromSaliente = await api("tri", "GET", `/ism/records/${r07}`);
+  const inReceiverList = ((await api("tri3", "GET", "/ism/records?status=borrador")).data.records as any[]).some((r) => r._id === r07);
+  check("R-07: sale de la lista del saliente y aparece en la de quien recibe", goneFromSaliente.status === 403 && inReceiverList, [goneFromSaliente.status, inReceiverList]);
+  const noEdit = await api("tri3", "PATCH", `/ism/records/${r07}`, { data: { "Text Field 1": "cambio" } });
+  check("R-07: quien recibe no cambia lo que le dejaron", noEdit.status === 403, noEdit.status);
+  const wrongSlot = await api("tri3", "POST", `/ism/records/${r07}/signatures`, { field: "Signature Field 8", image: PNG });
+  check("R-07: quien recibe no firma por el saliente", wrongSlot.status === 403, wrongSlot.status);
+  await api("tri3", "POST", `/ism/records/${r07}/signatures`, { field: "Signature Field 9", image: PNG, signerName: "Timonel Dos" });
+  const toCaptain = await api("tri3", "POST", `/ism/records/${r07}/submit`);
+  check("R-07: quien recibe firma y lo pasa al Capitán", toCaptain.data.record?.status === "por_capitan", [toCaptain.status, toCaptain.data.message]);
+
+  // R-18 (5-nov): uno solo dividido en 3; Cubierta y Máquinas los recibe la Persona Designada, Hotelería Administración.
+  const dirCat = (await api("dir", "GET", "/ism/catalog")).data.forms as any[];
+  check("Directora llena el R-18 de Hotelería, no los otros", dirCat.find((f) => f.code === "R-18_Hoteleria").canCreate && !dirCat.find((f) => f.code === "R-18_Cubierta").canCreate);
+  const h18 = (await api("dir", "POST", "/ism/records", { code: "R-18_Hoteleria", recordDate: "2026-10-29", idempotencyKey: "r18-hot" })).data.record._id;
+  await api("dir", "POST", `/ism/records/${h18}/signatures`, { field: "Signature Field 1", image: PNG, signerName: "Directora" });
+  const h18sent = await api("dir", "POST", `/ism/records/${h18}/submit`);
+  check("R-18 Hotelería va directo a recibir en tierra", h18sent.data.record?.status === "por_oficina", [h18sent.status, h18sent.data.message]);
+  const desSign = await api("des", "POST", `/ism/records/${h18}/signatures`, { field: "Signature Field 2", image: PNG });
+  check("La Persona Designada no recibe el de Hotelería", desSign.status === 403, desSign.status);
+  await api("adm", "POST", `/ism/records/${h18}/signatures`, { field: "Signature Field 2", image: PNG });
+  const admOk = await api("adm", "POST", `/ism/records/${h18}/approve`);
+  check("Administración recibe el R-18 de Hotelería", admOk.data.record?.status === "archivado", [admOk.status, admOk.data.message]);
+  const c18 = (await api("tri", "POST", "/ism/records", { code: "R-18_Cubierta", recordDate: "2026-10-29", idempotencyKey: "r18-cub" })).data.record._id;
+  const c18sent = await api("tri", "POST", `/ism/records/${c18}/submit`);
+  check("R-18 Cubierta pasa al Capitán", c18sent.data.record?.status === "por_capitan", [c18sent.status, c18sent.data.message]);
+  await api("cap", "POST", `/ism/records/${c18}/signatures`, { field: "Signature Field 29", image: PNG });
+  await api("cap", "POST", `/ism/records/${c18}/approve`);
+  const admCub = await api("adm", "POST", `/ism/records/${c18}/approve`);
+  const desNoSig = await api("des", "POST", `/ism/records/${c18}/approve`);
+  await api("des", "POST", `/ism/records/${c18}/signatures`, { field: "Signature Field 28", image: PNG });
+  const desOk = await api("des", "POST", `/ism/records/${c18}/approve`);
+  check("R-18 Cubierta lo recibe la Persona Designada con su firma", admCub.status === 403 && desNoSig.status === 400 && desOk.data.record?.status === "archivado", [admCub.status, desNoSig.status, desOk.status, desOk.data.message]);
 
   const triArchived = await api("tri", "GET", `/ism/records/${r1}`);
   const triList = (await api("tri", "GET", "/ism/records?status=archivado")).data.records as any[];

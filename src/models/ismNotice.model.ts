@@ -12,6 +12,8 @@ export const NOTICE_KINDS = [
   "espera_capitan",
   "espera_designada",
   "clave_bloqueada",
+  "entrega_cargo",
+  "por_recibir",
 ] as const;
 export type NoticeKind = (typeof NOTICE_KINDS)[number];
 

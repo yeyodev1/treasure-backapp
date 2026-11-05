@@ -204,9 +204,9 @@
   "pages": 2,
   "fieldCount": 54,
   "stages": {
-   "tripulacion": 2,
+   "tripulacion": 0,
    "capitan": 1,
-   "oficina": 0
+   "oficina": 1
   }
  },
  {
@@ -218,9 +218,9 @@
   "pages": 2,
   "fieldCount": 54,
   "stages": {
-   "tripulacion": 2,
+   "tripulacion": 0,
    "capitan": 1,
-   "oficina": 0
+   "oficina": 1
   }
  },
  {
@@ -232,9 +232,9 @@
   "pages": 1,
   "fieldCount": 46,
   "stages": {
-   "tripulacion": 3,
+   "tripulacion": 1,
    "capitan": 0,
-   "oficina": 0
+   "oficina": 1
   }
  },
  {

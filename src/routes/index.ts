@@ -212,6 +212,7 @@ export default function routerApi(app: Application) {
   router.post("/ism/records/:id/signatures", requireAuth, CREW, ism.sign);
   router.get("/ism/records/:id/signatures/:field/image", requireAuth, CREW, ism.signatureImage);
   router.delete("/ism/records/:id/signatures/:field", requireAuth, CREW, ism.removeSignature);
+  router.post("/ism/records/:id/handoff", requireAuth, CREW, ism.handoffRecord);
   router.post("/ism/records/:id/submit", requireAuth, CREW, ism.submit);
   router.post("/ism/records/:id/approve", requireAuth, CREW, ism.approve);
   router.post("/ism/records/:id/return", requireAuth, CREW, ism.giveBack);

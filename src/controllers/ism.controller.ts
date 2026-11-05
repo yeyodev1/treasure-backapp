@@ -117,11 +117,18 @@ export function archivePathFor(code: string, folder: string | undefined, dateKey
  * solo el Capitán firma como Capitán y solo la Persona Designada en oficina.
  * Gerencia y Administración ven todo, pero no firman por otro rol.
  */
-function canSignStage(role: string, stage: SignatureStage): boolean {
+function canSignStage(role: string, stage: SignatureStage, officeRole = "designada"): boolean {
   if (stage === "capitan") return role === "capitan";
-  if (stage === "oficina") return role === "designada";
+  if (stage === "oficina") return role === officeRole;
   return true;
 }
+
+/** Quién recibe en tierra: la Persona Designada, o Administración en el R-18 Hotelería (5-nov). */
+const officeRoleOf = (def: { officeRole?: string }) => def.officeRole ?? "designada";
+const officeLabelOf = (def: { officeRole?: string }) => (def.officeRole === "admin" ? "Administración" : "Persona Designada");
+
+/** R-07 enviado a quien recibe el cargo: es suyo leerlo, firmarlo y enviarlo al Capitán. */
+const isReceiver = (record: IIsmRecord, uid: string) => record.handoff?.to?.toString() === uid;
 
 function stageOpen(record: IIsmRecord, stage: SignatureStage, officeOnly: boolean): boolean {
   if (stage === "tripulacion") return record.status === "borrador";
@@ -141,20 +148,25 @@ function creatorId(record: Pick<IIsmRecord, "createdBy">): string {
  * Capitán, Gerencia, Administración y Persona Designada revisan y devuelven
  * con motivo, pero no cambian respuestas ni contexto (auditoría 30-oct).
  */
-function canEdit(record: IIsmRecord, role: string, officeOnly: boolean, uid: string): boolean {
+function canEdit(record: IIsmRecord, role: string, officeOnly: boolean, uid: string, officeRole = "designada"): boolean {
   if (record.status === "archivado") return false;
   if (record.schemaVersion) return record.status === "borrador" && creatorId(record) === uid;
   if (isManager(role)) return true;
+  // Quien recibe el cargo lee y firma; cambiar datos anularía la firma del saliente.
+  if (record.status === "borrador" && record.handoff) return false;
   if (record.status === "borrador") return officeOnly ? role === "designada" : true;
   if (record.status === "por_capitan") return role === "capitan";
-  return role === "designada";
+  return role === officeRole;
 }
 
 /** La tripulación solo ve, edita, firma y envía los registros que creó o firmó. */
 function assertCanView(record: IIsmRecord, req: Request) {
   if (SEES_ALL.has(req.auth!.role)) return;
   const uid = req.auth!.sub;
-  const involved = creatorId(record) === uid || record.signatures.some((s) => s.user.toString() === uid);
+  // R-07 enviado: sale de la lista del saliente y queda en la de quien recibe (5-nov).
+  const involved = record.handoff
+    ? isReceiver(record, uid)
+    : creatorId(record) === uid || record.signatures.some((s) => s.user.toString() === uid);
   if (!involved) throw forbidden("Este registro no está a tu cargo");
   // El Archivo ISM lo ven Capitán, Persona Designada y Gerencia (tabla del cliente, 5-nov-2026).
   if (record.status === "archivado") throw forbidden("El Archivo ISM lo ven el Capitán, la Persona Designada y Gerencia");
@@ -509,7 +521,9 @@ export async function listRecords(req: Request, res: Response, next: NextFunctio
 
     const uid = new Types.ObjectId(req.auth!.sub);
     if (mine === "1" || !SEES_ALL.has(req.auth!.role)) {
-      filter.$and = [{ $or: [{ createdBy: uid }, { "signatures.user": uid }] }];
+      filter.$and = [
+        { $or: [{ createdBy: uid, handoff: null }, { "signatures.user": uid, handoff: null }, { "handoff.to": uid }] },
+      ];
     }
     // Sin acceso al Archivo ISM: no ven los archivados, ni los propios.
     if (!SEES_ALL.has(req.auth!.role)) {
@@ -582,7 +596,7 @@ export async function saveData(req: Request, res: Response, next: NextFunction) 
     if (!record) throw notFound("Registro no encontrado");
     assertCanView(record, req);
     const def = ismDefinition(record.code)!;
-    if (!canEdit(record, req.auth!.role, def.officeOnly, req.auth!.sub)) {
+    if (!canEdit(record, req.auth!.role, def.officeOnly, req.auth!.sub, officeRoleOf(def))) {
       throw forbidden(
         record.schemaVersion && record.status === "borrador"
           ? "Solo quien hizo el registro lo corrige. Si hay que cambiar algo, devuélvelo con motivo."
@@ -719,8 +733,11 @@ export async function sign(req: Request, res: Response, next: NextFunction) {
     const def = ismDefinition(record.code)!;
     const slot = def.fields.find((f) => f.name === field && f.type === "signature");
     if (!slot || !slot.stage) throw badRequest("Ese recuadro no es de firma");
-    if (!canSignStage(req.auth!.role, slot.stage)) {
+    if (!canSignStage(req.auth!.role, slot.stage, officeRoleOf(def))) {
       throw forbidden(`Esta firma corresponde a: ${slot.label}`);
+    }
+    if (record.handoff && slot.stage === "tripulacion" && (!isReceiver(record, req.auth!.sub) || field !== def.handoff?.to)) {
+      throw forbidden(`Ya se envió a ${record.handoff.toName}: solo falta su firma`);
     }
     assertNotStepSigned(record);
     if (!stageOpen(record, slot.stage, def.officeOnly)) {
@@ -805,6 +822,48 @@ function rejectIfIncomplete(record: IIsmRecord, res: Response): boolean {
   return true;
 }
 
+/**
+ * R-07 (5-nov): el saliente llena, firma y lo envía a quien recibe el cargo.
+ * No se ven entre ellos: desde aquí sale de su lista; quien recibe lo lee,
+ * firma y lo envía al Capitán.
+ */
+export async function handoffRecord(req: Request, res: Response, next: NextFunction) {
+  try {
+    const record = await IsmRecord.findById(req.params.id);
+    if (!record) throw notFound("Registro no encontrado");
+    if (record.status !== "borrador") throw conflict("El registro ya fue enviado");
+    assertCanView(record, req);
+    const def = ismDefinition(record.code)!;
+    if (!def.handoff) throw badRequest("Este registro no se envía a otra persona");
+    if (record.handoff) throw conflict(`Ya se envió a ${record.handoff.toName}`);
+    if (!canEdit(record, req.auth!.role, def.officeOnly, req.auth!.sub)) throw forbidden();
+    if (rejectIfIncomplete(record, res)) return;
+    const own = validSignatures(record).some((s) => s.field === def.handoff!.from);
+    if (!own) throw badRequest("Firma primero como saliente");
+    const { to } = req.body as { to?: string };
+    const person = Types.ObjectId.isValid(String(to))
+      ? await User.findOne({ _id: to, active: true, role: { $in: CREW_LIST_ROLES }, sharedDevice: { $ne: true } }).select("name")
+      : null;
+    if (!person) throw badRequest("Elige a quien recibe el cargo");
+    if (person._id.equals(req.auth!.sub)) throw badRequest("Quien recibe el cargo es otra persona");
+    record.handoff = { to: person._id, toName: person.name, by: new Types.ObjectId(req.auth!.sub), at: new Date() };
+    pushEvent(record, req, `enviado a ${person.name} para que reciba el cargo`);
+    await saveOrConflict(record);
+    if (!record.test) {
+      await notifyUsers([person._id], {
+        kind: "entrega_cargo",
+        title: `${record.code}: ${req.auth!.name} te entrega el cargo`,
+        body: "Léelo, firma como entrante y envíalo al Capitán.",
+        record: record._id,
+      });
+    }
+    await logEvent(req.auth, { kind: "registro", title: `${record.code} enviado a quien recibe`, detail: `${record.fileName} · ${person.name}` });
+    res.json({ ok: true });
+  } catch (err) {
+    next(err);
+  }
+}
+
 /** Envío explícito ("Listo para enviar"): nunca se envía a medias al guardar. */
 export async function submit(req: Request, res: Response, next: NextFunction) {
   try {
@@ -814,7 +873,12 @@ export async function submit(req: Request, res: Response, next: NextFunction) {
     assertCanView(record, req);
     assertNotStepSigned(record);
     const def = ismDefinition(record.code)!;
-    if (!canEdit(record, req.auth!.role, def.officeOnly, req.auth!.sub)) throw forbidden();
+    if (!canEdit(record, req.auth!.role, def.officeOnly, req.auth!.sub, officeRoleOf(def)) && !isReceiver(record, req.auth!.sub)) {
+      throw forbidden();
+    }
+    if (def.handoff && missing(def, record, "tripulacion").some((f) => f.name === def.handoff!.to)) {
+      throw badRequest("Falta la firma de quien recibe el cargo. Envíaselo con «Enviar a quien recibe»");
+    }
 
     // Misma validación que la tablet: faltantes en su pregunta exacta.
     if (rejectIfIncomplete(record, res)) return;
@@ -849,6 +913,9 @@ export async function submit(req: Request, res: Response, next: NextFunction) {
     record.returnInfo = null;
     pushEvent(record, req, "enviado");
     await saveOrConflict(record);
+    if (record.status === "por_oficina" && def.officeRole === "admin" && !record.test) {
+      await notifyRole("admin", { kind: "por_recibir", title: `${record.code.replace("_", " · ")} por recibir`, body: record.fileName, record: record._id });
+    }
 
     await logEvent(req.auth, {
       kind: "registro",
@@ -891,11 +958,11 @@ export async function approve(req: Request, res: Response, next: NextFunction) {
       record.captainApprovedAt = new Date();
       pushEvent(record, req, "aprobado por el Capitán");
     } else if (record.status === "por_oficina") {
-      if (role !== "designada") {
-        throw forbidden("Solo la Persona Designada, desde su cuenta, archiva el registro");
+      if (role !== officeRoleOf(def)) {
+        throw forbidden(`Solo ${def.officeRole === "admin" ? "Administración" : "la Persona Designada"}, desde su cuenta, recibe este registro`);
       }
-      const pending = missing(def, record, "oficina").filter((f) => f.label === "Persona Designada");
-      if (pending.length) throw badRequest("Falta la firma de la Persona Designada");
+      const pending = missing(def, record, "oficina").filter((f) => f.label === officeLabelOf(def));
+      if (pending.length) throw badRequest(`Falta la firma de ${officeLabelOf(def)}`);
       record.status = "archivado";
       record.officeApprovedBy = new Types.ObjectId(req.auth!.sub);
       record.archivedAt = new Date();
@@ -1111,8 +1178,8 @@ export async function giveBack(req: Request, res: Response, next: NextFunction) 
     if (record.status === "por_capitan" && role !== "capitan") {
       throw forbidden("Solo el Capitán devuelve este registro");
     }
-    if (record.status === "por_oficina" && role !== "designada") {
-      throw forbidden("Solo la Persona Designada devuelve este registro");
+    if (record.status === "por_oficina" && role !== officeRoleOf(ismDefinition(record.code) ?? {})) {
+      throw forbidden(`Solo ${officeLabelOf(ismDefinition(record.code) ?? {})} devuelve este registro`);
     }
     if (record.status !== "por_capitan" && record.status !== "por_oficina") {
       throw conflict("Solo se devuelve un registro que está en revisión");
@@ -1276,7 +1343,7 @@ export async function summary(req: Request, res: Response, next: NextFunction) {
 
     const [byStatus, mine, mineReturned, monthly, equipmentDone, positionsDone] = await Promise.all([
       IsmRecord.aggregate([{ $match: real }, { $group: { _id: "$status", n: { $sum: 1 } } }]),
-      IsmRecord.countDocuments({ createdBy: uid, status: "borrador" }),
+      IsmRecord.countDocuments({ status: "borrador", $or: [{ createdBy: uid, handoff: null }, { "handoff.to": uid }] }),
       IsmRecord.countDocuments({ createdBy: uid, status: "borrador", returnInfo: { $ne: null } }),
       IsmRecord.aggregate([
         { $match: { ...monthFilter, code: { $in: ["R-25_Alcohol", "R-25_Drogas", "R-28"] } } },

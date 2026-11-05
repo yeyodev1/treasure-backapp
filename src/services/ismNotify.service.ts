@@ -82,7 +82,7 @@ export async function notifyUsers(users: Array<Types.ObjectId | string | null | 
 }
 
 /** Avisa a todas las cuentas activas de un rol (Capitán, Persona Designada). */
-export async function notifyRole(role: "capitan" | "designada", notice: NoticeInput) {
+export async function notifyRole(role: "capitan" | "designada" | "admin", notice: NoticeInput) {
   try {
     const users = await User.find({ role, active: true }).select("_id");
     await notifyUsers(

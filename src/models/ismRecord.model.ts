@@ -148,6 +148,8 @@ export interface IIsmRecord {
   submittedAt: Date | null;
   captainApprovedBy: Types.ObjectId | null;
   captainApprovedAt: Date | null;
+  /** R-07: el saliente lo envía a quien recibe el cargo; desde ahí solo lo ve quien recibe. */
+  handoff: { to: Types.ObjectId; toName: string; by: Types.ObjectId; at: Date } | null;
   officeApprovedBy: Types.ObjectId | null;
   archivedAt: Date | null;
   contentHash: string;
@@ -239,6 +241,13 @@ const ismRecordSchema = new Schema<IIsmRecord>(
     submittedAt: { type: Date, default: null },
     captainApprovedBy: { type: Schema.Types.ObjectId, ref: "User", default: null },
     captainApprovedAt: { type: Date, default: null },
+    handoff: {
+      type: new Schema(
+        { to: { type: Schema.Types.ObjectId, ref: "User" }, toName: String, by: { type: Schema.Types.ObjectId, ref: "User" }, at: Date },
+        { _id: false },
+      ),
+      default: null,
+    },
     officeApprovedBy: { type: Schema.Types.ObjectId, ref: "User", default: null },
     archivedAt: { type: Date, default: null },
     contentHash: { type: String, default: "" },

@@ -44,6 +44,10 @@ export interface IsmFormDef {
   pages: Array<{ width: number; height: number }>;
   fields: IsmFieldDef[];
   equipmentFields?: Record<"name" | "brand" | "model" | "serial" | "owner", string>;
+  /** Quién recibe en tierra (R-18 Hotelería: Administración). Por defecto, la Persona Designada. */
+  officeRole?: "admin";
+  /** R-07: recuadro del saliente y del que recibe el cargo. */
+  handoff?: { from: string; to: string };
 }
 
 export interface IsmCatalogItem {
