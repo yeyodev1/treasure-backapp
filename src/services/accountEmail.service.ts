@@ -287,7 +287,7 @@ export async function sendAccountSummary(
 
   const to = await summaryRecipient(payment);
   let error = "";
-  if (!to) error = "el pagador no tiene un correo válido";
+  if (!to) error = "no se ingresó correo";
   else if (!canSend()) error = "el envío de correos no está configurado";
 
   if (!error) {
