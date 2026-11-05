@@ -181,6 +181,10 @@ export async function createConsumption(req: Request, res: Response, next: NextF
       throw badRequest(`${product.name} es un insumo y no se vende solo`);
     }
 
+    // Wetsuit (o lo que tenga precio por trayecto): solo el de este crucero.
+    if (product.legs?.length && !product.legs.includes(cruise.leg)) {
+      throw badRequest(`${product.name} no es del ${cruise.code ? `crucero ${cruise.code}` : "trayecto de este crucero"}`);
+    }
     const applied = await appliedFor(product);
     const cost = costOf(applied);
     const late = cruise.status === "cerrado";
@@ -525,6 +529,55 @@ export async function heartbeat(req: Request, res: Response, next: NextFunction)
       { upsert: true },
     );
     res.json({ ok: true, serverTime: new Date() });
+  } catch (err) {
+    next(err);
+  }
+}
+
+/**
+ * Wetsuits (pedido del cliente, 5-nov-2026): se alquilan por persona y se
+ * suman a la cuenta de la cabina como una bebida más, o los paga la agencia
+ * (cortesía de agencia → su factura). Precio por trayecto: A y B $50 + IVA,
+ * C $80 + IVA. Son dos productos de servicio del catálogo (Gerencia cambia el
+ * precio y los vincula con Contífico); si faltan se crean con esos precios.
+ */
+const WETSUIT_DEFAULTS = [
+  { name: "Wetsuit (cruceros A y B)", legs: ["A", "B"], price: 57.5 },
+  { name: "Wetsuit (crucero C)", legs: ["C"], price: 92 },
+];
+
+async function ensureWetsuits(userId: string) {
+  for (const def of WETSUIT_DEFAULTS) {
+    // Upsert: dos tabletas abriendo Wetsuits a la vez no crean el producto dos veces.
+    await Product.updateOne(
+      { legs: def.legs },
+      {
+        $setOnInsert: {
+          name: def.name,
+          category: "servicio",
+          icon: "wetsuit",
+          kind: "servicio",
+          price: def.price,
+          sellable: true,
+          recipe: [],
+          active: true,
+          createdBy: userId,
+          priceHistory: [{ price: def.price, changedBy: userId, at: new Date() }],
+        },
+      },
+      { upsert: true, setDefaultsOnInsert: true },
+    );
+  }
+}
+
+export async function wetsuitForCruise(req: Request, res: Response, next: NextFunction) {
+  try {
+    const cruiseId = String(req.query.cruiseId ?? "");
+    const cruise = Types.ObjectId.isValid(cruiseId) ? await Cruise.findById(cruiseId).select("leg code") : null;
+    if (!cruise) throw notFound("Crucero no encontrado");
+    await ensureWetsuits(req.auth!.sub);
+    const product = cruise.leg ? await Product.findOne({ legs: cruise.leg, active: true }).select("name price legs") : null;
+    res.json({ product, leg: cruise.leg });
   } catch (err) {
     next(err);
   }

@@ -2,7 +2,6 @@ import { NextFunction, Request, Response } from "express";
 import { canSeeCosts, isOwner } from "../utils/roles";
 import { Types } from "mongoose";
 import { IProduct, Product, PRODUCT_CATEGORIES, ProductCategory, WINE_STYLES, WineStyle } from "../models/product.model";
-import { suggestedPrice } from "../services/inventory.service";
 import { logEvent } from "../services/audit.service";
 import { contificoProducts } from "../services/contifico.service";
 import { badRequest, forbidden, notFound } from "../errors/httpError";
@@ -131,14 +130,20 @@ export async function createProduct(req: Request, res: Response, next: NextFunct
   }
 }
 
-/** Cóctel fuera de carta armado en el bar: precio sugerido por sus medidas. */
+/** Precio sugerido de un cóctel del bar (pedido del cliente, 5-nov-2026); el bar lo ajusta según el trago. */
+export const COCKTAIL_SUGGESTED_PRICE = 14;
+
+/** Cóctel fuera de carta armado en el bar: el bar pone el precio (sugerido $14). */
 export async function createCustomCocktail(req: Request, res: Response, next: NextFunction) {
   try {
-    const body = req.body as { name?: string; recipe?: Array<{ product: string; qty: number }> };
+    const body = req.body as { name?: string; recipe?: Array<{ product: string; qty: number }>; price?: number };
     if (!body.name?.trim()) throw badRequest("El cóctel necesita un nombre");
     await validateRecipe(body.recipe ?? []);
+    if (body.price !== undefined && !(typeof body.price === "number" && Number.isFinite(body.price) && body.price > 0 && body.price <= 500)) {
+      throw badRequest("Pon un precio entre $0,01 y $500");
+    }
 
-    const price = await suggestedPrice(body.recipe!);
+    const price = body.price !== undefined ? Math.round(body.price * 100) / 100 : COCKTAIL_SUGGESTED_PRICE;
     const product = await Product.create({
       name: body.name.trim(),
       category: "coctel",
@@ -155,7 +160,7 @@ export async function createCustomCocktail(req: Request, res: Response, next: Ne
     await logEvent(req.auth, {
       kind: "catalogo",
       title: `Cóctel creado en bar · ${product.name}`,
-      detail: "Precio sugerido por sus medidas",
+      detail: price === COCKTAIL_SUGGESTED_PRICE ? "Precio sugerido" : "Precio puesto en el bar",
       amount: price,
     });
 

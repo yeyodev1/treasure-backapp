@@ -633,6 +633,54 @@ async function main() {
     [custom.status, removed.status, notCustom.status, bodegaRemove.status, listed],
   );
 
+  // ---- Precio del cóctel y wetsuits (pedido del cliente, 5-nov-2026) ----
+  const recipe = [{ product: await id("Bacardi (botella)"), qty: 60 }];
+  const priced = await api("bar", "POST", "/products/custom-cocktail", { name: "Precio a mano", recipe, price: 16.5 });
+  const defaulted = await api("bar", "POST", "/products/custom-cocktail", { name: "Precio sugerido", recipe });
+  const zeroPrice = await api("bar", "POST", "/products/custom-cocktail", { name: "Precio cero", recipe, price: 0 });
+  check(
+    "El bar pone el precio del cóctel; sin precio queda el sugerido de $14; $0 no pasa",
+    priced.data.product?.price === 16.5 && defaulted.data.product?.price === 14 && zeroPrice.status === 400,
+    [priced.data.product?.price, defaulted.data.product?.price, zeroPrice.status],
+  );
+
+  const live = await Cruise.findOne({ status: "abordo", "cabins.passengers.0": { $exists: true } });
+  check("Hay un crucero en curso para probar wetsuits", Boolean(live));
+  const wetCabin = live!.cabins.find((c) => c.passengers.length)!.number;
+  await Cruise.updateOne({ _id: live!._id }, { $set: { leg: "A" } });
+  const ws = await api("bar", "GET", `/wetsuits?cruiseId=${live!._id}`);
+  await api("bar", "GET", `/wetsuits?cruiseId=${live!._id}`);
+  const wetsuitCount = await Product.countDocuments({ category: "servicio", legs: { $ne: [] } });
+  check(
+    "Crucero A: wetsuit a $57,50 ($50 + IVA); se crean los dos una sola vez",
+    ws.status === 200 && ws.data.product?.price === 57.5 && wetsuitCount === 2,
+    [ws.status, ws.data.product, wetsuitCount],
+  );
+  const badCruise = await api("bar", "GET", "/wetsuits?cruiseId=nope");
+  check("Crucero inválido → 404", badCruise.status === 404, badCruise.status);
+  const cOnly = await Product.findOne({ legs: ["C"] });
+  check("Crucero C: $92 ($80 + IVA)", cOnly?.price === 92, cOnly?.price);
+
+  const rented = await api("bar", "POST", "/consumptions", {
+    cruiseId: live!._id, cabinNumber: wetCabin, productId: ws.data.product._id, qty: 3, idempotencyKey: "wet-1",
+  });
+  check("3 wetsuits se suman a la cuenta de la cabina", rented.status === 201 && rented.data.order?.total === 172.5, [rented.status, rented.data.order?.total, rented.data.message]);
+  const wrongLeg = await api("bar", "POST", "/consumptions", {
+    cruiseId: live!._id, cabinNumber: wetCabin, productId: cOnly!._id, qty: 1, idempotencyKey: "wet-2",
+  });
+  check("El wetsuit del crucero C no se cobra en el A", wrongLeg.status === 400, wrongLeg.status);
+  const byAgency = await api("bar", "POST", "/consumptions", {
+    cruiseId: live!._id, cabinNumber: wetCabin, productId: ws.data.product._id, qty: 2,
+    courtesy: true, courtesyKind: "agencia", courtesyReason: "Wetsuit pagado por la agencia", idempotencyKey: "wet-3",
+  });
+  const agencyList = await api("dir", "GET", `/accounts/${live!._id}/agency-courtesies`);
+  const agencyWet = JSON.stringify(agencyList.data).includes("Wetsuit (cruceros A y B)") && JSON.stringify(agencyList.data).includes("115");
+  check(
+    "Los que paga la agencia no van a la cabina y entran en su factura",
+    byAgency.status === 201 && byAgency.data.order?.total === 0 && agencyWet,
+    [byAgency.status, byAgency.data.order?.total, agencyList.status],
+  );
+
   server.close();
   await mongoose.disconnect();
   await repl.stop();

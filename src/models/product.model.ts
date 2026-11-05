@@ -77,6 +77,8 @@ export interface IProduct {
   wineStyle: WineStyle | "";
 
   isCustom: boolean;
+  /** Solo se cobra en estos trayectos (A, B, C); vacío = en todos. Los wetsuits tienen precio por trayecto. */
+  legs: string[];
   active: boolean;
   /** Costo por unidad base (promedio ponderado de las recepciones). 0 = sin costo. */
   costPerUnit: number;
@@ -129,6 +131,7 @@ const productSchema = new Schema<IProduct>(
     recipe: { type: [recipeItemSchema], default: [] },
     wineStyle: { type: String, enum: [...WINE_STYLES, ""], default: "" },
     isCustom: { type: Boolean, default: false },
+    legs: { type: [String], default: [] },
     active: { type: Boolean, default: true },
     costPerUnit: { type: Number, default: 0, min: 0 },
     costUpdatedAt: { type: Date, default: null },

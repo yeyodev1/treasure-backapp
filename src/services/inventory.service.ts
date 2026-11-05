@@ -112,24 +112,6 @@ export async function applyMovement(input: ApplyInput) {
   }
 }
 
-/** Precio sugerido de un cóctel creado en el bar a partir de sus medidas. */
-export async function suggestedPrice(recipe: Array<{ product: string; qty: number }>) {
-  const ids = recipe.map((r) => r.product);
-  const products = await Product.find({ _id: { $in: ids } }).select(
-    "kind servingSize servingPrice",
-  );
-  const map = new Map(products.map((p) => [p._id.toString(), p]));
-  let total = 0;
-  for (const item of recipe) {
-    const p = map.get(item.product);
-    if (!p) throw badRequest("Hay ingredientes que no existen");
-    if (p.kind !== "fisico") throw badRequest("Los ingredientes deben ser insumos físicos");
-    if (p.servingSize > 0) total += (item.qty / p.servingSize) * p.servingPrice;
-  }
-  // Se redondea hacia arriba a múltiplos de 0,50 como la carta.
-  return Math.ceil(total * 2) / 2;
-}
-
 // ---------------------------------------------------------------------------
 // Movimientos atómicos sin negativos (guía auditada 27-oct-2026)
 // ---------------------------------------------------------------------------
