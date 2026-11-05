@@ -535,11 +535,11 @@ async function main() {
     new Set(((await api(who, "GET", "/ism/catalog")).data.forms as any[]).filter((f) => f.canCreate).map((f) => f.code));
   const [cub, maq, ofi, pue, ger] = await Promise.all(["tri", "tri2", "des", "cap", "duena"].map(canCreate));
   check(
-    "Cubierta: R-05, 06, 07, 10, 14, 16, 17, 23, 28",
-    [...cub].sort().join() === ["R-05", "R-06", "R-07", "R-10", "R-14", "R-16", "R-17", "R-23", "R-28"].join(),
+    "Cubierta: R-05, 06, 07, 10, 14, 16, 17, 18 Cubierta, 23, 28",
+    [...cub].sort().join() === ["R-05", "R-06", "R-07", "R-10", "R-14", "R-16", "R-17", "R-18_Cubierta", "R-23", "R-28"].join(),
     [...cub],
   );
-  check("Máquinas: R-07, 12, 13, 16, 23", [...maq].sort().join() === ["R-07", "R-12", "R-13", "R-16", "R-23"].join(), [...maq]);
+  check("Máquinas: R-07, 12, 13, 16, 18 Máquinas, 23", [...maq].sort().join() === ["R-07", "R-12", "R-13", "R-16", "R-18_Maquinas", "R-23"].join(), [...maq]);
   check("Persona Designada: R-07 y R-16", [...ofi].sort().join() === ["R-07", "R-16"].join(), [...ofi]);
   check("Capitán: todo salvo R-26, R-29, R-30 (y los de oficina)", pue.has("R-14") && pue.has("R-18_Maquinas") && !pue.has("R-26") && !pue.has("R-29") && !pue.has("R-30") && !pue.has("R-11"), [...pue]);
   check("Gerencia: todo", ger.size === (await api("duena", "GET", "/ism/catalog")).data.forms.length, ger.size);
@@ -549,6 +549,24 @@ async function main() {
   check("Máquinas crea un R-12", maqR12.status === 201, [maqR12.status, maqR12.data.message]);
   const cubR12 = await api("tri", "POST", "/ism/records", { code: "R-12", recordDate: "2026-10-29", idempotencyKey: "cub-r12-1" });
   check("Cubierta no crea un R-12", cubR12.status === 403, cubR12.status);
+  // R-16 dividido en 2 y R-23 a nombre propio (informe 5-nov).
+  const cubCat = (await api("tri", "GET", "/ism/catalog")).data;
+  const maqCat = (await api("tri2", "GET", "/ism/catalog")).data;
+  const allEq = (await api("cap", "GET", "/ism/catalog")).data.equipment as any[];
+  check(
+    "R-16: Cubierta y Mantenimiento ven solo sus equipos y entre los dos suman todos",
+    cubCat.equipment.every((e: any) => e.owner !== "Jefe de Máquinas") &&
+      maqCat.equipment.every((e: any) => e.owner === "Jefe de Máquinas") &&
+      cubCat.equipment.length + maqCat.equipment.length === allEq.length,
+    [cubCat.equipment.length, maqCat.equipment.length, allEq.length],
+  );
+  const engine = maqCat.equipment[0].folder;
+  const cubEngine = await api("tri", "POST", "/ism/records", { code: "R-16", recordDate: "2026-10-29", equipmentFolder: engine, idempotencyKey: "cub-r16-eng" });
+  check("Cubierta no abre el R-16 de un equipo de máquinas", cubEngine.status === 403, cubEngine.status);
+  check("Cubierta abre el R-23 de timoneles; el Capitán, de cualquiera", cubCat.fillPositions.join() === "TIM_01,TIM_02" && (await api("cap", "GET", "/ism/catalog")).data.fillPositions === null, cubCat.fillPositions);
+  const cubCook = await api("tri", "POST", "/ism/records", { code: "R-23", recordDate: "2026-10-29", position: "COC", idempotencyKey: "cub-r23-coc" });
+  check("Cubierta no abre el R-23 de Cocina", cubCook.status === 403, cubCook.status);
+
   const triArchived = await api("tri", "GET", `/ism/records/${r1}`);
   const triList = (await api("tri", "GET", "/ism/records?status=archivado")).data.records as any[];
   check("Cubierta no ve el Archivo, ni lo que ella misma hizo", triArchived.status === 403 && triList.length === 0, [triArchived.status, triList.length]);

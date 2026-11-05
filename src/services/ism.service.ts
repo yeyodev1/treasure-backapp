@@ -349,7 +349,8 @@ export async function renderRecordPdf(record: IIsmRecord): Promise<Uint8Array> {
     if (!img) continue;
     const embedded = img.png ? await pdf.embedPng(img.bytes) : await pdf.embedJpg(img.bytes);
     const r = rectOn(page, f);
-    const scale = Math.min((r.w - 4) / embedded.width, (r.h - 10) / embedded.height);
+    // La firma viene recortada al trazo: a todo el recuadro se ve enorme. Ocupa como mucho el 70 %.
+    const scale = Math.min((r.w - 4) * 0.7 / embedded.width, Math.min(r.h - 10, 40) * 0.7 / embedded.height);
     const w = embedded.width * scale;
     const h = embedded.height * scale;
     page.drawImage(embedded, { x: r.x + (r.w - w) / 2, y: r.y + 8 + (r.h - 10 - h) / 2, width: w, height: h });

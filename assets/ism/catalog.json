@@ -224,6 +224,20 @@
   }
  },
  {
+  "code": "R-18_Hoteleria",
+  "title": "Orden de requisición · Hotelería",
+  "group": "Mantenimiento",
+  "frequency": "evento",
+  "officeOnly": false,
+  "pages": 1,
+  "fieldCount": 46,
+  "stages": {
+   "tripulacion": 3,
+   "capitan": 0,
+   "oficina": 0
+  }
+ },
+ {
   "code": "R-19",
   "title": "Reporte de cumplimiento de zafarrancho",
   "group": "Seguridad",
@@ -313,8 +327,8 @@
   "group": "Seguridad",
   "frequency": "mensual",
   "officeOnly": false,
-  "pages": 1,
-  "fieldCount": 70,
+  "pages": 2,
+  "fieldCount": 72,
   "stages": {
    "tripulacion": 0,
    "capitan": 1,
@@ -327,8 +341,8 @@
   "group": "Seguridad",
   "frequency": "mensual",
   "officeOnly": false,
-  "pages": 1,
-  "fieldCount": 70,
+  "pages": 2,
+  "fieldCount": 72,
   "stages": {
    "tripulacion": 0,
    "capitan": 1,

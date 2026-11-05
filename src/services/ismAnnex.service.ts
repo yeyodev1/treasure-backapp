@@ -242,7 +242,7 @@ export async function appendGuidedAnnex(
   if (img) {
     try {
       const embedded = img.png ? await pdf.embedPng(img.bytes) : await pdf.embedJpg(img.bytes);
-      const scale = Math.min((boxW - 10) / embedded.width, (boxH - 10) / embedded.height);
+      const scale = Math.min((boxW - 10) * 0.6 / embedded.width, (boxH - 10) * 0.6 / embedded.height);
       const w = embedded.width * scale;
       const h = embedded.height * scale;
       page.drawImage(embedded, { x: left + (boxW - w) / 2, y: y - boxH + (boxH - h) / 2, width: w, height: h });

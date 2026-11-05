@@ -50,7 +50,7 @@ import { CREW_LIST_ROLES, crewProfile, PIN_RESET_WINDOW_MS, positionLabel, verif
 import { notifyRole, notifyUsers } from "../services/ismNotify.service";
 import { badRequest, conflict, forbidden, notFound } from "../errors/httpError";
 import { CREW_POSITIONS, POSITION_LABELS, ROLE_LABELS, isManager } from "../utils/roles";
-import { canCreateForm, ismAreaOf } from "../services/ismAccess.service";
+import { canCreateForm, canFillEquipment, ismAccessOf } from "../services/ismAccess.service";
 
 /** Quién puede ver todos los registros (la tripulación ve los suyos). Gerencia ve todo. */
 const SEES_ALL = new Set(["duena", "admin", "capitan", "designada"]);
@@ -289,7 +289,7 @@ const LIST_FIELDS = "-data -signatures.image -history -answers -idempotencyKey";
 
 export async function catalog(req: Request, res: Response, next: NextFunction) {
   try {
-    const area = await ismAreaOf(req.auth!);
+    const { area, positions: fillPositions } = await ismAccessOf(req.auth!);
     res.json({
       forms: ismCatalog().map((f) => {
         const guidedVersion = latestSchemaVersion(f.code);
@@ -299,8 +299,10 @@ export async function catalog(req: Request, res: Response, next: NextFunction) {
         return { ...f, guidedVersion, canCreate: canCreateForm(area, f.code, f.officeOnly), ...(card ? { card } : {}) };
       }),
       archive: SEES_ALL.has(req.auth!.role),
-      equipment: ismEquipment(),
+      equipment: ismEquipment().filter((e) => canFillEquipment(area, e.owner)),
       positions: CREW_POSITIONS.map((p) => ({ value: p, label: POSITION_LABELS[p] })),
+      // Cargos por los que esta cuenta abre un R-07 o R-23 (null = cualquiera).
+      fillPositions,
       vessel: defaultVessel(),
     });
   } catch (err) {
@@ -353,7 +355,8 @@ export async function createRecord(req: Request, res: Response, next: NextFuncti
     if (!def) throw badRequest("Formulario inválido");
     if (!recordDate) throw badRequest("Indica la fecha del registro");
     if (!isDateKey(recordDate)) throw badRequest("La fecha no es válida. Elige otra en el calendario.");
-    if (!canCreateForm(await ismAreaOf(req.auth!), def.code, def.officeOnly)) {
+    const access = await ismAccessOf(req.auth!);
+    if (!canCreateForm(access.area, def.code, def.officeOnly)) {
       throw forbidden(`El ${def.code.replace("_", " · ")} no lo llena tu área. Pídelo a quien le corresponde.`);
     }
 
@@ -378,6 +381,7 @@ export async function createRecord(req: Request, res: Response, next: NextFuncti
     if (def.frequency === "por_equipo") {
       const eq = ismEquipment().find((e) => e.folder === equipmentFolder);
       if (!eq) throw badRequest("Elige el equipo");
+      if (!canFillEquipment(access.area, eq.owner)) throw forbidden(`${eq.name} lo llena ${eq.owner === "Jefe de Máquinas" ? "Mantenimiento" : "Cubierta"}`);
       equipment = { folder: eq.folder, name: eq.name, category: eq.category };
       const map = def.equipmentFields!;
       data[map.name] = eq.name;
@@ -390,6 +394,9 @@ export async function createRecord(req: Request, res: Response, next: NextFuncti
     let pos = "";
     if (def.frequency.startsWith("por_cargo")) {
       if (!position || !CREW_POSITIONS.includes(position as never)) throw badRequest("Elige el cargo");
+      if (access.positions && !access.positions.includes(position)) {
+        throw forbidden(access.positions.length ? "Ese cargo no lo llenas tú" : "Pide a la Persona Designada que te ponga tu cargo");
+      }
       pos = position;
     }
 
@@ -1279,6 +1286,10 @@ export async function summary(req: Request, res: Response, next: NextFunction) {
       IsmRecord.distinct("position", { ...monthFilter, code: "R-23" }),
     ]);
 
+    // R-16 dividido: Cubierta y Mantenimiento ven el avance de sus equipos.
+    const { area } = await ismAccessOf(req.auth!);
+    const equipment = ismEquipment().filter((e) => canFillEquipment(area, e.owner));
+    const doneHere = equipment.filter((e) => equipmentDone.includes(e.folder)).length;
     const counts = Object.fromEntries(byStatus.map((s: { _id: string; n: number }) => [s._id, s.n]));
     const monthlyDone = new Set(monthly.map((x: { _id: string }) => x._id));
 
@@ -1299,9 +1310,9 @@ export async function summary(req: Request, res: Response, next: NextFunction) {
         {
           code: "R-16",
           title: "Mantenimiento preventivo por equipo",
-          done: equipmentDone.length >= ismEquipment().length,
-          progress: { done: equipmentDone.length, total: ismEquipment().length },
-          missing: ismEquipment()
+          done: doneHere >= equipment.length,
+          progress: { done: doneHere, total: equipment.length },
+          missing: equipment
             .filter((e) => !equipmentDone.includes(e.folder))
             .map((e) => e.name),
         },
