@@ -5,7 +5,7 @@ import { Product } from "../models/product.model";
 import { Requisition, RequisitionKind } from "../models/requisition.model";
 import { Purchase } from "../models/purchase.model";
 import { Cruise } from "../models/cruise.model";
-import { moveStock } from "../services/inventory.service";
+import { moveStock, updateCost } from "../services/inventory.service";
 import { nextCode } from "../services/codes.service";
 import { logEvent } from "../services/audit.service";
 import { badRequest, conflict, forbidden, notFound } from "../errors/httpError";
@@ -446,25 +446,6 @@ export async function listPurchases(req: Request, res: Response, next: NextFunct
   } catch (err) {
     next(err);
   }
-}
-
-/** Costo promedio ponderado por unidad base al recibir mercadería. */
-async function updateCost(productId: string, qty: number, costPerUnit: number, session: ClientSession) {
-  if (!(costPerUnit > 0) || !(qty > 0)) return;
-  const product = await Product.findById(productId)
-    .select("warehouseStock quitoStock puertoStock onboardStock costPerUnit")
-    .session(session);
-  if (!product) return;
-  const onHand = Math.max(0, product.warehouseStock + product.quitoStock + product.puertoStock + product.onboardStock);
-  const next =
-    product.costPerUnit > 0 && onHand > 0
-      ? (onHand * product.costPerUnit + qty * costPerUnit) / (onHand + qty)
-      : costPerUnit;
-  await Product.updateOne(
-    { _id: productId },
-    { $set: { costPerUnit: Math.round(next * 1e6) / 1e6, costUpdatedAt: new Date() } },
-    { session },
-  );
 }
 
 /**

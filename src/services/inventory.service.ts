@@ -267,3 +267,22 @@ export async function onboardAvailability() {
   }
   return result;
 }
+
+/** Costo promedio ponderado por unidad base al recibir mercadería. */
+export async function updateCost(productId: string, qty: number, costPerUnit: number, session: ClientSession) {
+  if (!(costPerUnit > 0) || !(qty > 0)) return;
+  const product = await Product.findById(productId)
+    .select("warehouseStock quitoStock puertoStock onboardStock costPerUnit")
+    .session(session);
+  if (!product) return;
+  const onHand = Math.max(0, product.warehouseStock + product.quitoStock + product.puertoStock + product.onboardStock);
+  const next =
+    product.costPerUnit > 0 && onHand > 0
+      ? (onHand * product.costPerUnit + qty * costPerUnit) / (onHand + qty)
+      : costPerUnit;
+  await Product.updateOne(
+    { _id: productId },
+    { $set: { costPerUnit: Math.round(next * 1e6) / 1e6, costUpdatedAt: new Date() } },
+    { session },
+  );
+}
