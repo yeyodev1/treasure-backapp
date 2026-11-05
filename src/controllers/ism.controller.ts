@@ -50,6 +50,7 @@ import { CREW_LIST_ROLES, crewProfile, PIN_RESET_WINDOW_MS, positionLabel, verif
 import { notifyRole, notifyUsers } from "../services/ismNotify.service";
 import { badRequest, conflict, forbidden, notFound } from "../errors/httpError";
 import { CREW_POSITIONS, POSITION_LABELS, ROLE_LABELS, isManager } from "../utils/roles";
+import { canCreateForm, ismAreaOf } from "../services/ismAccess.service";
 
 /** Quién puede ver todos los registros (la tripulación ve los suyos). Gerencia ve todo. */
 const SEES_ALL = new Set(["duena", "admin", "capitan", "designada"]);
@@ -155,6 +156,8 @@ function assertCanView(record: IIsmRecord, req: Request) {
   const uid = req.auth!.sub;
   const involved = creatorId(record) === uid || record.signatures.some((s) => s.user.toString() === uid);
   if (!involved) throw forbidden("Este registro no está a tu cargo");
+  // El Archivo ISM lo ven Capitán, Persona Designada y Gerencia (tabla del cliente, 5-nov-2026).
+  if (record.status === "archivado") throw forbidden("El Archivo ISM lo ven el Capitán, la Persona Designada y Gerencia");
 }
 
 function pushEvent(record: IIsmRecord, req: Request, action: string, reason = "", section = "") {
@@ -284,15 +287,18 @@ async function saveOrConflict(doc: { save: () => Promise<unknown> }) {
 /** Lo que el frontend no necesita en los listados (firmas en imagen, datos, respuestas). */
 const LIST_FIELDS = "-data -signatures.image -history -answers -idempotencyKey";
 
-export async function catalog(_req: Request, res: Response, next: NextFunction) {
+export async function catalog(req: Request, res: Response, next: NextFunction) {
   try {
+    const area = await ismAreaOf(req.auth!);
     res.json({
       forms: ismCatalog().map((f) => {
         const guidedVersion = latestSchemaVersion(f.code);
         // Tarjeta de Mis tareas del formato guiado (sale del esquema, no del código).
         const card = guidedVersion ? ismSchema(f.code, guidedVersion)?.card : undefined;
-        return { ...f, guidedVersion, ...(card ? { card } : {}) };
+        // Todos los formatos van (títulos de la bandeja y el archivo); `canCreate` dice cuáles llena esta cuenta.
+        return { ...f, guidedVersion, canCreate: canCreateForm(area, f.code, f.officeOnly), ...(card ? { card } : {}) };
       }),
+      archive: SEES_ALL.has(req.auth!.role),
       equipment: ismEquipment(),
       positions: CREW_POSITIONS.map((p) => ({ value: p, label: POSITION_LABELS[p] })),
       vessel: defaultVessel(),
@@ -347,8 +353,8 @@ export async function createRecord(req: Request, res: Response, next: NextFuncti
     if (!def) throw badRequest("Formulario inválido");
     if (!recordDate) throw badRequest("Indica la fecha del registro");
     if (!isDateKey(recordDate)) throw badRequest("La fecha no es válida. Elige otra en el calendario.");
-    if (def.officeOnly && !(isManager(req.auth!.role) || req.auth!.role === "designada")) {
-      throw forbidden("Este registro lo llena la oficina");
+    if (!canCreateForm(await ismAreaOf(req.auth!), def.code, def.officeOnly)) {
+      throw forbidden(`El ${def.code.replace("_", " · ")} no lo llena tu área. Pídelo a quien le corresponde.`);
     }
 
     // Reintento de la misma acción (señal intermitente, doble toque): mismo registro.
@@ -497,6 +503,10 @@ export async function listRecords(req: Request, res: Response, next: NextFunctio
     const uid = new Types.ObjectId(req.auth!.sub);
     if (mine === "1" || !SEES_ALL.has(req.auth!.role)) {
       filter.$and = [{ $or: [{ createdBy: uid }, { "signatures.user": uid }] }];
+    }
+    // Sin acceso al Archivo ISM: no ven los archivados, ni los propios.
+    if (!SEES_ALL.has(req.auth!.role)) {
+      (filter.$and as unknown[]).push({ status: { $ne: "archivado" } });
     }
 
     const pageSize = Math.min(Number(limit) || 30, 100);

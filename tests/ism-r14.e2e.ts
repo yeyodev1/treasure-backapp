@@ -120,7 +120,7 @@ async function main() {
     recA?.recordDate,
   );
   check("Guarda la edición del formato", recA?.formEdition === schema.templateEdition, recA?.formEdition);
-  const b = await newR14("tri2", "r14-file-b");
+  const b = await newR14("cap", "r14-file-b");
   check("Mismo minuto → sufijo _2", b.data.record?.fileName === "R-14_20261029_2126_2.pdf", b.data.record?.fileName);
   const moved = await api("tri", "PATCH", `/ism/records/${recA._id}`, { context: { activityTime: "21:40" } });
   check("Cambiar la hora renombra el archivo", moved.data.record?.fileName === "R-14_20261029_2140.pdf", moved.data.record?.fileName);
@@ -180,7 +180,7 @@ async function main() {
 
   // ---- Registros de prueba ----
   const before = (await api("des", "GET", "/ism/summary")).data.counts?.borrador;
-  const t = await newR14("des", "r14-test-1", "08:00", { test: true });
+  const t = await api("des", "POST", "/ism/records", { code: "R-07", recordDate: "2026-10-29", position: "TIM_01", idempotencyKey: "r07-test-1", test: true });
   check("La Persona Designada crea un registro de prueba", t.data.record?.test === true, t.data.record?.test);
   const after = (await api("des", "GET", "/ism/summary")).data.counts?.borrador;
   check("Los registros de prueba no cuentan en indicadores", before === after, [before, after]);
@@ -434,7 +434,7 @@ async function main() {
   const novs = await api("des", "GET", "/ism/novedades?estado=todas");
   const balsas = novs.data.novedades?.find((n: any) => n.itemId === "ronda.balsas" && n.record === r1);
   check("La novedad vive en su propia colección (responsable, plazo, estado)", balsas?.responsable === "Contramaestre" && balsas?.plazo === "2026-10-30" && balsas?.itemLabel === "Ronda de seguridad de cubierta 02", balsas);
-  const r17 = (await api("des", "POST", "/ism/records", { code: "R-17", recordDate: "2026-10-30", idempotencyKey: "r17-link-1" })).data.record;
+  const r17 = (await api("cap", "POST", "/ism/records", { code: "R-17", recordDate: "2026-10-30", idempotencyKey: "r17-link-1" })).data.record;
   const follow = await api("des", "PATCH", `/ism/novedades/${balsas?._id}`, { estado: "en_proceso", responsable: "Jefe de Máquinas", r17Record: r17?._id });
   check("Seguimiento con enlace a un R-17, sin tocar el registro archivado", follow.data.novedad?.estado === "en_proceso" && follow.data.novedad?.r17Record === r17?._id && follow.data.novedad?.history?.length === 2, follow.data);
   const notR17 = await api("des", "PATCH", `/ism/novedades/${balsas?._id}`, { r17Record: r1 });
@@ -529,6 +529,31 @@ async function main() {
     tap.data.record?.status === "por_oficina" && tapSig?.image === ANA_PNG2 && tapSig?.method === "sesion",
     [tap.status, tap.data.message, tapSig?.method],
   );
+
+  // ---- Qué R llena cada área y quién ve el Archivo (tabla del cliente, 5-nov-2026) ----
+  const canCreate = async (who: string) =>
+    new Set(((await api(who, "GET", "/ism/catalog")).data.forms as any[]).filter((f) => f.canCreate).map((f) => f.code));
+  const [cub, maq, ofi, pue, ger] = await Promise.all(["tri", "tri2", "des", "cap", "duena"].map(canCreate));
+  check(
+    "Cubierta: R-05, 06, 07, 10, 14, 16, 17, 23, 28",
+    [...cub].sort().join() === ["R-05", "R-06", "R-07", "R-10", "R-14", "R-16", "R-17", "R-23", "R-28"].join(),
+    [...cub],
+  );
+  check("Máquinas: R-07, 12, 13, 16, 23", [...maq].sort().join() === ["R-07", "R-12", "R-13", "R-16", "R-23"].join(), [...maq]);
+  check("Persona Designada: R-07 y R-16", [...ofi].sort().join() === ["R-07", "R-16"].join(), [...ofi]);
+  check("Capitán: todo salvo R-26, R-29, R-30 (y los de oficina)", pue.has("R-14") && pue.has("R-18_Maquinas") && !pue.has("R-26") && !pue.has("R-29") && !pue.has("R-30") && !pue.has("R-11"), [...pue]);
+  check("Gerencia: todo", ger.size === (await api("duena", "GET", "/ism/catalog")).data.forms.length, ger.size);
+  const maqR14 = await api("tri2", "POST", "/ism/records", { code: "R-14", recordDate: "2026-10-29", idempotencyKey: "maq-r14-1" });
+  check("Máquinas no crea un R-14", maqR14.status === 403, maqR14.status);
+  const maqR12 = await api("tri2", "POST", "/ism/records", { code: "R-12", recordDate: "2026-10-29", idempotencyKey: "maq-r12-1" });
+  check("Máquinas crea un R-12", maqR12.status === 201, [maqR12.status, maqR12.data.message]);
+  const cubR12 = await api("tri", "POST", "/ism/records", { code: "R-12", recordDate: "2026-10-29", idempotencyKey: "cub-r12-1" });
+  check("Cubierta no crea un R-12", cubR12.status === 403, cubR12.status);
+  const triArchived = await api("tri", "GET", `/ism/records/${r1}`);
+  const triList = (await api("tri", "GET", "/ism/records?status=archivado")).data.records as any[];
+  check("Cubierta no ve el Archivo, ni lo que ella misma hizo", triArchived.status === 403 && triList.length === 0, [triArchived.status, triList.length]);
+  check("El Capitán sí ve el Archivo", (await api("cap", "GET", `/ism/records/${r1}`)).status === 200);
+  check("El catálogo dice quién ve el Archivo", (await api("tri", "GET", "/ism/catalog")).data.archive === false && (await api("cap", "GET", "/ism/catalog")).data.archive === true);
 
   server.close();
   await mongoose.disconnect();
