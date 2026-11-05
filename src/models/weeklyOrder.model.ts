@@ -9,7 +9,8 @@ import mongoose, { Schema, Types } from "mongoose";
  *
  * - bar: por revisar por el bar
  * - directora: por revisar por la directora
- * - aprobado: listo para comprar / por recibir (el avance sale de las compras)
+ * - aprobado: listo para atender; el avance sale de las entregas y envíos
+ *   registrados dentro del mismo pedido (guía 4 perfiles, 4-nov-2026)
  * - cancelado: se descartó antes de aprobarse
  */
 export const WEEKLY_ORDER_STATUSES = ["bar", "directora", "aprobado", "cancelado"] as const;
@@ -47,6 +48,37 @@ export interface IWeeklyOrderLine {
   editedAt: Date | null;
 }
 
+/** De dónde sale lo que se entrega: bodega de puerto, bodega de Quito o compra nueva. */
+export const DELIVERY_SOURCES = ["puerto", "quito", "compra"] as const;
+export type DeliverySource = (typeof DELIVERY_SOURCES)[number];
+
+export interface IWeeklyOrderDeliveryItem {
+  product: Types.ObjectId;
+  name: string;
+  source: DeliverySource;
+  /** Envases. */
+  qty: number;
+  /** Costo por envase de una compra nueva (0 = sin costo registrado). */
+  cost: number;
+}
+
+/**
+ * "Confirmar mi entrega" (administradora: llega al barco en el acto) o
+ * "Confirmar mi envío" (dueña: sale de Quito y suma al barco al confirmar la
+ * llegada). `key` la genera la app: repetir la misma no duplica.
+ */
+export interface IWeeklyOrderDelivery {
+  key: string;
+  kind: "entrega" | "envio";
+  at: Date;
+  by: Types.ObjectId | null;
+  byName: string;
+  items: IWeeklyOrderDeliveryItem[];
+  document: string;
+  arrivedAt: Date | null;
+  arrivedByName: string;
+}
+
 export interface IWeeklyOrderEvent {
   at: Date;
   by: Types.ObjectId | null;
@@ -65,6 +97,9 @@ export interface IWeeklyOrder {
   status: WeeklyOrderStatus;
   lines: IWeeklyOrderLine[];
   history: IWeeklyOrderEvent[];
+  deliveries: IWeeklyOrderDelivery[];
+  /** Aprobado en cero: "Cerrado sin necesidades". */
+  noNeeds: boolean;
   /** Cambios después de aprobar: cada uno sube la revisión y avisa a compras. */
   revision: number;
   changedAt: Date | null;
@@ -113,6 +148,35 @@ const eventSchema = new Schema<IWeeklyOrderEvent>(
   { _id: false },
 );
 
+const deliverySchema = new Schema<IWeeklyOrderDelivery>(
+  {
+    key: { type: String, required: true },
+    kind: { type: String, enum: ["entrega", "envio"], required: true },
+    at: { type: Date, default: () => new Date() },
+    by: { type: Schema.Types.ObjectId, ref: "User", default: null },
+    byName: { type: String, default: "" },
+    items: {
+      type: [
+        new Schema<IWeeklyOrderDeliveryItem>(
+          {
+            product: { type: Schema.Types.ObjectId, ref: "Product", required: true },
+            name: { type: String, required: true },
+            source: { type: String, enum: DELIVERY_SOURCES, required: true },
+            qty: { type: Number, required: true, min: 1 },
+            cost: { type: Number, default: 0, min: 0 },
+          },
+          { _id: false },
+        ),
+      ],
+      default: [],
+    },
+    document: { type: String, default: "", maxlength: 120 },
+    arrivedAt: { type: Date, default: null },
+    arrivedByName: { type: String, default: "" },
+  },
+  { _id: false },
+);
+
 const weeklyOrderSchema = new Schema<IWeeklyOrder>(
   {
     code: { type: String, required: true, unique: true },
@@ -122,6 +186,8 @@ const weeklyOrderSchema = new Schema<IWeeklyOrder>(
     status: { type: String, enum: WEEKLY_ORDER_STATUSES, default: "bar" },
     lines: { type: [lineSchema], default: [] },
     history: { type: [eventSchema], default: [] },
+    deliveries: { type: [deliverySchema], default: [] },
+    noNeeds: { type: Boolean, default: false },
     revision: { type: Number, default: 0 },
     changedAt: { type: Date, default: null },
     recipient: { type: String, default: "" },

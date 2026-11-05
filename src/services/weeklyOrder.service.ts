@@ -1,6 +1,5 @@
 import { Types } from "mongoose";
 import { Product } from "../models/product.model";
-import { Purchase } from "../models/purchase.model";
 import { StockMovement } from "../models/stockMovement.model";
 import { IWeeklyOrder, IWeeklyOrderLine, SuggestionBasis, WeeklyOrder } from "../models/weeklyOrder.model";
 import { nextCode } from "./codes.service";
@@ -18,7 +17,7 @@ const CUT_WEEKDAY = 3; // miércoles
 const CUT_HOUR = 15;
 export const ALERT_AFTER_MS = 3 * 3600_000; // 18h00
 /** A quién llega el pedido aprobado: por ahora solo dentro del sistema (sin correo ni WhatsApp). */
-export const ORDER_RECIPIENT = "Compras: Administración y Bodega, en Inventario y pedidos";
+export const ORDER_RECIPIENT = "Administración (puerto o compra nueva) y la dueña (Quito), en Pedido semanal";
 
 /** Último corte (miércoles 15h00 Galápagos) que ya ocurrió en `now`. */
 export function latestCut(now: Date = new Date()): Date {
@@ -71,50 +70,71 @@ export function suggest(input: SuggestionInput): { suggested: number | null; bas
   return null;
 }
 
-/** Comprado y recibido por pedido y producto (unidad base), según sus compras. */
-export async function orderProgress(orderIds: Types.ObjectId[]) {
-  const purchases = await Purchase.find({ weeklyOrder: { $in: orderIds }, status: { $ne: "anulada" } })
-    .select("weeklyOrder status lines.product lines.qty lines.receivedQty")
-    .lean();
-  const result = new Map<string, Map<string, { purchased: number; received: number }>>();
-  for (const p of purchases) {
-    const key = String(p.weeklyOrder);
-    const byProduct = result.get(key) ?? new Map<string, { purchased: number; received: number }>();
-    for (const line of p.lines) {
-      const id = line.product.toString();
-      const row = byProduct.get(id) ?? { purchased: 0, received: 0 };
-      // Una compra cerrada con faltante solo cuenta lo que llegó.
-      row.purchased = round2(row.purchased + (p.status === "cerrada" ? line.receivedQty : line.qty));
-      row.received = round2(row.received + line.receivedQty);
-      byProduct.set(id, row);
+/** Avance de una línea: entregado al barco, enviado sin llegar y lo que falta (envases). */
+export interface LineProgress {
+  delivered: number;
+  inTransit: number;
+  pending: number;
+}
+
+/**
+ * Avance del pedido aprobado según sus entregas y envíos (guía 4 perfiles):
+ * la entrega de la administradora ya está en el barco; el envío de Quito
+ * cuenta como "en camino" hasta confirmar la llegada.
+ */
+export function orderProgress(order: Pick<IWeeklyOrder, "lines" | "deliveries">): Map<string, LineProgress> {
+  const result = new Map<string, LineProgress>();
+  for (const l of order.lines) result.set(l.product.toString(), { delivered: 0, inTransit: 0, pending: 0 });
+  for (const d of order.deliveries ?? []) {
+    for (const item of d.items) {
+      const row = result.get(item.product.toString());
+      if (!row) continue;
+      if (d.kind === "entrega" || d.arrivedAt) row.delivered += item.qty;
+      else row.inTransit += item.qty;
     }
-    result.set(key, byProduct);
+  }
+  for (const l of order.lines) {
+    const row = result.get(l.product.toString())!;
+    row.pending = Math.max(0, l.qty - row.delivered - row.inTransit);
   }
   return result;
 }
 
+export const PHASE_LABELS = {
+  bar: "Por revisar por el bar",
+  directora: "Por revisar por la directora",
+  atender: "Aprobado: por atender",
+  en_curso: "Aprobado: entrega en curso",
+  completo: "Entregado completo",
+  sin_necesidades: "Cerrado sin necesidades",
+  cancelado: "Cancelado",
+} as const;
+export type OrderPhase = keyof typeof PHASE_LABELS;
+
+export function phaseOf(order: Pick<IWeeklyOrder, "status" | "lines" | "deliveries" | "noNeeds">): OrderPhase {
+  if (order.status !== "aprobado") return order.status;
+  if (order.noNeeds) return "sin_necesidades";
+  const rows = [...orderProgress(order).values()];
+  if (rows.every((r) => r.pending <= 0 && r.inTransit <= 0)) return "completo";
+  return rows.some((r) => r.delivered > 0 || r.inTransit > 0) ? "en_curso" : "atender";
+}
+
 /**
- * Lo que ya viene en camino al corte, para no pedirlo dos veces: compras sin
- * recibir y lo aprobado en pedidos anteriores que aún no se compró.
+ * Lo que ya viene en camino al barco al corte, para no pedirlo dos veces: lo
+ * enviado sin llegar y lo aprobado sin atender de pedidos anteriores. Las
+ * compras a una bodega no cuentan: tenerlo en bodega no es tenerlo a bordo.
  */
 async function incomingByProduct(before: Date) {
   const incoming = new Map<string, number>();
-  const add = (id: string, qty: number) => {
-    if (qty > 0) incoming.set(id, round2((incoming.get(id) ?? 0) + qty));
-  };
-  const open = await Purchase.find({ status: { $in: ["registrada", "recibida_parcial"] } })
-    .select("lines.product lines.qty lines.receivedQty")
+  const approved = await WeeklyOrder.find({ status: "aprobado", noNeeds: { $ne: true }, cutAt: { $lt: before } })
+    .select("lines deliveries")
     .lean();
-  for (const p of open) for (const l of p.lines) add(l.product.toString(), l.qty - l.receivedQty);
-
-  const approved = await WeeklyOrder.find({ status: "aprobado", cutAt: { $lt: before } })
-    .select("lines.product lines.qty lines.containerSize")
-    .lean();
-  const progress = await orderProgress(approved.map((o) => o._id));
   for (const o of approved) {
-    const done = progress.get(o._id.toString());
+    const progress = orderProgress(o);
     for (const l of o.lines) {
-      add(l.product.toString(), l.qty * (l.containerSize || 1) - (done?.get(l.product.toString())?.purchased ?? 0));
+      const row = progress.get(l.product.toString())!;
+      const qty = (row.pending + row.inTransit) * (l.containerSize || 1);
+      if (qty > 0) incoming.set(l.product.toString(), round2((incoming.get(l.product.toString()) ?? 0) + qty));
     }
   }
   return incoming;
@@ -135,7 +155,8 @@ export async function buildLines(cutAt: Date): Promise<IWeeklyOrderLine[]> {
   for (const p of products) {
     const id = p._id.toString();
     const atCut = stockOf(p);
-    const onHand = Object.values(atCut).reduce((s, q) => s + Math.max(0, q), 0);
+    // Necesidad del barco: solo cuenta lo que hay a bordo. Puerto y Quito son de dónde se consigue.
+    const onHand = Math.max(0, atCut.abordo);
     const result = suggest({
       target: p.stockTarget ?? 0,
       containerSize: p.containerSize || 1,
