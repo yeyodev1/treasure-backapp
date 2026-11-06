@@ -12,7 +12,7 @@ import {
   moveStock,
   onboardAvailability,
 } from "../services/inventory.service";
-import { chargesChanged } from "../services/account.service";
+import { accountScope, chargesChanged } from "../services/account.service";
 import { claimBartender } from "../services/commission.service";
 import { logEvent } from "../services/audit.service";
 import { badRequest, conflict, forbidden, HttpError, notFound } from "../errors/httpError";
@@ -78,8 +78,9 @@ async function accountStatusOf(cruiseId: Types.ObjectId | string, cabinNumber: n
  * agrupado por bebida, con el total de hoy y el del viaje.
  */
 async function cabinSummary(cruiseId: Types.ObjectId | string, cabinNumber: number, auth: Auth) {
+  const scope = await accountScope(cruiseId, cabinNumber);
   const [orders, account] = await Promise.all([
-    Order.find({ cruise: cruiseId, cabinNumber, status: { $in: ["entregada", "pendiente"] } })
+    Order.find({ $or: scope, status: { $in: ["entregada", "pendiente"] } })
       .populate("createdBy", "name")
       .sort({ createdAt: -1 })
       .limit(400),

@@ -14,6 +14,7 @@ import { Device } from "../models/device.model";
 import { onboardAvailability } from "../services/inventory.service";
 import { round2 } from "../utils/units";
 import { logEvent } from "../services/audit.service";
+import { chargesChanged, continuesToOf } from "../services/account.service";
 import { badRequest, conflict, HttpError, notFound } from "../errors/httpError";
 import { addDaysKey, commercialDateKey, ecuadorDateTime, TIMEZONE } from "../utils/dates";
 import { EMAIL_ERROR, isValidOptionalEmail } from "../utils/email";
@@ -469,6 +470,10 @@ function normalizeName(value: string) {
   return value.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/\s+/g, " ").trim();
 }
 
+/** Identidad de un pasajero para no repetirlo en la salida (identificación o nombre). */
+const keyOf = (p: { name: string; idNumber: string }) =>
+  p.idNumber ? `id:${p.idNumber.replace(/\s|-/g, "").toLowerCase()}` : `n:${normalizeName(p.name)}`;
+
 /** Problemas que impiden iniciar (bloquean) y avisos que no bloquean. */
 async function startReview(cruise: InstanceType<typeof Cruise>) {
   const blockers: string[] = [];
@@ -589,6 +594,8 @@ async function finishReview(cruise: InstanceType<typeof Cruise>) {
     Device.find({ $or: [{ cruise: cruise._id }, { pending: { $gt: 0 } }] }),
     Order.countDocuments({ cruise: cruise._id, status: "retenida" }),
   ]);
+  // Crucero unido: la cabina que sigue en otro crucero no se cobra aquí.
+  const continuesTo = await continuesToOf(cruise._id);
 
   const cabins = cruise.cabins.map((cabin) => {
     const charges = orders.filter((o) => o.cabinNumber === cabin.number);
@@ -597,14 +604,16 @@ async function finishReview(cruise: InstanceType<typeof Cruise>) {
       payments.filter((p) => p.cabinNumber === cabin.number).reduce((s, p) => s + p.total, 0),
     );
     const status = accounts.find((a) => a.cabinNumber === cabin.number)?.status ?? "abierta";
+    const next = continuesTo.get(cabin.number) ?? null;
     return {
       number: cabin.number,
       guestName: cabin.guestName,
       passengers: cabin.passengers.length,
       consumed,
       paid,
-      due: round2(consumed - paid),
-      accountStatus: charges.length ? status : "sin_consumos",
+      due: next ? 0 : round2(consumed - paid),
+      accountStatus: next ? "continua" : charges.length ? status : "sin_consumos",
+      continuesTo: next,
     };
   });
 
@@ -746,8 +755,6 @@ export async function updatePassengers(req: Request, res: Response, next: NextFu
       throw badRequest(`La cabina ${cabinNumber} admite ${cabin.capacity} pasajero(s)`);
     }
     // Sin duplicados dentro de la salida (misma identificación o mismo nombre).
-    const keyOf = (p: { name: string; idNumber: string }) =>
-      p.idNumber ? `id:${p.idNumber.replace(/\s|-/g, "").toLowerCase()}` : `n:${normalizeName(p.name)}`;
     const keys = new Set<string>();
     for (const p of clean) {
       const k = keyOf(p);
@@ -780,6 +787,110 @@ export async function updatePassengers(req: Request, res: Response, next: NextFu
       cabinNumber,
     });
     res.json({ cabin });
+  } catch (err) {
+    next(err);
+  }
+}
+
+type ContinuationLink = { to?: number; fromCruise?: string | null; fromCabin?: number };
+
+/**
+ * Crucero unido (pedido del cliente, 6-nov-2026): las cabinas de este crucero
+ * siguen de cabinas de un crucero anterior. Todo el barco, solo algunas, o
+ * con cambio de cabina. La cuenta es una sola y se cobra al final.
+ * `fromCruise: null` deshace la unión. Una cabina vacía recibe los pasajeros
+ * de la de origen.
+ */
+export async function updateContinuations(req: Request, res: Response, next: NextFunction) {
+  try {
+    const { links } = req.body as { links?: ContinuationLink[] };
+    if (!Array.isArray(links) || !links.length) throw badRequest("Indica las cabinas a unir");
+
+    const cruise = await Cruise.findById(req.params.id);
+    if (!cruise) throw notFound("Crucero no encontrado");
+    if (cruise.status === "cerrado") throw conflict("El crucero está finalizado: ya no se une");
+    const name = cruise.code || cruise.name;
+
+    const targets = links.map((link) => {
+      const cabin = cruise.cabins.find((c) => c.number === Number(link.to));
+      if (!cabin) throw badRequest(`La cabina ${link.to} no existe en ${name}`);
+      return { link, cabin, before: cabin.continuesFrom ? `${cabin.continuesFrom.cruise}:${cabin.continuesFrom.cabinNumber}` : "" };
+    });
+    // Primero se sueltan todas: así un cambio de cabina entre dos (3 ↔ 5) no choca consigo mismo.
+    for (const t of targets) t.cabin.continuesFrom = null;
+
+    const origins = new Map<string, InstanceType<typeof Cruise>>();
+    const lines: string[] = [];
+    const changed: number[] = [];
+    for (const { link, cabin, before } of targets) {
+      if (link.fromCruise) {
+        if (!Types.ObjectId.isValid(link.fromCruise)) throw badRequest("Crucero de origen inválido");
+        if (cruise._id.equals(link.fromCruise)) throw badRequest("Una cabina no continúa de su mismo crucero");
+        const origin = origins.get(link.fromCruise) ?? (await Cruise.findById(link.fromCruise));
+        if (!origin) throw notFound("Crucero de origen no encontrado");
+        origins.set(link.fromCruise, origin);
+        const originName = origin.code || origin.name;
+        if (origin.startDate >= cruise.startDate) throw badRequest(`${originName} no es anterior a ${name}`);
+        const fromCabin = origin.cabins.find((c) => c.number === Number(link.fromCabin));
+        if (!fromCabin) throw badRequest(`La cabina ${link.fromCabin} no existe en ${originName}`);
+
+        const sameHere = cruise.cabins.find(
+          (c) => c.continuesFrom?.cruise.equals(origin._id) && c.continuesFrom.cabinNumber === fromCabin.number,
+        );
+        const elsewhere = await Cruise.findOne({
+          _id: { $ne: cruise._id },
+          cabins: { $elemMatch: { "continuesFrom.cruise": origin._id, "continuesFrom.cabinNumber": fromCabin.number } },
+        }).select("code name");
+        if (sameHere || elsewhere) {
+          const where = sameHere ? `la cabina ${sameHere.number} de ${name}` : elsewhere!.code || elsewhere!.name;
+          throw badRequest(`La cabina ${fromCabin.number} de ${originName} ya sigue en ${where}`);
+        }
+
+        cabin.continuesFrom = { cruise: origin._id, cabinNumber: fromCabin.number };
+        if (!cabin.passengers.length && fromCabin.passengers.length) {
+          cabin.passengers = fromCabin.passengers.map((p) => ({
+            name: p.name,
+            country: p.country,
+            nationality: p.nationality,
+            idNumber: p.idNumber,
+            email: p.email,
+            phone: p.phone,
+            isPayer: p.isPayer,
+          })) as never;
+          cabin.capacity = Math.max(cabin.capacity, fromCabin.capacity, cabin.passengers.length);
+          cabin.guestName = cabinDisplayName(cabin);
+        }
+        lines.push(`cabina ${cabin.number} ← ${originName} cabina ${fromCabin.number}`);
+      } else if (before) {
+        lines.push(`cabina ${cabin.number}: ya no continúa`);
+      }
+      const after = cabin.continuesFrom ? `${cabin.continuesFrom.cruise}:${cabin.continuesFrom.cabinNumber}` : "";
+      if (after !== before) changed.push(cabin.number);
+    }
+
+    // Los pasajeros traídos no pueden quedar repetidos en dos cabinas de la salida.
+    const seen = new Map<string, number>();
+    for (const cabin of cruise.cabins) {
+      for (const p of cabin.passengers) {
+        const other = seen.get(keyOf(p));
+        if (other !== undefined) throw badRequest(`${p.name} quedaría en las cabinas ${other} y ${cabin.number}: corrige los pasajeros primero`);
+        seen.set(keyOf(p), cabin.number);
+      }
+    }
+
+    await cruise.save();
+    // La cuenta cambió de contenido: si estaba revisada o aprobada, vuelve a revisarse.
+    for (const n of changed) await chargesChanged(cruise._id, n, req.auth!.sub, "Crucero unido: cambió lo que suma la cuenta");
+
+    if (lines.length) {
+      await logEvent(req.auth, {
+        kind: "salida",
+        title: `Crucero unido · ${name}`,
+        detail: lines.join(" · "),
+        cruise: cruise._id,
+      });
+    }
+    res.json({ cruise });
   } catch (err) {
     next(err);
   }

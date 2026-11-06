@@ -4,7 +4,7 @@ import { Account } from "../models/account.model";
 import { Cruise } from "../models/cruise.model";
 import { Order, chargeableQty, pendingQty } from "../models/order.model";
 import { Payment } from "../models/payment.model";
-import { buildCabinAccount, ensureAccount } from "../services/account.service";
+import { buildCabinAccount, continuesToOf, ensureAccount } from "../services/account.service";
 import { logEvent } from "../services/audit.service";
 import { proformaData, proformaFileName, proformaPdf } from "../services/proforma.service";
 import { badRequest, conflict, notFound } from "../errors/httpError";
@@ -74,10 +74,40 @@ export async function cruiseAccounts(req: Request, res: Response, next: NextFunc
       if (payment.settled === false) entry.partialPaid += payment.total;
     }
 
+    // Crucero unido: la cabina que viene de otro crucero suma esa cuenta; la que sigue en otro se cobra allá.
+    const continuesTo = await continuesToOf(cruise._id);
+    const linked = new Map(
+      await Promise.all(
+        cruise.cabins
+          .filter((c) => c.continuesFrom)
+          .map(async (c) => [c.number, await buildCabinAccount(cruise._id, c.number)] as const),
+      ),
+    );
+
     res.json({
       cabins: cruise.cabins.map((cabin) => {
         const account = accountMap.get(cabin.number);
         const t = totals.get(cabin.number);
+        const full = linked.get(cabin.number);
+        const next = continuesTo.get(cabin.number) ?? null;
+        if (full) {
+          return {
+            cabinNumber: cabin.number,
+            guestName: cabin.guestName,
+            passengers: cabin.passengers.length,
+            status: full.status,
+            version: full.version,
+            total: full.total,
+            orders: full.orders.length,
+            pendingDeliveries: full.pendingDeliveries,
+            paidOrders: full.paidOrders.length,
+            consumed: full.consumed,
+            paid: full.paid,
+            partialPaid: full.partialPaid,
+            due: next ? 0 : full.due,
+            continuesTo: next,
+          };
+        }
         return {
           cabinNumber: cabin.number,
           guestName: cabin.guestName,
@@ -91,7 +121,8 @@ export async function cruiseAccounts(req: Request, res: Response, next: NextFunc
           consumed: round2(t?.consumed ?? 0),
           paid: round2(t?.paid ?? 0),
           partialPaid: round2(t?.partialPaid ?? 0),
-          due: round2(Math.max(0, (t?.total ?? 0) - (t?.partialPaid ?? 0))),
+          due: next ? 0 : round2(Math.max(0, (t?.total ?? 0) - (t?.partialPaid ?? 0))),
+          continuesTo: next,
         };
       }),
     });

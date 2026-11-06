@@ -95,6 +95,7 @@ export default function routerApi(app: Application) {
   router.get("/cruises/:id", requireAuth, ALL, cruises.getCruise);
   router.patch("/cruises/:id", requireAuth, LEAD, cruises.updateCruise);
   router.put("/cruises/:id/cabins/:cabinNumber/passengers", requireAuth, LEAD, cruises.updatePassengers);
+  router.put("/cruises/:id/continuations", requireAuth, LEAD, cruises.updateContinuations);
   router.get("/cruises/:id/start-check", requireAuth, LEAD, cruises.startCheck);
   router.post("/cruises/:id/start", requireAuth, DIRECTOR, cruises.startCruise);
   router.get("/cruises/:id/finish-check", requireAuth, LEAD, cruises.finishCheck);

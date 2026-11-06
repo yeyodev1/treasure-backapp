@@ -31,6 +31,12 @@ export interface ICabin {
   accountToken: string;
   /** Plazas de la cabina: no se registran más pasajeros que esto. */
   capacity: number;
+  /**
+   * Crucero unido (6-nov-2026): la cabina sigue de una cabina de un crucero
+   * anterior (puede cambiar de número). Su cuenta suma lo consumido allá y se
+   * cobra una sola vez, al final.
+   */
+  continuesFrom?: { cruise: Types.ObjectId; cabinNumber: number } | null;
 }
 
 /**
@@ -82,6 +88,16 @@ const cabinSchema = new Schema<ICabin>(
       default: () => crypto.randomBytes(12).toString("hex"),
     },
     capacity: { type: Number, default: 2, min: 1, max: 6 },
+    continuesFrom: {
+      type: new Schema(
+        {
+          cruise: { type: Schema.Types.ObjectId, ref: "Cruise", required: true },
+          cabinNumber: { type: Number, required: true },
+        },
+        { _id: false },
+      ),
+      default: null,
+    },
   },
   { _id: false },
 );
@@ -113,6 +129,7 @@ const cruiseSchema = new Schema<ICruise>(
 cruiseSchema.index({ status: 1, startDate: -1 });
 cruiseSchema.index({ "cabins.accountToken": 1 });
 cruiseSchema.index({ leg: 1, startDate: 1 });
+cruiseSchema.index({ "cabins.continuesFrom.cruise": 1 });
 // Solo una salida en curso a la vez, garantizado por la base (doble toque o dos equipos).
 cruiseSchema.index(
   { status: 1 },

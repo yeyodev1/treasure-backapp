@@ -2,6 +2,7 @@ import { Types } from "mongoose";
 import { Account, AccountStatus, IAccount } from "../models/account.model";
 import { chargeableQty, IOrder, Order, pendingQty } from "../models/order.model";
 import { Payment } from "../models/payment.model";
+import { Cruise } from "../models/cruise.model";
 import { round2 } from "../utils/units";
 
 export interface AccountLineItem {
@@ -89,6 +90,45 @@ export interface AccountSummary {
   /** Cortesías de toda la cuenta (pagadas y abiertas). */
   courtesyAll: number;
   history: Array<{ action: string; version: number; reason: string; by: string; at: Date }>;
+}
+
+type CabinRef = { cruise: Types.ObjectId; cabinNumber: number };
+
+async function continuesFromOf(ref: CabinRef): Promise<CabinRef | null> {
+  const cruise = await Cruise.findById(ref.cruise).select("cabins.number cabins.continuesFrom").lean();
+  const from = cruise?.cabins.find((c) => c.number === ref.cabinNumber)?.continuesFrom;
+  return from ? { cruise: from.cruise, cabinNumber: from.cabinNumber } : null;
+}
+
+/**
+ * Crucero unido: la cabina y las cabinas de cruceros anteriores de las que
+ * continúa (A → B → C). Sus consumos y pagos forman una sola cuenta.
+ */
+export async function accountScope(cruiseId: Types.ObjectId | string, cabinNumber: number): Promise<CabinRef[]> {
+  const scope: CabinRef[] = [];
+  let ref: CabinRef | null = { cruise: new Types.ObjectId(String(cruiseId)), cabinNumber };
+  // Tope de vueltas: un enlace mal hecho nunca deja la cuenta en un bucle.
+  while (ref && scope.length < 6 && !scope.some((s) => s.cruise.equals(ref!.cruise) && s.cabinNumber === ref!.cabinNumber)) {
+    scope.push(ref);
+    ref = await continuesFromOf(ref);
+  }
+  return scope;
+}
+
+/** Cabinas de un crucero que siguen en otro: número de cabina → "B-006 · cabina 3". */
+export async function continuesToOf(cruiseId: Types.ObjectId | string) {
+  const next = await Cruise.find({ "cabins.continuesFrom.cruise": cruiseId })
+    .select("code name cabins.number cabins.continuesFrom")
+    .lean();
+  const map = new Map<number, string>();
+  for (const c of next) {
+    for (const cabin of c.cabins) {
+      if (cabin.continuesFrom?.cruise.equals(String(cruiseId))) {
+        map.set(cabin.continuesFrom.cabinNumber, `${c.code || c.name} · cabina ${cabin.number}`);
+      }
+    }
+  }
+  return map;
 }
 
 /** Obtiene (o crea) la cuenta de una cabina en una salida. */
@@ -209,16 +249,13 @@ export async function buildCabinAccount(
   cruiseId: Types.ObjectId | string,
   cabinNumber: number,
 ): Promise<AccountSummary> {
+  const scope = await accountScope(cruiseId, cabinNumber);
   const [account, orders, payments] = await Promise.all([
     Account.findOne({ cruise: cruiseId, cabinNumber }).populate("history.by", "name"),
-    Order.find({
-      cruise: cruiseId,
-      cabinNumber,
-      status: { $nin: ["cancelada", "retenida"] },
-    })
+    Order.find({ $or: scope, status: { $nin: ["cancelada", "retenida"] } })
       .populate("createdBy", "name")
       .sort({ createdAt: 1 }),
-    Payment.find({ cruise: cruiseId, cabinNumber, status: "vigente" }).sort({ createdAt: 1 }),
+    Payment.find({ $or: scope, status: "vigente" }).sort({ createdAt: 1 }),
   ]);
 
   let subtotal = 0;
