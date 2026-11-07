@@ -103,7 +103,7 @@ export default function routerApi(app: Application) {
 
   // Consumo directo: un toque registra lo servido, el cargo y el stock
   router.post("/consumptions", requireAuth, BAR, consumptions.createConsumption);
-  router.get("/wetsuits", requireAuth, BAR, consumptions.wetsuitForCruise);
+  router.get("/wetsuits", requireAuth, DIRECTOR, consumptions.wetsuitForCruise);
   router.post("/consumptions/:id/undo", requireAuth, BAR, consumptions.undoConsumption);
   router.post("/consumptions/:id/bonify", requireAuth, BAR, consumptions.bonifyConsumption);
   router.post("/consumptions/:id/held-review", requireAuth, DIRECTOR, consumptions.reviewHeld);

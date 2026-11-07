@@ -648,36 +648,41 @@ async function main() {
   check("Hay un crucero en curso para probar wetsuits", Boolean(live));
   const wetCabin = live!.cabins.find((c) => c.passengers.length)!.number;
   await Cruise.updateOne({ _id: live!._id }, { $set: { leg: "A" } });
-  const ws = await api("bar", "GET", `/wetsuits?cruiseId=${live!._id}`);
-  await api("bar", "GET", `/wetsuits?cruiseId=${live!._id}`);
+  const ws = await api("dir", "GET", `/wetsuits?cruiseId=${live!._id}`);
+  await api("dir", "GET", `/wetsuits?cruiseId=${live!._id}`);
   const wetsuitCount = await Product.countDocuments({ category: "servicio", legs: { $ne: [] } });
   check(
     "Crucero A: wetsuit a $50 (IVA incluido); se crean los dos una sola vez",
     ws.status === 200 && ws.data.product?.price === 50 && wetsuitCount === 2,
     [ws.status, ws.data.product, wetsuitCount],
   );
-  const badCruise = await api("bar", "GET", "/wetsuits?cruiseId=nope");
+  const badCruise = await api("dir", "GET", "/wetsuits?cruiseId=nope");
   check("Crucero inválido → 404", badCruise.status === 404, badCruise.status);
   const cOnly = await Product.findOne({ legs: ["C"] });
   check("Crucero C: $80 (IVA incluido)", cOnly?.price === 80, cOnly?.price);
   // Los ya creados con el IVA sumado de más ($92) se corrigen; un precio puesto por Gerencia no se toca.
   await Product.updateOne({ _id: cOnly!._id }, { $set: { price: 92 } });
-  await api("bar", "GET", `/wetsuits?cruiseId=${live!._id}`);
+  await api("dir", "GET", `/wetsuits?cruiseId=${live!._id}`);
   const fixedC = (await Product.findById(cOnly!._id))?.price;
   await Product.updateOne({ _id: cOnly!._id }, { $set: { price: 85 } });
-  await api("bar", "GET", `/wetsuits?cruiseId=${live!._id}`);
+  await api("dir", "GET", `/wetsuits?cruiseId=${live!._id}`);
   const keptC = (await Product.findById(cOnly!._id))?.price;
   check("El wetsuit a $92 pasa a $80; uno a $85 de Gerencia se queda", fixedC === 80 && keptC === 85, [fixedC, keptC]);
 
-  const rented = await api("bar", "POST", "/consumptions", {
+  const barWs = await api("bar", "GET", `/wetsuits?cruiseId=${live!._id}`);
+  const barRent = await api("bar", "POST", "/consumptions", {
+    cruiseId: live!._id, cabinNumber: wetCabin, productId: ws.data.product._id, qty: 1, idempotencyKey: "wet-bar",
+  });
+  check("El bar no ve ni cobra wetsuits (6-nov-2026)", barWs.status === 403 && barRent.status === 403, [barWs.status, barRent.status]);
+  const rented = await api("dir", "POST", "/consumptions", {
     cruiseId: live!._id, cabinNumber: wetCabin, productId: ws.data.product._id, qty: 3, idempotencyKey: "wet-1",
   });
   check("3 wetsuits se suman a la cuenta de la cabina", rented.status === 201 && rented.data.order?.total === 150, [rented.status, rented.data.order?.total, rented.data.message]);
-  const wrongLeg = await api("bar", "POST", "/consumptions", {
+  const wrongLeg = await api("dir", "POST", "/consumptions", {
     cruiseId: live!._id, cabinNumber: wetCabin, productId: cOnly!._id, qty: 1, idempotencyKey: "wet-2",
   });
   check("El wetsuit del crucero C no se cobra en el A", wrongLeg.status === 400, wrongLeg.status);
-  const byAgency = await api("bar", "POST", "/consumptions", {
+  const byAgency = await api("dir", "POST", "/consumptions", {
     cruiseId: live!._id, cabinNumber: wetCabin, productId: ws.data.product._id, qty: 2,
     courtesy: true, courtesyKind: "agencia", courtesyReason: "Wetsuit pagado por la agencia", idempotencyKey: "wet-3",
   });

@@ -1,7 +1,7 @@
 import { NextFunction, Request, Response } from "express";
 import { canSeeCosts, isOwner } from "../utils/roles";
 import { Types } from "mongoose";
-import { IProduct, Product, PRODUCT_CATEGORIES, ProductCategory, WINE_STYLES, WineStyle } from "../models/product.model";
+import { IProduct, Product, PRODUCT_CATEGORIES, ProductCategory, WINE_STYLES, WineStyle, SERVING_ICONS, ServingIcon } from "../models/product.model";
 import { logEvent } from "../services/audit.service";
 import { contificoProducts } from "../services/contifico.service";
 import { badRequest, forbidden, notFound } from "../errors/httpError";
@@ -43,6 +43,13 @@ interface ProductBody {
   active?: boolean;
   contificoId?: string;
   wineStyle?: WineStyle | "";
+  servingIcon?: ServingIcon | "";
+}
+
+function applyServingIcon(product: IProduct, icon: ServingIcon | "" | undefined) {
+  if (icon === undefined) return;
+  if (icon !== "" && !SERVING_ICONS.includes(icon)) throw badRequest("Icono inválido");
+  product.servingIcon = icon;
 }
 
 function applyWineStyle(product: IProduct, style: WineStyle | "" | undefined) {
@@ -114,6 +121,7 @@ export async function createProduct(req: Request, res: Response, next: NextFunct
     });
     if (body.kind === "fisico") applyPhysicalFields(product, body);
     applyWineStyle(product, body.wineStyle);
+    applyServingIcon(product, body.servingIcon);
     if (body.price !== undefined && body.price > 0) applyPrice(product, body.price, req);
     await product.save();
 
@@ -216,6 +224,10 @@ export async function updateProduct(req: Request, res: Response, next: NextFunct
       changes.push(`tipo de vino ${body.wineStyle || "sin tipo"}`);
     }
     if (product.category !== "vino") product.wineStyle = "";
+    if (body.servingIcon !== undefined && body.servingIcon !== product.servingIcon) {
+      applyServingIcon(product, body.servingIcon);
+      changes.push(`icono ${body.servingIcon || "automático"}`);
+    }
     if (body.kind !== undefined && body.kind !== product.kind) {
       if (!PRODUCT_KINDS.includes(body.kind)) throw badRequest("Tipo inválido");
       product.kind = body.kind;

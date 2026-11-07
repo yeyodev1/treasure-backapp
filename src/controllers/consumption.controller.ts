@@ -186,7 +186,8 @@ export async function createConsumption(req: Request, res: Response, next: NextF
       throw badRequest(`${product.name} es un insumo y no se vende solo`);
     }
 
-    // Wetsuit (o lo que tenga precio por trayecto): solo el de este crucero.
+    // Wetsuit (o lo que tenga precio por trayecto): lo cobra la directora de crucero, no el bar (6-nov-2026).
+    if (product.legs?.length && req.auth!.role === "bartender") throw forbidden("Los wetsuits los cobra la directora de crucero");
     if (product.legs?.length && !product.legs.includes(cruise.leg)) {
       throw badRequest(`${product.name} no es del ${cruise.code ? `crucero ${cruise.code}` : "trayecto de este crucero"}`);
     }

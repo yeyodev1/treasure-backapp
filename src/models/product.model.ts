@@ -1,6 +1,10 @@
 import mongoose, { Schema, Types } from "mongoose";
 import { PRODUCT_KINDS, ProductKind, STOCK_UNITS, StockUnit } from "../utils/units";
 
+/** Vaso o envase con que se sirve (Especificación de color e iconos · Pantalla Bar, 7-nov-2026). */
+export const SERVING_ICONS = ["martini", "alto", "corto", "copa", "flauta", "botvino", "botlicor", "mini", "cerveza", "lata", "agua", "descorche"] as const;
+export type ServingIcon = (typeof SERVING_ICONS)[number];
+
 export const PRODUCT_CATEGORIES = [
   "cerveza",
   "vino",
@@ -75,6 +79,8 @@ export interface IProduct {
 
   /** Solo vinos: tinto, blanco, rosado o espumante. Vacío = sin clasificar. */
   wineStyle: WineStyle | "";
+  /** Icono de cómo se sirve en el Bar (7-nov-2026); vacío = regla por categoría. */
+  servingIcon: ServingIcon | "";
 
   isCustom: boolean;
   /** Solo se cobra en estos trayectos (A, B, C); vacío = en todos. Los wetsuits tienen precio por trayecto. */
@@ -130,6 +136,7 @@ const productSchema = new Schema<IProduct>(
     servingPrice: { type: Number, default: 0, min: 0 },
     recipe: { type: [recipeItemSchema], default: [] },
     wineStyle: { type: String, enum: [...WINE_STYLES, ""], default: "" },
+    servingIcon: { type: String, enum: [...SERVING_ICONS, ""], default: "" },
     isCustom: { type: Boolean, default: false },
     legs: { type: [String], default: [] },
     active: { type: Boolean, default: true },
