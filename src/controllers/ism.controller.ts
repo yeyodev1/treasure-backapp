@@ -1340,9 +1340,18 @@ export async function summary(req: Request, res: Response, next: NextFunction) {
     // Los registros de prueba no cuentan en indicadores.
     const real = { test: { $ne: true } };
     const monthFilter = { recordDate: { $gte: start, $lt: end }, status: { $ne: "borrador" }, ...real };
+    // Las bandejas cuentan lo mismo que muestra la lista: sin SEES_ALL, solo lo suyo y sin archivados.
+    const seesAll = SEES_ALL.has(req.auth!.role);
+    const scope = seesAll
+      ? real
+      : {
+          ...real,
+          status: { $ne: "archivado" },
+          $or: [{ createdBy: uid, handoff: null }, { "signatures.user": uid, handoff: null }, { "handoff.to": uid }],
+        };
 
     const [byStatus, mine, mineReturned, monthly, equipmentDone, positionsDone] = await Promise.all([
-      IsmRecord.aggregate([{ $match: real }, { $group: { _id: "$status", n: { $sum: 1 } } }]),
+      IsmRecord.aggregate([{ $match: scope }, { $group: { _id: "$status", n: { $sum: 1 } } }]),
       IsmRecord.countDocuments({ status: "borrador", $or: [{ createdBy: uid, handoff: null }, { "handoff.to": uid }] }),
       IsmRecord.countDocuments({ createdBy: uid, status: "borrador", returnInfo: { $ne: null } }),
       IsmRecord.aggregate([
@@ -1354,8 +1363,11 @@ export async function summary(req: Request, res: Response, next: NextFunction) {
     ]);
 
     // R-16 dividido: Cubierta y Mantenimiento ven el avance de sus equipos.
-    const { area } = await ismAccessOf(req.auth!);
+    const { area, positions } = await ismAccessOf(req.auth!);
     const equipment = ismEquipment().filter((e) => canFillEquipment(area, e.owner));
+    // R-23: cada área ve el avance de los cargos por los que llena (null = todos).
+    const ownPositions = positions ?? [...CREW_POSITIONS];
+    const ownPositionsDone = ownPositions.filter((p) => positionsDone.includes(p));
     const doneHere = equipment.filter((e) => equipmentDone.includes(e.folder)).length;
     const counts = Object.fromEntries(byStatus.map((s: { _id: string; n: number }) => [s._id, s.n]));
     const monthlyDone = new Set(monthly.map((x: { _id: string }) => x._id));
@@ -1370,6 +1382,7 @@ export async function summary(req: Request, res: Response, next: NextFunction) {
         misBorradores: mine,
         misDevueltos: mineReturned,
       },
+      // Cada cuenta ve solo los obligatorios de los R que llena (tabla del cliente, 5-nov-2026).
       checklist: [
         { code: "R-25_Alcohol", title: "Control mensual de alcohol", done: monthlyDone.has("R-25_Alcohol") },
         { code: "R-25_Drogas", title: "Control mensual de drogas", done: monthlyDone.has("R-25_Drogas") },
@@ -1386,11 +1399,11 @@ export async function summary(req: Request, res: Response, next: NextFunction) {
         {
           code: "R-23",
           title: "Horas de descanso por cargo",
-          done: positionsDone.length >= CREW_POSITIONS.length,
-          progress: { done: positionsDone.length, total: CREW_POSITIONS.length },
-          missing: CREW_POSITIONS.filter((p) => !positionsDone.includes(p)).map((p) => POSITION_LABELS[p]),
+          done: ownPositionsDone.length >= ownPositions.length,
+          progress: { done: ownPositionsDone.length, total: ownPositions.length },
+          missing: ownPositions.filter((p) => !positionsDone.includes(p)).map((p) => POSITION_LABELS[p as keyof typeof POSITION_LABELS]),
         },
-      ],
+      ].filter((i) => canCreateForm(area, i.code) && (i.code !== "R-23" || ownPositions.length > 0)),
     });
   } catch (err) {
     next(err);
