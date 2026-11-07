@@ -108,6 +108,9 @@ async function main() {
   await api("bar", "POST", "/consumptions", { cruiseId: b, cabinNumber: 5, productId: coke, idempotencyKey: "b5" });
   const acc5 = (await api("dir", "GET", `/accounts/${b}/5`)).data.account ?? (await api("dir", "GET", `/accounts/${b}/5`)).data;
   check("Cuenta B-5 suma A-3 + B-5", Math.abs(acc5.total - 2 * price) < 0.01 && acc5.orders.length === 2, { total: acc5.total, orders: acc5.orders?.length });
+  // El bar ve de qué crucero viene cada consumo (7-nov-2026)
+  const recent5 = (await api("bar", "GET", `/consumptions/summary/${b}/5`)).data.summary.recent;
+  check("Bar: el consumo de A dice su crucero, el de B no", recent5.filter((r: any) => r.fromCruise).length === 1 && recent5.filter((r: any) => !r.fromCruise).length === 1, recent5.map((r: any) => r.fromCruise));
   const listB = (await api("dir", "GET", `/accounts/${b}`)).data.cabins;
   check("Lista de cuentas de B: la 5 con todo", Math.abs(listB.find((c: any) => c.cabinNumber === 5).due - 2 * price) < 0.01);
 

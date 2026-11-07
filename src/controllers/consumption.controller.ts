@@ -79,13 +79,16 @@ async function accountStatusOf(cruiseId: Types.ObjectId | string, cabinNumber: n
  */
 async function cabinSummary(cruiseId: Types.ObjectId | string, cabinNumber: number, auth: Auth) {
   const scope = await accountScope(cruiseId, cabinNumber);
-  const [orders, account] = await Promise.all([
+  const [orders, account, origins] = await Promise.all([
     Order.find({ $or: scope, status: { $in: ["entregada", "pendiente"] } })
       .populate("createdBy", "name")
       .sort({ createdAt: -1 })
       .limit(400),
     Account.findOne({ cruise: cruiseId, cabinNumber }).select("status"),
+    // Crucero unido: el bar ve de qué crucero anterior viene cada consumo (7-nov-2026).
+    scope.length > 1 ? Cruise.find({ _id: { $in: scope.slice(1).map((s) => s.cruise) } }).select("code name").lean() : [],
   ]);
+  const originName = new Map(origins.map((c) => [c._id.toString(), c.code || c.name]));
   const today = startOfDayEcuador();
   let trip = 0;
   let todayTotal = 0;
@@ -113,6 +116,7 @@ async function cabinSummary(cruiseId: Types.ObjectId | string, cabinNumber: numb
       courtesyKind: item?.courtesy ? (item.courtesyKind ?? "casa") : undefined,
       total: o.items.length === 1 ? o.total : item && !item.courtesy ? round2(qty * item.unitPrice) : 0,
       at: o.clientAt ?? o.createdAt,
+      fromCruise: originName.get(o.cruise.toString()) ?? null,
       by: (o.createdBy as unknown as { name?: string })?.name ?? "",
       canUndo: open,
       canCourtesy: open && !item?.courtesy,
