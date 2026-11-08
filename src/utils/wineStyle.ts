@@ -49,6 +49,8 @@ const STYLES: Array<[WineStyle, string[]]> = [
       "Cabernet Sauvignon Casillero",
       "Reservado Cabernet Sauvignon",
       "Reservado Merlot",
+      "Reservado Carménère",
+      "Reservado Malbec",
       "Cabernet Sauvignon mini 375ml",
       "Calvet Merlot mini 187ml",
       "Adobe Reserva Carmenere mini 375ml",

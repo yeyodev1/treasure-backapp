@@ -100,6 +100,8 @@ const WINES: Array<[string, number, number | null]> = [
   ["Cabernet Sauvignon Casillero", 42.5, null],
   ["Reservado Cabernet Sauvignon", 38.5, 8.0],
   ["Reservado Merlot", 38.5, 8.0],
+  ["Reservado Carménère", 38.5, 8.0],
+  ["Reservado Malbec", 38.5, 8.0],
 ];
 
 /** Vinos mini: [nombre, ml, precio]. Se venden cerrados. */
