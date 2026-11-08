@@ -20,6 +20,7 @@ export function ismRoutes(router: Router, crewRoles: RequestHandler) {
   router.get("/ism/crew/me/pin", requireAuth, crewRoles, crew.myPin);
   router.post("/ism/crew/me/pin", requireAuth, crewRoles, crew.changeMyPin);
   router.patch("/ism/crew/:id", requireAuth, crewRoles, crew.updateCrewMember);
+  router.put("/ism/me/signature", requireAuth, crewRoles, crew.setMySignature);
   router.get("/ism/crew/:id/signature", requireAuth, crewRoles, crew.crewSignature);
   router.put("/ism/crew/:id/signature", requireAuth, crewRoles, crew.setCrewSignature);
   router.post("/ism/crew/:id/temporary-pin", requireAuth, crewRoles, crew.temporaryPin);

@@ -203,6 +203,28 @@ export async function setCrewSignature(req: Request, res: Response, next: NextFu
 }
 
 /**
+ * Mi firma (pedido del cliente, 8-nov-2026: «que cuando entres ya esté pre
+ * establecida tu firma»): cualquier cuenta guarda la suya al firmar y las
+ * siguientes veces se pone con un toque. La de un tripulante también la
+ * puede registrar la Persona Designada (setCrewSignature).
+ */
+export async function setMySignature(req: Request, res: Response, next: NextFunction) {
+  try {
+    const { image } = req.body as { image?: unknown };
+    if (typeof image !== "string" || !image.startsWith("data:image/png;base64,")) throw badRequest("Firma con el dedo en el recuadro");
+    if (image.length > 400_000) throw badRequest("La firma es demasiado grande");
+    const profile = await crewProfile(req.auth!.sub);
+    profile.signatureImage = image;
+    profile.signatureSetAt = new Date();
+    await profile.save();
+    await logEvent(req.auth, { kind: "equipo", title: `Firma registrada · ${req.auth!.name}` });
+    res.json({ ok: true });
+  } catch (err) {
+    next(err);
+  }
+}
+
+/**
  * Clave temporal de un solo uso. Se muestra una sola vez a la Persona
  * Designada; el tripulante la cambia en su primera firma. También desbloquea.
  * Queda quién y cuándo la restableció: si fue en las 24 h previas a una

@@ -104,6 +104,16 @@ async function main() {
   check("R-09 enviado al Capitán sin clasificar", sentN.data.record?.status === "por_capitan", [sentN.status, sentN.data.message]);
   check("Aviso al Capitán por la novedad", (await notices("cap")).some((x) => x.record === n.data.record._id));
 
+
+  // Mi firma: cualquier cuenta guarda la suya y se lee para firmar con un toque.
+  const me = (await api("dir", "GET", "/auth/me")).data;
+  const png = "data:image/png;base64,iVBORw0KGgo=";
+  const mySig = await api("dir", "PUT", "/ism/me/signature", { image: png });
+  check("Guardar mi firma", mySig.status === 200, [mySig.status, mySig.data.message]);
+  const meId = me.user?.id ?? me.id;
+  check("Mi firma se lee", (await api("dir", "GET", `/ism/crew/${meId}/signature`)).data.image === png, meId);
+  check("Firma inválida rechazada", (await api("dir", "PUT", "/ism/me/signature", { image: "x" })).status === 400);
+
   server.close();
   await mongoose.disconnect();
   await repl.stop();
