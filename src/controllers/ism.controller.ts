@@ -48,6 +48,7 @@ import { freezeArchivedPdf, readArchivedPdf, tryFreezeArchivedPdf } from "../ser
 import { syncNovedades } from "../services/ismNovedad.service";
 import { CREW_LIST_ROLES, crewProfile, PIN_RESET_WINDOW_MS, positionLabel, verifyPin } from "../services/ismCrew.service";
 import { notifyRole, notifyUsers } from "../services/ismNotify.service";
+import { nextCode } from "../services/codes.service";
 import { badRequest, conflict, forbidden, notFound } from "../errors/httpError";
 import { CREW_POSITIONS, POSITION_LABELS, ROLE_LABELS, isManager } from "../utils/roles";
 import { canCreateForm, canFillEquipment, ismAccessOf } from "../services/ismAccess.service";
@@ -126,6 +127,34 @@ function canSignStage(role: string, stage: SignatureStage, officeRole = "designa
 /** Quién recibe en tierra: la Persona Designada, o Administración en el R-18 Hotelería (5-nov). */
 const officeRoleOf = (def: { officeRole?: string }) => def.officeRole ?? "designada";
 const officeLabelOf = (def: { officeRole?: string }) => (def.officeRole === "admin" ? "Administración" : "Persona Designada");
+
+/**
+ * Número de orden (O/R) del R-18: lo pone el sistema al crear (TREASURE ISM 2.0,
+ * AUTO-18-03 «reserva número una vez»), nadie lo busca ni lo escribe.
+ */
+const ORDER_FIELD: Record<string, string> = {
+  "R-18_Cubierta": "Text Field 112",
+  "R-18_Maquinas": "Text Field 112",
+  "R-18_Hoteleria": "Text Field 3",
+};
+
+/**
+ * Al pasar de paso, avisa a quien le toca (AUTO-X04: el siguiente rol recibe su
+ * pendiente sin que nadie reenvíe). Los registros de prueba no avisan.
+ */
+async function notifyNextStep(record: IIsmRecord & { _id: Types.ObjectId }, def: { officeRole?: string }) {
+  if (record.test) return;
+  const code = record.code.replace("_", " · ");
+  if (record.status === "por_capitan") {
+    await notifyRole("capitan", { kind: "por_firmar_capitan", title: `${code} por firmar`, body: record.fileName, record: record._id });
+  } else if (record.status === "por_oficina") {
+    if (officeRoleOf(def) === "admin") {
+      await notifyRole("admin", { kind: "por_recibir", title: `${code} por recibir`, body: record.fileName, record: record._id });
+    } else {
+      await notifyRole("designada", { kind: "por_firmar_designada", title: `${code} por archivar`, body: record.fileName, record: record._id });
+    }
+  }
+}
 
 /** R-07 enviado a quien recibe el cargo: es suyo leerlo, firmarlo y enviarlo al Capitán. */
 const isReceiver = (record: IIsmRecord, uid: string) => record.handoff?.to?.toString() === uid;
@@ -439,6 +468,10 @@ export async function createRecord(req: Request, res: Response, next: NextFuncti
       ctx = await applyCrewChoice(ctx, context ?? {}, req);
     }
 
+    const isTest = test === true && (isManager(req.auth!.role) || req.auth!.role === "designada");
+    const orderField = ORDER_FIELD[def.code];
+    if (orderField && !isTest) data[orderField] = await nextCode(`OR-${recordDate.slice(0, 4)}`);
+
     const cruise = await Cruise.findOne({ status: "abordo" }).select("_id");
     const date = recordDateFromKey(recordDate);
     const now = new Date();
@@ -449,7 +482,7 @@ export async function createRecord(req: Request, res: Response, next: NextFuncti
       fileName: buildFileName(def.code, date, now, pos || equipment?.folder),
       formEdition: schema?.templateEdition ?? "",
       // Registros de prueba: fuera de indicadores y avisos (solo quien administra los marca).
-      test: test === true && (isManager(req.auth!.role) || req.auth!.role === "designada"),
+      test: isTest,
       data: schema ? projectToData(schema, { data, answers: {}, context: ctx }) : data,
       position: pos,
       equipment,
@@ -913,9 +946,7 @@ export async function submit(req: Request, res: Response, next: NextFunction) {
     record.returnInfo = null;
     pushEvent(record, req, "enviado");
     await saveOrConflict(record);
-    if (record.status === "por_oficina" && def.officeRole === "admin" && !record.test) {
-      await notifyRole("admin", { kind: "por_recibir", title: `${record.code.replace("_", " · ")} por recibir`, body: record.fileName, record: record._id });
-    }
+    await notifyNextStep(record, def);
 
     await logEvent(req.auth, {
       kind: "registro",
@@ -974,6 +1005,7 @@ export async function approve(req: Request, res: Response, next: NextFunction) {
 
     await saveOrConflict(record);
     if (record.status === "archivado") await tryFreezeArchivedPdf(record);
+    else await notifyNextStep(record, def);
     await logEvent(req.auth, {
       kind: "registro",
       title: `${record.code} · ${record.status === "archivado" ? "archivado" : "aprobado por el Capitán"}`,
