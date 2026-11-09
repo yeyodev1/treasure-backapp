@@ -65,6 +65,21 @@ export const POSITION_LABELS: Record<CrewPosition, string> = {
   DIR: "Dirección de crucero",
 };
 
+/**
+ * Acceso a Registros ISM por área → cargo → clave (pedido del cliente,
+ * 9-nov-2026): cada cargo de la pantalla de entrada y los cargos a bordo que cubre.
+ */
+export const LOGIN_CARGOS: Record<string, CrewPosition[]> = {
+  capitan: ["CAP"],
+  marinero: ["TIM_01", "TIM_02"],
+  maquinas: ["MAQ"],
+  auxmaquinas: ["AuxMAQ"],
+  director: ["DIR"],
+  cocinero: ["COC", "AuxCOC"],
+  barman: ["BAR"],
+  camarero: ["CABIN"],
+};
+
 /** Costos de inventario: Gerencia, Administración y Bodega (registran compras con costo). */
 export function canSeeCosts(role: string | undefined): boolean {
   return role === "duena" || role === "admin" || role === "bodega";

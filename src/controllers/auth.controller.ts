@@ -3,7 +3,9 @@ import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
 import { env } from "../config/env";
 import { IUser, User } from "../models/user.model";
-import { badRequest, unauthorized } from "../errors/httpError";
+import { badRequest, HttpError, unauthorized } from "../errors/httpError";
+import { IsmCrew } from "../models/ismCrew.model";
+import { LOGIN_CARGOS } from "../utils/roles";
 import { Types } from "mongoose";
 import { CREW_LIST_ROLES, verifyPin } from "../services/ismCrew.service";
 
@@ -47,31 +49,61 @@ export async function login(req: Request, res: Response, next: NextFunction) {
 }
 
 /**
- * Tripulación: entra con su usuario (nombre.apellido) y su clave de 4 números,
- * sin correo. Misma clave y mismo bloqueo que al firmar (5 intentos → 15 min).
- * Con clave temporal pide crear la propia en el mismo paso (`newPin`).
+ * Tripulación: entra eligiendo su cargo (área → cargo) y su clave de 4
+ * números, o con su usuario (nombre.apellido) y la clave. Misma clave y mismo
+ * bloqueo que al firmar (5 intentos → 15 min). Con clave temporal pide crear
+ * la propia en el mismo paso (`newPin`).
  */
 export async function crewLogin(req: Request, res: Response, next: NextFunction) {
   try {
-    const { username, pin, newPin, remember } = req.body as {
+    const { username, cargo, pin, newPin, remember } = req.body as {
       username?: string;
+      cargo?: string;
       pin?: string;
       newPin?: string;
       remember?: boolean;
     };
-    if (typeof username !== "string" || !username.trim()) throw badRequest("Escribe tu usuario");
-    const user = await User.findOne({
-      username: username.toLowerCase().trim(),
-      active: true,
-      role: { $in: CREW_LIST_ROLES },
-      sharedDevice: { $ne: true },
-    });
-    if (!user) throw unauthorized("Usuario o clave incorrectos");
+    const crew = { active: true, role: { $in: CREW_LIST_ROLES }, sharedDevice: { $ne: true } };
+    let user: (IUser & { _id: Types.ObjectId }) | null;
+    if (typeof cargo === "string" && cargo) {
+      const positions = Object.hasOwn(LOGIN_CARGOS, cargo) ? LOGIN_CARGOS[cargo]! : [];
+      user = await userByPin(await User.find({ ...crew, position: { $in: positions } }).sort({ name: 1 }), pin);
+    } else {
+      if (typeof username !== "string" || !username.trim()) throw badRequest("Escribe tu usuario");
+      user = await User.findOne({ ...crew, username: username.toLowerCase().trim() });
+      if (!user) throw unauthorized("Usuario o clave incorrectos");
+    }
     await verifyPin(user._id, pin, newPin);
     res.json({ token: signToken(user, Boolean(remember)), user: publicUser(user) });
   } catch (err) {
     next(err);
   }
+}
+
+/**
+ * De quién es la clave entre las personas de un cargo. Si no es de nadie, el
+ * intento fallido se le cuenta a todas (mismo bloqueo que con usuario): sin
+ * eso la clave de 4 números se adivinaría probando.
+ */
+async function userByPin(candidates: Array<IUser & { _id: Types.ObjectId }>, pin: unknown) {
+  if (!candidates.length) throw unauthorized("Nadie tiene ese cargo todavía. Pide a la Persona Designada que te registre.");
+  if (typeof pin !== "string" || !/^\d{4}$/.test(pin)) throw badRequest("La clave tiene 4 números");
+  const now = new Date();
+  const profiles = await IsmCrew.find({ user: { $in: candidates.map((c) => c._id) } });
+  const live = profiles.filter((p) => p.pinHash && !(p.lockedUntil && p.lockedUntil > now));
+  let matches: typeof live = [];
+  for (const p of live) if (await bcrypt.compare(pin, p.pinHash)) matches.push(p);
+  // Dos personas del cargo con la misma clave: decide quién está a bordo.
+  if (matches.length > 1) matches = matches.filter((p) => p.onboard);
+  if (matches.length === 1) return candidates.find((c) => c._id.equals(matches[0]!.user))!;
+  if (matches.length > 1) {
+    throw new HttpError(409, "Esa clave la usa más de una persona de este cargo. Entra por Gerencia con tu usuario y cambia tu clave.", "clave_repetida");
+  }
+  // Nadie coincide: verifyPin cuenta el intento (o dice «bloqueada» / «sin clave») y lanza el error.
+  const targets = live.length ? live.map((p) => p.user) : [candidates[0]!._id];
+  let first: unknown;
+  for (const id of targets) await verifyPin(id, pin).catch((err) => (first ??= err));
+  throw first ?? unauthorized("Clave incorrecta");
 }
 
 export async function me(req: Request, res: Response, next: NextFunction) {

@@ -11,6 +11,7 @@ import {
   deltasFromApplied,
   moveStock,
   onboardAvailability,
+  swapIngredients,
 } from "../services/inventory.service";
 import { accountScope, chargesChanged } from "../services/account.service";
 import { claimBartender } from "../services/commission.service";
@@ -139,7 +140,7 @@ async function cabinSummary(cruiseId: Types.ObjectId | string, cabinNumber: numb
 
 export async function createConsumption(req: Request, res: Response, next: NextFunction) {
   try {
-    const { cruiseId, cabinNumber, productId, qty, courtesy, courtesyReason, courtesyKind, idempotencyKey, clientAt } =
+    const { cruiseId, cabinNumber, productId, qty, courtesy, courtesyReason, courtesyKind, idempotencyKey, clientAt, swaps } =
       req.body as {
         cruiseId?: string;
         cabinNumber?: number;
@@ -150,6 +151,8 @@ export async function createConsumption(req: Request, res: Response, next: NextF
         courtesyKind?: CourtesyKind;
         idempotencyKey?: string;
         clientAt?: string;
+        /** Cóctel con cambio de gaseosa o licor: [{ from, to }] (ids de insumos). */
+        swaps?: unknown;
       };
     if (!cruiseId || !cabinNumber || !productId) {
       throw badRequest("Crucero, cabina y bebida son obligatorios");
@@ -191,14 +194,18 @@ export async function createConsumption(req: Request, res: Response, next: NextF
     if (product.legs?.length && !product.legs.includes(cruise.leg)) {
       throw badRequest(`${product.name} no es del ${cruise.code ? `crucero ${cruise.code}` : "trayecto de este crucero"}`);
     }
-    const applied = await appliedFor(product);
+    const hasSwaps = Array.isArray(swaps) && swaps.length > 0;
+    if (hasSwaps && product.category !== "coctel") throw badRequest("Solo los cócteles admiten cambio de ingrediente");
+    const { applied, surcharge, note } = await swapIngredients(await appliedFor(product), swaps);
+    const itemName = product.name + note;
+    const unitPrice = round2(product.price + surcharge);
     const cost = costOf(applied);
     const late = cruise.status === "cerrado";
     const item = {
       product: product._id,
-      name: product.name,
+      name: itemName,
       qty: units,
-      unitPrice: product.price,
+      unitPrice,
       // El bar también registra cortesías (con motivo), no solo Dirección.
       courtesy: Boolean(courtesy),
       courtesyKind: kindOf(courtesyKind),
@@ -222,7 +229,7 @@ export async function createConsumption(req: Request, res: Response, next: NextF
           cabinNumber,
           items: [item],
           status: late ? "retenida" : "entregada",
-          total: late || item.courtesy ? 0 : round2(units * product.price),
+          total: late || item.courtesy ? 0 : round2(units * unitPrice),
           createdBy: req.auth!.sub,
           idempotencyKey,
           source: "directo",
@@ -272,7 +279,7 @@ export async function createConsumption(req: Request, res: Response, next: NextF
       await logEvent(req.auth, {
         kind: "consumo",
         title: `Consumo retenido · cabina ${cabinNumber}`,
-        detail: `${units}× ${product.name} · llegó con el crucero finalizado; pendiente de revisión`,
+        detail: `${units}× ${itemName} · llegó con el crucero finalizado; pendiente de revisión`,
         cruise: cruise._id,
         cabinNumber,
       });
@@ -286,13 +293,13 @@ export async function createConsumption(req: Request, res: Response, next: NextF
       cabinNumber,
       req.auth!.sub,
       item.courtesy
-        ? `Consumo como cortesía: ${units}× ${product.name} · ${courtesyWhy}`
-        : `Consumo: ${units}× ${product.name}`,
+        ? `Consumo como cortesía: ${units}× ${itemName} · ${courtesyWhy}`
+        : `Consumo: ${units}× ${itemName}`,
     );
     await logEvent(req.auth, {
       kind: "consumo",
       title: `Consumo · cabina ${cabinNumber}`,
-      detail: `${units}× ${product.name}${item.courtesy ? ` (cortesía · ${courtesyWhy})` : ""}`,
+      detail: `${units}× ${itemName}${item.courtesy ? ` (cortesía · ${courtesyWhy})` : ""}`,
       amount: saved.total,
       cruise: cruise._id,
       cabinNumber,

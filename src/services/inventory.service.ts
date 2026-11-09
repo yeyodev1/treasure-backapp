@@ -157,6 +157,50 @@ export async function appliedFor(
   });
 }
 
+/** Recargo por cambiar el licor de un cóctel (pedido del cliente, 9-nov-2026). */
+export const LIQUOR_SWAP_SURCHARGE = 3;
+const SWAPPABLE = ["licor", "gaseosa"];
+
+/**
+ * Cóctel con cambio (9-nov-2026): «Cuba Libre con Coca-Cola Zero» o «con
+ * Abuelo en vez de Bacardí». Se cambia el insumo por otro de su misma
+ * categoría y medida; el stock sale del que de verdad se sirvió. Cambiar la
+ * gaseosa no cuesta; cambiar el licor suma el recargo, una vez por bebida.
+ */
+export async function swapIngredients(applied: IAppliedIngredient[], swaps: unknown) {
+  const pairs = (Array.isArray(swaps) ? swaps : [])
+    .map((s) => ({ from: String(s?.from ?? ""), to: String(s?.to ?? "") }))
+    .filter((s) => s.from !== s.to);
+  if (!pairs.length) return { applied, surcharge: 0, note: "" };
+  const ids = pairs.flatMap((s) => [s.from, s.to]);
+  if (!ids.every((id) => Types.ObjectId.isValid(id))) throw badRequest("Cambio de ingrediente inválido");
+  const products = await Product.find({ _id: { $in: ids } }).select("name kind category stockUnit costPerUnit active");
+  const byId = new Map(products.map((p) => [p._id.toString(), p]));
+  let liquor = false;
+  const names: string[] = [];
+  const next = [...applied];
+  for (const swap of pairs) {
+    const index = next.findIndex((a) => a.product.toString() === swap.from);
+    const from = byId.get(swap.from);
+    const to = byId.get(swap.to);
+    if (index < 0 || !from) throw badRequest("Ese ingrediente ya no está en la receta: actualiza la carta");
+    if (
+      !to ||
+      !to.active ||
+      to.kind !== "fisico" ||
+      !SWAPPABLE.includes(from.category) ||
+      to.category !== from.category ||
+      to.stockUnit !== from.stockUnit
+    ) {
+      throw badRequest(`${from.name} no se puede cambiar por ese producto`);
+    }
+    if (from.category === "licor") liquor = true;
+    names.push(to.name.replace(/\s*\(botella\)\s*$/i, ""));
+    next[index] = { ...next[index]!, product: to._id, name: to.name, unitCost: to.costPerUnit ?? 0 };
+  }
+  return { applied: next, surcharge: liquor ? LIQUOR_SWAP_SURCHARGE : 0, note: ` (con ${names.join(", ")})` };
+}
+
 /** Costo de una unidad vendida y si todos sus insumos tienen costo. */
 export function costOf(applied: IAppliedIngredient[]): { unitCost: number; complete: boolean } {
   const unitCost = applied.reduce((sum, a) => sum + a.qty * a.unitCost, 0);
