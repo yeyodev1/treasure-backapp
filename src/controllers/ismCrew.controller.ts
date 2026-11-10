@@ -232,8 +232,10 @@ export async function setMySignature(req: Request, res: Response, next: NextFunc
  */
 export async function temporaryPin(req: Request, res: Response, next: NextFunction) {
   try {
-    // Solo la Persona Designada (auditoría 30-oct): ni Gerencia restablece claves de firma.
-    if (req.auth!.role !== "designada") throw forbidden("La clave temporal la da la Persona Designada");
+    // Persona Designada y Gerencia (9-nov: Gerencia también la da; antes solo la Designada).
+    if (req.auth!.role !== "designada" && req.auth!.role !== "duena") {
+      throw forbidden("La clave temporal la da la Persona Designada o Gerencia");
+    }
     const user = await User.findById(req.params.id).select("name role active");
     if (!user || !CREW_LIST_ROLES.includes(user.role as never) || !user.active) {
       throw notFound("Tripulante no encontrado");
