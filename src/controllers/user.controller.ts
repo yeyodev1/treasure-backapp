@@ -44,7 +44,7 @@ export async function createUser(req: Request, res: Response, next: NextFunction
       throw badRequest("Nombre, correo, contraseña y rol son obligatorios");
     }
     if (!USER_ROLES.includes(role)) throw badRequest("Rol inválido");
-    if (password.length < 6) throw badRequest("La contraseña debe tener al menos 6 caracteres");
+    if (password.length < 4) throw badRequest("La contraseña debe tener al menos 4 caracteres");
 
     const exists = await User.findOne({ email: email.toLowerCase().trim() });
     if (exists) throw badRequest("Ya existe una persona con ese correo");
@@ -112,7 +112,7 @@ export async function updateUser(req: Request, res: Response, next: NextFunction
     }
     if (user.role !== "direccion") user.isCashier = false;
     if (password) {
-      if (password.length < 6) throw badRequest("La contraseña debe tener al menos 6 caracteres");
+      if (password.length < 4) throw badRequest("La contraseña debe tener al menos 4 caracteres");
       user.passwordHash = await bcrypt.hash(password, 10);
       changes.push("contraseña");
     }
