@@ -336,6 +336,9 @@ export interface InvoiceEmailData {
   cabin: number;
   total: number;
   pdfUrl: string;
+  /** Número y fecha de autorización del SRI (12-nov-2026). */
+  authNumber?: string;
+  authDate?: string;
 }
 
 export function invoiceSubject(data: Pick<InvoiceEmailData, "invoiceNumber">): string {
@@ -374,6 +377,8 @@ ${row("Invoice", data.invoiceNumber)}
 ${row("Cruise", data.cruise)}
 ${row("Cabin", String(data.cabin))}
 ${row("Total", usd(data.total))}
+${data.authNumber ? row("SRI authorization", data.authNumber) : ""}
+${data.authDate ? row("Authorized on", data.authDate) : ""}
 </table>
 </td></tr>
 <tr><td style="padding:20px 28px 8px" align="left">
@@ -403,6 +408,8 @@ export function invoiceText(data: InvoiceEmailData): string {
     `Cruise: ${data.cruise}`,
     `Cabin: ${data.cabin}`,
     `Total: ${usd(data.total)}`,
+    ...(data.authNumber ? [`SRI authorization: ${data.authNumber}`] : []),
+    ...(data.authDate ? [`Authorized on: ${data.authDate}`] : []),
     "",
     `PDF: ${data.pdfUrl}`,
   ].join("\n");
@@ -414,7 +421,7 @@ export function invoiceText(data: InvoiceEmailData): string {
  */
 export async function sendInvoiceEmail(
   paymentId: Types.ObjectId | string,
-  files: { pdfUrl: string; xmlUrl: string },
+  files: { pdfUrl: string; xmlUrl: string; xml?: Buffer; authNumber?: string; authDate?: string },
   fetchFile: (url: string) => Promise<Buffer>,
 ): Promise<SummaryEmailResult> {
   const stale = new Date(Date.now() - STALE_LOCK_MS);
@@ -449,10 +456,16 @@ export async function sendInvoiceEmail(
         cabin: payment.cabinNumber,
         total: payment.invoiceTotal ?? payment.total,
         pdfUrl: files.pdfUrl,
+        authNumber: files.authNumber,
+        authDate: files.authDate,
       };
       const attachments = [{ filename: `Factura-${payment.invoiceNumber}.pdf`, content: await fetchFile(files.pdfUrl) }];
-      if (files.xmlUrl) {
-        attachments.push({ filename: `Factura-${payment.invoiceNumber}.xml`, content: await fetchFile(files.xmlUrl) });
+      // El XML autorizado del SRI es el documento válido; si no llegó, el de Contífico.
+      if (files.xml || files.xmlUrl) {
+        attachments.push({
+          filename: `Factura-${payment.invoiceNumber}.xml`,
+          content: files.xml ?? (await fetchFile(files.xmlUrl)),
+        });
       }
       await (transport ?? sendMail)({
         to,

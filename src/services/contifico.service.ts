@@ -548,8 +548,19 @@ export async function syncInvoices(limit = 10) {
         await sendToSri(p.invoiceId);
         await Payment.updateOne({ _id: p._id }, { $set: { invoiceSriRetryAt: new Date() } });
       }
-      if (sri?.estado === "Autorizado" && pdfUrl) {
-        const result = await sendInvoiceEmail(p._id, { pdfUrl, xmlUrl: String(data?.url_xml ?? "") }, downloadFile);
+      // Contífico tarda en marcar «Autorizado»: con «Enviado Sri» se le pregunta directo al SRI.
+      const xmlUrl = String(data?.url_xml ?? "");
+      const auth =
+        (sriStatus === "Autorizado" || /^enviado sri$/i.test(sriStatus)) && xmlUrl ? await sriAuthorization(xmlUrl) : null;
+      if (auth && sriStatus !== "Autorizado") {
+        await Payment.updateOne({ _id: p._id }, { $set: { invoiceSriStatus: "Autorizado" } });
+      }
+      if ((auth || sriStatus === "Autorizado") && pdfUrl) {
+        const result = await sendInvoiceEmail(
+          p._id,
+          { pdfUrl, xmlUrl, xml: auth?.xml, authNumber: auth?.number, authDate: auth?.date },
+          downloadFile,
+        );
         if (result.status === "enviado") sent++;
       }
     } catch {
@@ -557,6 +568,32 @@ export async function syncInvoices(limit = 10) {
     }
   }
   return sent;
+}
+
+const SRI_AUTH_URL = "https://cel.sri.gob.ec/comprobantes-electronicos-ws/AutorizacionComprobantesOffline";
+
+/**
+ * Autorización consultada al SRI (servicio público de comprobantes electrónicos)
+ * con la clave de acceso del XML de Contífico. null si no está AUTORIZADO.
+ */
+export async function sriAuthorization(xmlUrl: string): Promise<{ number: string; date: string; xml: Buffer } | null> {
+  const xml = (await downloadFile(xmlUrl)).toString("utf8");
+  const clave = /<claveAcceso>(\d{49})<\/claveAcceso>/.exec(xml)?.[1];
+  if (!clave) return null;
+  const envelope =
+    '<soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/" xmlns:ec="http://ec.gob.sri.ws.autorizacion">' +
+    `<soapenv:Header/><soapenv:Body><ec:autorizacionComprobante><claveAccesoComprobante>${clave}</claveAccesoComprobante>` +
+    "</ec:autorizacionComprobante></soapenv:Body></soapenv:Envelope>";
+  const { data } = await axios.post<string>(SRI_AUTH_URL, envelope, {
+    headers: { "Content-Type": "text/xml;charset=UTF-8" },
+    responseType: "text",
+    timeout: 30_000,
+  });
+  const block = /<autorizacion>[\s\S]*?<\/autorizacion>/.exec(data)?.[0] ?? "";
+  if (!/<estado>AUTORIZADO<\/estado>/.test(block)) return null;
+  const number = /<numeroAutorizacion>([^<]+)<\/numeroAutorizacion>/.exec(block)?.[1] ?? clave;
+  const date = /<fechaAutorizacion>([^<]+)<\/fechaAutorizacion>/.exec(block)?.[1] ?? "";
+  return { number, date, xml: Buffer.from(`<?xml version="1.0" encoding="UTF-8"?>\n${block}`, "utf8") };
 }
 
 async function downloadFile(url: string): Promise<Buffer> {
