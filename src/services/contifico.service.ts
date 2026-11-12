@@ -514,8 +514,10 @@ export async function issueInvoice(paymentId: Types.ObjectId | string) {
 /**
  * Facturas emitidas que esperan al SRI (12-nov-2026): trae el PDF (RIDE) de
  * Contífico, que no llega al crearla, y cuando el SRI la autoriza («Autorizado»)
- * la envía por correo con Resend. Se llama al listar Cobros y en la tarea diaria.
+ * la envía por correo con Resend. Se llama al listar Cobros y en la tarea de cada hora.
  */
+const SRI_RETRY_MS = 30 * 60 * 1000;
+
 export async function syncInvoices(limit = 10) {
   if (!contificoConfigured()) return 0;
   const waiting = await Payment.find({
@@ -538,6 +540,13 @@ export async function syncInvoices(limit = 10) {
       const sriStatus = data?.anulado ? "Anulada" : String(sri?.estado ?? "");
       if (sriStatus && sriStatus !== p.invoiceSriStatus) {
         await Payment.updateOne({ _id: p._id }, { $set: { invoiceSriStatus: sriStatus } });
+      }
+      // Atascada antes del SRI (Firmado o sin firmar): se le vuelve a pedir a
+      // Contífico que la envíe, a lo más cada 30 min (12-nov-2026).
+      const stuck = sriStatus === "Firmado" || sriStatus === "No se ha firmado";
+      if (stuck && (!p.invoiceSriRetryAt || Date.now() - p.invoiceSriRetryAt.getTime() > SRI_RETRY_MS)) {
+        await sendToSri(p.invoiceId);
+        await Payment.updateOne({ _id: p._id }, { $set: { invoiceSriRetryAt: new Date() } });
       }
       if (sri?.estado === "Autorizado" && pdfUrl) {
         const result = await sendInvoiceEmail(p._id, { pdfUrl, xmlUrl: String(data?.url_xml ?? "") }, downloadFile);

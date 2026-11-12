@@ -631,7 +631,7 @@ export async function retryInvoice(req: Request, res: Response, next: NextFuncti
 }
 
 /** Estado de Contífico y su catálogo, para vincular productos. */
-/** Tarea diaria de Vercel: facturas autorizadas por el SRI que aún no salieron por correo. */
+/** Tarea de Vercel cada hora: reintenta el envío al SRI y manda por correo las facturas autorizadas por el SRI que aún no salieron por correo. */
 export async function invoicesCron(req: Request, res: Response, next: NextFunction) {
   try {
     const secret = process.env.CRON_SECRET;

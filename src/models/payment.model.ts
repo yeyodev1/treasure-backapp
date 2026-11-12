@@ -99,6 +99,8 @@ export interface IPayment {
   invoiceUrl: string;
   /** Estado ante el SRI según Contífico: Firmado, Enviado SRI, Autorizado, No se ha firmado (12-nov-2026). */
   invoiceSriStatus: string;
+  /** Último reintento de envío al SRI de una factura atascada en Contífico. */
+  invoiceSriRetryAt: Date | null;
   invoiceError: string;
   /** Resumen de la cuenta por correo al pagador (solo en el pago que liquida). */
   summaryEmail: ISummaryEmail;
@@ -160,6 +162,7 @@ const paymentSchema = new Schema<IPayment>(
     invoiceNumber: { type: String, default: "" },
     invoiceUrl: { type: String, default: "" },
     invoiceSriStatus: { type: String, default: "" },
+    invoiceSriRetryAt: { type: Date, default: null },
     invoiceError: { type: String, default: "" },
     summaryEmail: { type: summaryEmailSchema, default: () => ({}) },
     invoiceEmail: { type: summaryEmailSchema, default: () => ({}) },
