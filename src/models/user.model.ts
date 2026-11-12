@@ -23,6 +23,8 @@ export interface IUser {
   crewManaged?: boolean;
   createdBy: Types.ObjectId | null;
   updatedBy: Types.ObjectId | null;
+  /** Clave de 4 números del bar, visible para Gerencia en Equipo (pedido del cliente, 12-nov-2026). */
+  barPin?: string;
   createdAt?: Date;
   updatedAt?: Date;
 }
@@ -39,6 +41,7 @@ const userSchema = new Schema<IUser>(
     sharedDevice: { type: Boolean, default: false },
     username: { type: String, unique: true, sparse: true, lowercase: true, trim: true },
     crewManaged: { type: Boolean, default: false },
+    barPin: { type: String, default: "", select: false },
     createdBy: { type: Schema.Types.ObjectId, ref: "User", default: null },
     updatedBy: { type: Schema.Types.ObjectId, ref: "User", default: null },
   },

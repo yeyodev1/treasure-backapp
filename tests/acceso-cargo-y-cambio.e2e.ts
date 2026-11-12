@@ -120,6 +120,22 @@ async function main() {
   const wrongPin = await dep({ department: "bartender", pin: "9753" });
   check("Clave errada en el bar cuenta intentos", wrongPin.status === 403 && wrongPin.data.code === "clave_incorrecta", wrongPin.data);
 
+  // ---- 1d. Alta del bar solo con nombre, rol y clave (12-nov-2026)
+  const noPinNoPass = await api("owner", "POST", "/users", { name: "Gabriel Criollo", role: "bartender" });
+  check("Sin clave ni contraseña: lo pide", noPinNoPass.status === 400 && /clave/.test(noPinNoPass.data.message), noPinNoPass.data);
+  const gabriel = await api("owner", "POST", "/users", { name: "Gabriel Criollo", role: "bodega", pin: "6930" });
+  check("Alta sin correo ni contraseña", gabriel.status === 201, gabriel.data);
+  const inBodega = await dep({ department: "bodega", pin: "6930" });
+  check("…entra con su clave", inBodega.status === 200 && inBodega.data.user?.name === "Gabriel Criollo", inBodega.data);
+  const team = (await api("owner", "GET", "/users")).data.users;
+  const g = team.find((u: any) => u.name === "Gabriel Criollo");
+  check("Equipo muestra su clave y no el correo interno", g?.barPin === "6930" && g?.email === "", g);
+  await api("owner", "PATCH", `/users/${barUser!._id}`, { pin: "4826" });
+  const bt = (await api("owner", "GET", "/users")).data.users.find((u: any) => u._id === String(barUser!._id));
+  check("Editar la clave la deja visible", bt?.barPin === "4826", bt?.barPin);
+  const me = await api("owner", "GET", "/auth/me");
+  check("La clave no sale en otras respuestas", !("barPin" in (me.data.user ?? {})), me.data);
+
   // ---- 2. Cóctel con cambio
   for (const [who, email] of Object.entries({ dir: "dir@t", bar: "bar@t" })) {
     tokens[who] = (await api(who, "POST", "/auth/login", { email, password: "x" })).data.token;

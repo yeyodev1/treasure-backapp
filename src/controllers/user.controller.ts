@@ -5,7 +5,9 @@ import { CREW_POSITIONS, USER_ROLES, UserRole, ROLE_LABELS } from "../utils/role
 import { logEvent } from "../services/audit.service";
 import { badRequest, notFound } from "../errors/httpError";
 import { IsmCrew } from "../models/ismCrew.model";
-import { isValidNewPin, setPinFor } from "../services/ismCrew.service";
+import crypto from "crypto";
+import { hasRealEmail, isValidNewPin, placeholderEmail, setPinFor } from "../services/ismCrew.service";
+import { isValidOptionalEmail } from "../utils/email";
 
 const PIN_ERROR = "La clave son 4 números que no sean seguidos ni repetidos.";
 
@@ -14,7 +16,7 @@ const PUBLIC_FIELDS = "name email role active isCashier position createdBy updat
 export async function listUsers(_req: Request, res: Response, next: NextFunction) {
   try {
     const users = await User.find()
-      .select(PUBLIC_FIELDS)
+      .select(`${PUBLIC_FIELDS} +barPin`)
       .populate("createdBy", "name")
       .populate("updatedBy", "name")
       .sort({ active: -1, name: 1 })
@@ -25,7 +27,10 @@ export async function listUsers(_req: Request, res: Response, next: NextFunction
         String(p.user),
       ),
     );
-    res.json({ users: users.map((u) => ({ ...u, hasPin: withPin.has(String(u._id)) })) });
+    // Sin correo (alta solo con clave): no se muestra el correo interno.
+    res.json({
+      users: users.map((u) => ({ ...u, email: hasRealEmail(u.email) ? u.email : "", hasPin: withPin.has(String(u._id)) })),
+    });
   } catch (err) {
     next(err);
   }
@@ -52,23 +57,29 @@ export async function createUser(req: Request, res: Response, next: NextFunction
       isCashier?: boolean;
       position?: string;
     };
-    if (!name || !email || !password || !role) {
-      throw badRequest("Nombre, correo, contraseña y rol son obligatorios");
-    }
+    // Correo y contraseña opcionales (pedido del cliente, 12-nov-2026): basta la clave de 4 números.
+    if (!name?.trim() || !role) throw badRequest("Nombre y rol son obligatorios");
     if (!USER_ROLES.includes(role)) throw badRequest("Rol inválido");
-    if (password.length < 4) throw badRequest("La contraseña debe tener al menos 4 caracteres");
+    if (!password && !pin) throw badRequest("Pon la clave de 4 números para que pueda entrar");
+    if (password && password.length < 4) throw badRequest("La contraseña debe tener al menos 4 caracteres");
     if (pin && !isValidNewPin(pin)) throw badRequest(PIN_ERROR);
+    const cleanEmail = (email ?? "").toLowerCase().trim();
+    if (cleanEmail && !isValidOptionalEmail(cleanEmail)) throw badRequest("Revisa el correo. Ejemplo: nombre@dominio.com.");
 
-    const exists = await User.findOne({ email: email.toLowerCase().trim() });
-    if (exists) throw badRequest("Ya existe una persona con ese correo");
+    if (cleanEmail) {
+      const exists = await User.findOne({ email: cleanEmail });
+      if (exists) throw badRequest("Ya existe una persona con ese correo");
+    }
 
     const user = await User.create({
-      name,
-      email,
+      name: name.trim(),
+      email: cleanEmail || placeholderEmail(),
       role,
       isCashier: role === "direccion" && Boolean(isCashier),
       position: position && CREW_POSITIONS.includes(position as never) ? position : "",
-      passwordHash: await bcrypt.hash(password, 10),
+      // Sin contraseña: una aleatoria que nadie conoce; entra con su clave de 4 números.
+      passwordHash: await bcrypt.hash(password || crypto.randomBytes(24).toString("hex"), 10),
+      barPin: pin || "",
       createdBy: req.auth!.sub,
     });
     if (pin) await setPinFor(user._id, pin, req.auth!.sub, req.auth!.name);
@@ -132,6 +143,7 @@ export async function updateUser(req: Request, res: Response, next: NextFunction
       changes.push("contraseña");
     }
     if (pin && !isValidNewPin(pin)) throw badRequest(PIN_ERROR);
+    if (pin) user.barPin = pin;
     user.updatedBy = req.auth!.sub as never;
 
     await user.save();
