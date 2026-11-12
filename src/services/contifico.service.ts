@@ -513,7 +513,7 @@ export async function issueInvoice(paymentId: Types.ObjectId | string) {
 
 /**
  * Facturas emitidas que esperan al SRI (12-nov-2026): trae el PDF (RIDE) de
- * Contífico, que no llega al crearla, y cuando el SRI la autoriza (estado A)
+ * Contífico, que no llega al crearla, y cuando el SRI la autoriza («Autorizado»)
  * la envía por correo con Resend. Se llama al listar Cobros y en la tarea diaria.
  */
 export async function syncInvoices(limit = 10) {
@@ -532,7 +532,14 @@ export async function syncInvoices(limit = 10) {
       const { data } = await http.get(`/documento/${p.invoiceId}/`);
       const pdfUrl = String(data?.url_ride ?? "");
       if (pdfUrl && !p.invoiceUrl) await Payment.updateOne({ _id: p._id }, { $set: { invoiceUrl: pdfUrl } });
-      if (data?.estado === "A" && pdfUrl) {
+      // Ojo: `estado: "A"` del documento es «anulado». La autorización la da
+      // GET /documento/<id>/estado/ → "Autorizado" (contifico.github.io, documento electrónico).
+      const sri = data?.anulado ? null : (await http.get(`/documento/${p.invoiceId}/estado/`)).data;
+      const sriStatus = data?.anulado ? "Anulada" : String(sri?.estado ?? "");
+      if (sriStatus && sriStatus !== p.invoiceSriStatus) {
+        await Payment.updateOne({ _id: p._id }, { $set: { invoiceSriStatus: sriStatus } });
+      }
+      if (sri?.estado === "Autorizado" && pdfUrl) {
         const result = await sendInvoiceEmail(p._id, { pdfUrl, xmlUrl: String(data?.url_xml ?? "") }, downloadFile);
         if (result.status === "enviado") sent++;
       }
