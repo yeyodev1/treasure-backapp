@@ -100,6 +100,8 @@ export interface IPayment {
   invoiceError: string;
   /** Resumen de la cuenta por correo al pagador (solo en el pago que liquida). */
   summaryEmail: ISummaryEmail;
+  /** Factura autorizada por el SRI enviada por correo con Resend (PDF y XML, 12-nov-2026). */
+  invoiceEmail: ISummaryEmail;
   collectedBy: Types.ObjectId;
   createdAt?: Date;
   updatedAt?: Date;
@@ -157,6 +159,7 @@ const paymentSchema = new Schema<IPayment>(
     invoiceUrl: { type: String, default: "" },
     invoiceError: { type: String, default: "" },
     summaryEmail: { type: summaryEmailSchema, default: () => ({}) },
+    invoiceEmail: { type: summaryEmailSchema, default: () => ({}) },
     collectedBy: { type: Schema.Types.ObjectId, ref: "User", required: true },
   },
   { timestamps: true },

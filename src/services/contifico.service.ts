@@ -2,6 +2,7 @@ import axios from "axios";
 import mongoose, { Types } from "mongoose";
 import { env } from "../config/env";
 import { IPayment, Payment } from "../models/payment.model";
+import { sendInvoiceEmail } from "./accountEmail.service";
 import { chargeableQty, Order } from "../models/order.model";
 import { IProduct } from "../models/product.model";
 import { Cruise } from "../models/cruise.model";
@@ -511,25 +512,40 @@ export async function issueInvoice(paymentId: Types.ObjectId | string) {
 }
 
 /**
- * El PDF (RIDE) de Contífico sale después de crear la factura: al crearla
- * llega vacío. Se completa al listar los cobros (12-nov-2026).
+ * Facturas emitidas que esperan al SRI (12-nov-2026): trae el PDF (RIDE) de
+ * Contífico, que no llega al crearla, y cuando el SRI la autoriza (estado A)
+ * la envía por correo con Resend. Se llama al listar Cobros y en la tarea diaria.
  */
-export async function fillInvoiceUrls(payments: Array<IPayment & { _id: Types.ObjectId; save: () => Promise<unknown> }>) {
-  if (!contificoConfigured()) return;
-  const missing = payments.filter((p) => p.invoiceStatus === "emitida" && p.invoiceId && !p.invoiceUrl).slice(0, 10);
-  await Promise.all(
-    missing.map(async (p) => {
-      try {
-        const { data } = await http.get(`/documento/${p.invoiceId}/`);
-        if (data?.url_ride) {
-          p.invoiceUrl = String(data.url_ride);
-          await p.save();
-        }
-      } catch {
-        // Sin respuesta de Contífico: se intenta en la próxima lista.
+export async function syncInvoices(limit = 10) {
+  if (!contificoConfigured()) return 0;
+  const waiting = await Payment.find({
+    status: "vigente",
+    invoiceStatus: "emitida",
+    invoiceId: { $ne: "" },
+    $or: [{ invoiceUrl: "" }, { "invoiceEmail.status": { $in: ["no_aplica", "enviando", null] } }, { invoiceEmail: { $exists: false } }],
+  })
+    .sort({ createdAt: -1 })
+    .limit(limit);
+  let sent = 0;
+  for (const p of waiting) {
+    try {
+      const { data } = await http.get(`/documento/${p.invoiceId}/`);
+      const pdfUrl = String(data?.url_ride ?? "");
+      if (pdfUrl && !p.invoiceUrl) await Payment.updateOne({ _id: p._id }, { $set: { invoiceUrl: pdfUrl } });
+      if (data?.estado === "A" && pdfUrl) {
+        const result = await sendInvoiceEmail(p._id, { pdfUrl, xmlUrl: String(data?.url_xml ?? "") }, downloadFile);
+        if (result.status === "enviado") sent++;
       }
-    }),
-  );
+    } catch {
+      // Sin respuesta de Contífico: se intenta en la próxima revisión.
+    }
+  }
+  return sent;
+}
+
+async function downloadFile(url: string): Promise<Buffer> {
+  const { data } = await axios.get<ArrayBuffer>(url, { responseType: "arraybuffer", timeout: 20_000 });
+  return Buffer.from(data);
 }
 
 /** Estado de la integración para la pantalla de administración. */

@@ -20,7 +20,7 @@ import { ProformaData, dateEn, proformaData, proformaFileName, proformaPdf, usd 
  * - Idempotente: el envío automático ocurre una sola vez por liquidación
  *   (estado guardado en el pago que liquida); un reenvío manual toma un
  *   bloqueo atómico para que un doble clic no envíe dos correos.
- * - No es factura: la factura electrónica la envía el SRI por separado.
+ * - No es factura: la factura autorizada sale en otro correo (sendInvoiceEmail).
  */
 
 type Transport = (options: MailOptions) => Promise<{ id: string }>;
@@ -81,7 +81,7 @@ function esc(value: string): string {
 }
 
 export const SUMMARY_NOTE =
-  "This is a summary of your onboard account, not a tax invoice. If an electronic invoice was requested, it is sent separately by the SRI e-invoicing system.";
+  "This is a summary of your onboard account, not a tax invoice. Your electronic invoice will arrive in a separate email once it is authorized by the SRI.";
 
 export function summarySubject(data: Pick<ProformaData, "cabin">): string {
   return `Your onboard account · Treasure of Galápagos · Cabin ${data.cabin}`;
@@ -324,5 +324,165 @@ export async function sendAccountSummary(
     !error,
     error ? `Correo no enviado: ${error}` : `Resumen enviado a ${to}`,
   );
+  return { status: error ? "error" : "enviado", to, error };
+}
+
+// ---- Factura electrónica por correo (pedido del cliente, 12-nov-2026) ----
+
+export interface InvoiceEmailData {
+  billTo: string;
+  invoiceNumber: string;
+  cruise: string;
+  cabin: number;
+  total: number;
+  pdfUrl: string;
+}
+
+export function invoiceSubject(data: Pick<InvoiceEmailData, "invoiceNumber">): string {
+  return `Your electronic invoice ${data.invoiceNumber} · Treasure of Galápagos`;
+}
+
+/** Mismo encabezado, colores y sello que el resumen de la cuenta. */
+export function invoiceHtml(data: InvoiceEmailData): string {
+  const seal = `${env.PUBLIC_APP_URL.replace(/\/$/, "")}/brand/seal-pine.png`;
+  const row = (label: string, value: string) =>
+    `<tr><td style="padding:8px 14px;font-family:${SANS};font-size:13px;color:${C.muted};width:120px">${label}</td><td style="padding:8px 14px;font-family:${SANS};font-size:14px;color:${C.ink};font-weight:600">${esc(value)}</td></tr>`;
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>${esc(invoiceSubject(data))}</title>
+</head>
+<body style="margin:0;padding:0;background:${C.cream}">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:${C.cream}">
+<tr><td align="center" style="padding:24px 12px">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:600px;background:#ffffff;border-radius:14px;border:1px solid ${C.rule}">
+<tr><td style="background:${C.navy};border-radius:14px 14px 0 0;padding:24px 28px" align="left">
+<table role="presentation" cellpadding="0" cellspacing="0"><tr>
+<td style="padding-right:14px;vertical-align:middle"><img src="${esc(seal)}" width="52" height="52" alt="Treasure of Galápagos" style="display:block;border:0;border-radius:50%;background:${C.powder}"></td>
+<td style="vertical-align:middle;font-family:${SERIF};font-size:22px;color:#ffffff">Treasure of Galápagos</td>
+</tr></table>
+</td></tr>
+<tr><td style="padding:28px 28px 8px" align="left">
+<h1 style="margin:0 0 4px;font-family:${SERIF};font-size:26px;font-weight:700;color:${C.navy}">Your electronic invoice</h1>
+<p style="margin:0 0 16px;font-family:${SERIF};font-size:17px;color:${C.muted}">Su factura electrónica</p>
+<p style="margin:0 0 8px;font-family:${SANS};font-size:15px;line-height:1.5;color:${C.ink}">Dear ${esc(data.billTo)},</p>
+<p style="margin:0 0 20px;font-family:${SANS};font-size:15px;line-height:1.5;color:${C.ink}">Thank you for sailing with us. Your electronic invoice has been authorized by the SRI (Ecuador's tax authority). The PDF and XML files are attached.</p>
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:${C.powder};border-radius:10px">
+${row("Invoice", data.invoiceNumber)}
+${row("Cruise", data.cruise)}
+${row("Cabin", String(data.cabin))}
+${row("Total", usd(data.total))}
+</table>
+</td></tr>
+<tr><td style="padding:20px 28px 8px" align="left">
+<table role="presentation" cellpadding="0" cellspacing="0"><tr><td style="background:${C.navy};border-radius:8px">
+<a href="${esc(data.pdfUrl)}" style="display:inline-block;padding:12px 22px;font-family:${SANS};font-size:15px;font-weight:600;color:#ffffff;text-decoration:none">View invoice (PDF)</a>
+</td></tr></table>
+</td></tr>
+<tr><td style="padding:16px 28px 28px" align="left">
+<p style="margin:0;padding:14px 16px;background:${C.cream};border-left:3px solid ${C.navy2};border-radius:6px;font-family:${SANS};font-size:13px;line-height:1.5;color:${C.muted}">Factura electrónica autorizada por el SRI. Conserve este correo: el XML adjunto es el documento tributario válido.</p>
+</td></tr>
+</table>
+<p style="margin:16px 0 0;font-family:${SANS};font-size:12px;color:${C.muted}">Treasure of Galápagos · Galápagos, Ecuador</p>
+</td></tr>
+</table>
+</body>
+</html>`;
+}
+
+export function invoiceText(data: InvoiceEmailData): string {
+  return [
+    `Dear ${data.billTo},`,
+    "",
+    "Your electronic invoice has been authorized by the SRI. The PDF and XML files are attached.",
+    "Su factura electrónica fue autorizada por el SRI. Adjuntamos el PDF y el XML.",
+    "",
+    `Invoice: ${data.invoiceNumber}`,
+    `Cruise: ${data.cruise}`,
+    `Cabin: ${data.cabin}`,
+    `Total: ${usd(data.total)}`,
+    "",
+    `PDF: ${data.pdfUrl}`,
+  ].join("\n");
+}
+
+/**
+ * Envía la factura autorizada al correo de facturación. Una sola vez
+ * (bloqueo atómico); nunca rompe nada: el error queda en el pago y en la bitácora.
+ */
+export async function sendInvoiceEmail(
+  paymentId: Types.ObjectId | string,
+  files: { pdfUrl: string; xmlUrl: string },
+  fetchFile: (url: string) => Promise<Buffer>,
+): Promise<SummaryEmailResult> {
+  const stale = new Date(Date.now() - STALE_LOCK_MS);
+  const payment = await Payment.findOneAndUpdate(
+    {
+      _id: paymentId,
+      status: "vigente",
+      invoiceStatus: "emitida",
+      $or: [
+        { "invoiceEmail.status": { $in: ["no_aplica", null] } },
+        { "invoiceEmail.status": { $exists: false } },
+        { "invoiceEmail.status": "enviando", updatedAt: { $lt: stale } },
+      ],
+    },
+    { $set: { "invoiceEmail.status": "enviando" }, $inc: { "invoiceEmail.attempts": 1 } },
+    { new: true },
+  );
+  if (!payment) return { status: "omitido", to: "", error: "" };
+
+  const to = await summaryRecipient(payment);
+  let error = "";
+  if (!to) error = "no se ingresó correo";
+  else if (!canSend()) error = "el envío de correos no está configurado";
+
+  if (!error) {
+    try {
+      const cruise = await Cruise.findById(payment.cruise).select("code name");
+      const data: InvoiceEmailData = {
+        billTo: payment.billing?.name || "guest",
+        invoiceNumber: payment.invoiceNumber,
+        cruise: cruise?.code || cruise?.name || "",
+        cabin: payment.cabinNumber,
+        total: payment.invoiceTotal ?? payment.total,
+        pdfUrl: files.pdfUrl,
+      };
+      const attachments = [{ filename: `Factura-${payment.invoiceNumber}.pdf`, content: await fetchFile(files.pdfUrl) }];
+      if (files.xmlUrl) {
+        attachments.push({ filename: `Factura-${payment.invoiceNumber}.xml`, content: await fetchFile(files.xmlUrl) });
+      }
+      await (transport ?? sendMail)({
+        to,
+        subject: invoiceSubject(data),
+        html: invoiceHtml(data),
+        text: invoiceText(data),
+        attachments,
+      });
+    } catch (err) {
+      error = err instanceof Error ? err.message : String(err);
+    }
+  }
+
+  await Payment.updateOne(
+    { _id: payment._id },
+    {
+      $set: {
+        "invoiceEmail.status": error ? "error" : "enviado",
+        "invoiceEmail.to": to,
+        "invoiceEmail.error": error,
+        ...(error ? {} : { "invoiceEmail.sentAt": new Date() }),
+      },
+    },
+  );
+  await logEvent(null, {
+    kind: "cobro",
+    title: `${error ? "Factura no enviada por correo" : "Factura enviada por correo"} · cabina ${payment.cabinNumber}`,
+    detail: error ? `${payment.invoiceNumber}: ${error}` : `${payment.invoiceNumber} a ${to}`,
+    cruise: payment.cruise,
+    cabinNumber: payment.cabinNumber,
+  });
   return { status: error ? "error" : "enviado", to, error };
 }

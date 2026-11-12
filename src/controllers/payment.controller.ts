@@ -6,9 +6,9 @@ import { Cruise } from "../models/cruise.model";
 import { User } from "../models/user.model";
 import { Account } from "../models/account.model";
 import { buildCabinAccount } from "../services/account.service";
-import { contificoStatus, fillInvoiceUrls, issueInvoice } from "../services/contifico.service";
+import { contificoStatus, issueInvoice, syncInvoices } from "../services/contifico.service";
 import { logEvent } from "../services/audit.service";
-import { badRequest, conflict, forbidden, notFound } from "../errors/httpError";
+import { badRequest, conflict, forbidden, notFound, unauthorized } from "../errors/httpError";
 import { parseRangeEdge } from "../utils/dates";
 import { isValidOptionalEmail } from "../utils/email";
 import { sendAccountSummary } from "../services/accountEmail.service";
@@ -581,6 +581,8 @@ export async function listPayments(req: Request, res: Response, next: NextFuncti
       };
     }
 
+    // Trae el PDF y envía por correo las facturas que el SRI ya autorizó (12-nov-2026).
+    await syncInvoices().catch(() => 0);
     const pageSize = Math.min(Number(limit) || 40, 300);
     const payments = await Payment.find(filter)
       .populate("collectedBy", "name role")
@@ -590,7 +592,6 @@ export async function listPayments(req: Request, res: Response, next: NextFuncti
       .limit(pageSize + 1);
 
     const hasMore = payments.length > pageSize;
-    await fillInvoiceUrls(payments as never);
     res.json({ payments: hasMore ? payments.slice(0, pageSize) : payments, hasMore });
   } catch (err) {
     next(err);
@@ -628,6 +629,17 @@ export async function retryInvoice(req: Request, res: Response, next: NextFuncti
 }
 
 /** Estado de Contífico y su catálogo, para vincular productos. */
+/** Tarea diaria de Vercel: facturas autorizadas por el SRI que aún no salieron por correo. */
+export async function invoicesCron(req: Request, res: Response, next: NextFunction) {
+  try {
+    const secret = process.env.CRON_SECRET;
+    if (!secret || req.headers.authorization !== `Bearer ${secret}`) throw unauthorized();
+    res.json({ ok: true, sent: await syncInvoices(50) });
+  } catch (err) {
+    next(err);
+  }
+}
+
 export async function contificoInfo(_req: Request, res: Response, next: NextFunction) {
   try {
     res.json(await contificoStatus());

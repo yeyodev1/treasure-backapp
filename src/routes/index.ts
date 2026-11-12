@@ -178,6 +178,7 @@ export default function routerApi(app: Application) {
 
   // Pedido semanal (guía Inventario y pedidos, 4-nov-2026): el bar revisa, la directora aprueba.
   router.get("/cron/weekly-order", weeklyOrders.weeklyOrderCron);
+  router.get("/cron/invoices", payments.invoicesCron);
   router.get("/weekly-orders/current", requireAuth, ALL, weeklyOrders.currentWeeklyOrder);
   router.get("/weekly-orders/:id", requireAuth, ALL, weeklyOrders.getWeeklyOrder);
   router.put("/weekly-orders/:id/lines", requireAuth, BAR, weeklyOrders.saveWeeklyOrder);
