@@ -102,6 +102,24 @@ async function main() {
   const notKeeper = await api("dir", "PATCH", `/ism/crew/${tim1._id}`, { pin: "8642" });
   check("Dirección de crucero no pone claves", notKeeper.status === 403, notKeeper.data);
 
+  // ---- 1c. Bar: departamento + clave de 4 números (12-nov-2026)
+  const dep = (body: unknown) => api("", "POST", "/auth/login/department", body);
+  const noPinYet = await dep({ department: "bartender", pin: "2580" });
+  check("Bar sin clave: lo dice (Gerencia la pone)", noPinYet.status === 401 && /Gerencia/.test(noPinYet.data.message), noPinYet.data);
+  const barUser = await User.findOne({ email: "bar@t" });
+  const setBar = await api("owner", "PATCH", `/users/${barUser!._id}`, { pin: "2580" });
+  check("Equipo pone la clave del bartender", setBar.status === 200, setBar.data);
+  const listed = await api("owner", "GET", "/users");
+  check("Equipo sabe quién tiene clave", listed.data.users.find((u: any) => u.email === "bar@t")?.hasPin === true);
+  const inBar = await dep({ department: "bartender", pin: "2580" });
+  check("Bartender entra con departamento + clave", inBar.status === 200 && inBar.data.user?.role === "bartender", inBar.data);
+  const wrongDep = await dep({ department: "bodega", pin: "2580" });
+  check("La clave en otro departamento no sirve", wrongDep.status !== 200, wrongDep.data);
+  const crewDep = await dep({ department: "capitan", pin: "4821" });
+  check("Capitán no entra por el bar", crewDep.status === 400, crewDep.data);
+  const wrongPin = await dep({ department: "bartender", pin: "9753" });
+  check("Clave errada en el bar cuenta intentos", wrongPin.status === 403 && wrongPin.data.code === "clave_incorrecta", wrongPin.data);
+
   // ---- 2. Cóctel con cambio
   for (const [who, email] of Object.entries({ dir: "dir@t", bar: "bar@t" })) {
     tokens[who] = (await api(who, "POST", "/auth/login", { email, password: "x" })).data.token;

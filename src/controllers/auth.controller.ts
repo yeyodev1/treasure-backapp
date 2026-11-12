@@ -85,8 +85,12 @@ export async function crewLogin(req: Request, res: Response, next: NextFunction)
  * intento fallido se le cuenta a todas (mismo bloqueo que con usuario): sin
  * eso la clave de 4 números se adivinaría probando.
  */
-async function userByPin(candidates: Array<IUser & { _id: Types.ObjectId }>, pin: unknown) {
-  if (!candidates.length) throw unauthorized("Nadie tiene ese cargo todavía. Pide a la Persona Designada que te registre.");
+async function userByPin(
+  candidates: Array<IUser & { _id: Types.ObjectId }>,
+  pin: unknown,
+  empty = "Nadie tiene ese cargo todavía. Pide a la Persona Designada que te registre.",
+) {
+  if (!candidates.length) throw unauthorized(empty);
   if (typeof pin !== "string" || !/^\d{4}$/.test(pin)) throw badRequest("La clave tiene 4 números");
   const now = new Date();
   const profiles = await IsmCrew.find({ user: { $in: candidates.map((c) => c._id) } });
@@ -104,6 +108,26 @@ async function userByPin(candidates: Array<IUser & { _id: Types.ObjectId }>, pin
   let first: unknown;
   for (const id of targets) await verifyPin(id, pin).catch((err) => (first ??= err));
   throw first ?? unauthorized("Clave incorrecta");
+}
+
+/** Departamentos del bar: se entra eligiendo uno y con la clave de 4 números (pedido del cliente, 12-nov-2026). */
+const BAR_DEPARTMENTS = ["bartender", "direccion", "bodega", "admin", "duena"];
+
+export async function departmentLogin(req: Request, res: Response, next: NextFunction) {
+  try {
+    const { department, pin, remember } = req.body as { department?: string; pin?: string; remember?: boolean };
+    if (typeof department !== "string" || !BAR_DEPARTMENTS.includes(department)) throw badRequest("Elige tu departamento");
+    const candidates = await User.find({ active: true, role: department }).sort({ name: 1 });
+    const noPin = "Nadie de ese departamento tiene clave todavía. Pídela a Gerencia.";
+    const user = await userByPin(candidates, pin, noPin).catch((err) => {
+      // El aviso de ISM habla de la Persona Designada: en el bar la clave la pone Gerencia.
+      throw err instanceof HttpError && err.code === "sin_clave" ? unauthorized(noPin) : err;
+    });
+    await verifyPin(user._id, pin);
+    res.json({ token: signToken(user, Boolean(remember)), user: publicUser(user) });
+  } catch (err) {
+    next(err);
+  }
 }
 
 export async function me(req: Request, res: Response, next: NextFunction) {

@@ -4,6 +4,10 @@ import { User } from "../models/user.model";
 import { CREW_POSITIONS, USER_ROLES, UserRole, ROLE_LABELS } from "../utils/roles";
 import { logEvent } from "../services/audit.service";
 import { badRequest, notFound } from "../errors/httpError";
+import { IsmCrew } from "../models/ismCrew.model";
+import { isValidNewPin, setPinFor } from "../services/ismCrew.service";
+
+const PIN_ERROR = "La clave son 4 números que no sean seguidos ni repetidos.";
 
 const PUBLIC_FIELDS = "name email role active isCashier position createdBy updatedBy createdAt updatedAt";
 
@@ -13,8 +17,15 @@ export async function listUsers(_req: Request, res: Response, next: NextFunction
       .select(PUBLIC_FIELDS)
       .populate("createdBy", "name")
       .populate("updatedBy", "name")
-      .sort({ active: -1, name: 1 });
-    res.json({ users });
+      .sort({ active: -1, name: 1 })
+      .lean();
+    // Clave de 4 números para entrar al bar por departamento (12-nov-2026).
+    const withPin = new Set(
+      (await IsmCrew.find({ user: { $in: users.map((u) => u._id) }, pinHash: { $ne: "" } }).select("user").lean()).map((p) =>
+        String(p.user),
+      ),
+    );
+    res.json({ users: users.map((u) => ({ ...u, hasPin: withPin.has(String(u._id)) })) });
   } catch (err) {
     next(err);
   }
@@ -32,7 +43,8 @@ export async function listBartenders(_req: Request, res: Response, next: NextFun
 
 export async function createUser(req: Request, res: Response, next: NextFunction) {
   try {
-    const { name, email, password, role, isCashier, position } = req.body as {
+    const { name, email, password, role, isCashier, position, pin } = req.body as {
+      pin?: string;
       name?: string;
       email?: string;
       password?: string;
@@ -45,6 +57,7 @@ export async function createUser(req: Request, res: Response, next: NextFunction
     }
     if (!USER_ROLES.includes(role)) throw badRequest("Rol inválido");
     if (password.length < 4) throw badRequest("La contraseña debe tener al menos 4 caracteres");
+    if (pin && !isValidNewPin(pin)) throw badRequest(PIN_ERROR);
 
     const exists = await User.findOne({ email: email.toLowerCase().trim() });
     if (exists) throw badRequest("Ya existe una persona con ese correo");
@@ -58,6 +71,7 @@ export async function createUser(req: Request, res: Response, next: NextFunction
       passwordHash: await bcrypt.hash(password, 10),
       createdBy: req.auth!.sub,
     });
+    if (pin) await setPinFor(user._id, pin, req.auth!.sub, req.auth!.name);
 
     await logEvent(req.auth, {
       kind: "equipo",
@@ -72,7 +86,8 @@ export async function createUser(req: Request, res: Response, next: NextFunction
 
 export async function updateUser(req: Request, res: Response, next: NextFunction) {
   try {
-    const { name, role, active, password, isCashier, position } = req.body as {
+    const { name, role, active, password, isCashier, position, pin } = req.body as {
+      pin?: string;
       name?: string;
       role?: UserRole;
       active?: boolean;
@@ -116,9 +131,14 @@ export async function updateUser(req: Request, res: Response, next: NextFunction
       user.passwordHash = await bcrypt.hash(password, 10);
       changes.push("contraseña");
     }
+    if (pin && !isValidNewPin(pin)) throw badRequest(PIN_ERROR);
     user.updatedBy = req.auth!.sub as never;
 
     await user.save();
+    if (pin) {
+      await setPinFor(user._id, pin, req.auth!.sub, req.auth!.name);
+      changes.push("clave de 4 números");
+    }
     if (changes.length) {
       await logEvent(req.auth, {
         kind: "equipo",

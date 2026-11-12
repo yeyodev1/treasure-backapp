@@ -60,6 +60,7 @@ export default function routerApi(app: Application) {
   // Autenticación
   router.post("/auth/login", auth.login);
   router.post("/auth/login/crew", auth.crewLogin);
+  router.post("/auth/login/department", auth.departmentLogin);
   router.get("/auth/me", requireAuth, auth.me);
   router.post("/auth/refresh", requireAuth, auth.refresh);
 
