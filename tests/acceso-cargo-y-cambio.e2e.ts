@@ -84,6 +84,24 @@ async function main() {
   const byUser = await crew({ username: "nadie", pin: "4821" });
   check("El acceso con usuario sigue igual", byUser.status === 401, byUser.data);
 
+  // ---- 1b. Clave puesta por Gerencia al agregar o editar (12-nov-2026)
+  tokens.owner = (await api("owner", "POST", "/auth/login", { email: "duena@t", password: "x" })).data.token;
+  const weak = await api("owner", "POST", "/ism/crew", { firstName: "Mario", lastName: "Máquinas", position: "MAQ", pin: "1111" });
+  check("Clave débil al agregar: no se acepta", weak.status === 400, weak.data);
+  const added = await api("owner", "POST", "/ism/crew", { firstName: "Mario", lastName: "Máquinas", position: "MAQ", pin: "3579" });
+  check("Agregar con clave", added.status === 201 && added.data.member?.hasPin && !added.data.member?.pinTemporary, added.data);
+  const maq = await crew({ cargo: "maquinas", pin: "3579" });
+  check("…y entra de una con esa clave (sin temporal)", maq.status === 200 && maq.data.user?.name === "Mario Máquinas", maq.data);
+  const edited = await api("owner", "PATCH", `/ism/crew/${tim1._id}`, { pin: "1357" });
+  check("Editar pone clave nueva", edited.status === 200 && edited.data.member?.hasPin, edited.data);
+  const newTim = await crew({ cargo: "marinero", pin: "1357" });
+  check("…entra con la nueva", newTim.status === 200 && newTim.data.user?.name === "Timonel Uno", newTim.data);
+  const oldTim = await crew({ cargo: "marinero", pin: "7305" });
+  check("…y la vieja ya no sirve", oldTim.status !== 200, oldTim.data);
+  tokens.dir = (await api("dir", "POST", "/auth/login", { email: "dir@t", password: "x" })).data.token;
+  const notKeeper = await api("dir", "PATCH", `/ism/crew/${tim1._id}`, { pin: "8642" });
+  check("Dirección de crucero no pone claves", notKeeper.status === 403, notKeeper.data);
+
   // ---- 2. Cóctel con cambio
   for (const [who, email] of Object.entries({ dir: "dir@t", bar: "bar@t" })) {
     tokens[who] = (await api(who, "POST", "/auth/login", { email, password: "x" })).data.token;
