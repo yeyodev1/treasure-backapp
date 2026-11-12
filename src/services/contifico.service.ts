@@ -510,6 +510,28 @@ export async function issueInvoice(paymentId: Types.ObjectId | string) {
   return payment;
 }
 
+/**
+ * El PDF (RIDE) de Contífico sale después de crear la factura: al crearla
+ * llega vacío. Se completa al listar los cobros (12-nov-2026).
+ */
+export async function fillInvoiceUrls(payments: Array<IPayment & { _id: Types.ObjectId; save: () => Promise<unknown> }>) {
+  if (!contificoConfigured()) return;
+  const missing = payments.filter((p) => p.invoiceStatus === "emitida" && p.invoiceId && !p.invoiceUrl).slice(0, 10);
+  await Promise.all(
+    missing.map(async (p) => {
+      try {
+        const { data } = await http.get(`/documento/${p.invoiceId}/`);
+        if (data?.url_ride) {
+          p.invoiceUrl = String(data.url_ride);
+          await p.save();
+        }
+      } catch {
+        // Sin respuesta de Contífico: se intenta en la próxima lista.
+      }
+    }),
+  );
+}
+
 /** Estado de la integración para la pantalla de administración. */
 export async function contificoStatus() {
   if (!contificoConfigured()) {

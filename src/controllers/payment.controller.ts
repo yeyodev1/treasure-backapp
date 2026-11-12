@@ -6,7 +6,7 @@ import { Cruise } from "../models/cruise.model";
 import { User } from "../models/user.model";
 import { Account } from "../models/account.model";
 import { buildCabinAccount } from "../services/account.service";
-import { contificoStatus, issueInvoice } from "../services/contifico.service";
+import { contificoStatus, fillInvoiceUrls, issueInvoice } from "../services/contifico.service";
 import { logEvent } from "../services/audit.service";
 import { badRequest, conflict, forbidden, notFound } from "../errors/httpError";
 import { parseRangeEdge } from "../utils/dates";
@@ -590,6 +590,7 @@ export async function listPayments(req: Request, res: Response, next: NextFuncti
       .limit(pageSize + 1);
 
     const hasMore = payments.length > pageSize;
+    await fillInvoiceUrls(payments as never);
     res.json({ payments: hasMore ? payments.slice(0, pageSize) : payments, hasMore });
   } catch (err) {
     next(err);
