@@ -11,6 +11,8 @@ import { MongoMemoryReplSet } from "mongodb-memory-server";
 import { AddressInfo } from "net";
 import bcrypt from "bcryptjs";
 
+// Correo del pagador: obligatorio al cobrar (12-nov-2026).
+const PAYER = { billing: { email: "pagador@correo.com" } };
 let failures = 0;
 function check(label: string, ok: boolean, detail: unknown = "") {
   if (!ok) failures++;
@@ -117,7 +119,9 @@ async function main() {
   // Se cobra una sola vez y marca también el consumo de A
   await api("bar", "POST", `/accounts/${b}/5/submit`);
   await api("dir", "POST", `/accounts/${b}/5/approve`);
-  const pay = await api("dir", "POST", "/payments/collect", { cruiseId: b, cabinNumber: 5, method: "efectivo", cashConfirmed: true, billing: { idNumber: "P3" } });
+  const noEmail = await api("dir", "POST", "/payments/collect", { cruiseId: b, cabinNumber: 5, method: "efectivo", cashConfirmed: true, billing: { idNumber: "P3" } });
+  check("Sin correo del pagador no se cobra (12-nov-2026)", noEmail.status === 400 && /correo/.test(noEmail.data.message), noEmail.data);
+  const pay = await api("dir", "POST", "/payments/collect", { ...PAYER, cruiseId: b, cabinNumber: 5, method: "efectivo", cashConfirmed: true, billing: { idNumber: "P3", email: "pagador@correo.com" } });
   check("Cobro único en B", pay.status === 200 || pay.status === 201, pay.data);
   const paid = (await api("dir", "GET", `/accounts/${b}/5`)).data;
   const paidAcc = paid.account ?? paid;

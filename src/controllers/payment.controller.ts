@@ -188,6 +188,8 @@ export async function collectCabin(req: Request, res: Response, next: NextFuncti
     if (!finalBilling.name || !finalBilling.idNumber) {
       throw badRequest("Falta el nombre o la identificación del pagador para facturar");
     }
+    // Obligatorio (pedido del cliente, 12-nov-2026): ahí le llegan la factura y el resumen.
+    if (!finalBilling.email) throw badRequest("Falta el correo del pagador: ahí le llega la factura.");
 
     // Doble clic o dos tablets: solo una petición toma cada cuenta aprobada.
     const claimed: Array<InstanceType<typeof Account>> = [];

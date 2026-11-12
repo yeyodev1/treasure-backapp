@@ -12,6 +12,8 @@ import { MongoMemoryReplSet } from "mongodb-memory-server";
 import { AddressInfo } from "net";
 import bcrypt from "bcryptjs";
 
+// Correo del pagador: obligatorio al cobrar (12-nov-2026).
+const PAYER = { billing: { email: "pagador@correo.com" } };
 let failures = 0;
 function check(label: string, ok: boolean, detail: unknown = "") {
   if (!ok) failures++;
@@ -111,7 +113,7 @@ async function main() {
   await consume(2, gin);
   await consume(2, gin); // 29,00
   await approve(2);
-  const mixed = await api("dir", "POST", "/payments/collect", {
+  const mixed = await api("dir", "POST", "/payments/collect", { ...PAYER,
     cruiseId,
     cabinNumber: 2,
     lines: [
@@ -132,7 +134,7 @@ async function main() {
   );
   const cobros2 = await invoiceCobros(head2!);
   check("La factura lleva un cobro por cada forma de pago", cobros2.length === 1 && cobros2[0]!.forma_cobro === "EF" && cobros2[0]!.monto === 10, cobros2);
-  const tooMuch = await api("dir", "POST", "/payments/collect", { cruiseId, cabinNumber: 2, lines: [{ method: "tarjeta", amount: 5 }] });
+  const tooMuch = await api("dir", "POST", "/payments/collect", { ...PAYER, cruiseId, cabinNumber: 2, lines: [{ method: "tarjeta", amount: 5 }] });
   check("Una cuenta pagada no se vuelve a cobrar", tooMuch.status >= 400);
 
   // ---- Pareja por consumos: cada uno paga lo suyo con su factura
@@ -166,11 +168,11 @@ async function main() {
       unassign.data.account.orders.find((o: any) => o.id === o3).consumerId === null,
     { stranger: stranger.data.message, unassign: unassign.status },
   );
-  const ana = await api("dir", "POST", "/payments/collect", {
+  const ana = await api("dir", "POST", "/payments/collect", { ...PAYER,
     cruiseId,
     cabinNumber: 1,
     orderIds: [o1, o2],
-    billing: { name: "Ana", idNumber: "P1" },
+    billing: { name: "Ana", idNumber: "P1", email: "pagador@correo.com" },
     lines: [{ method: "tarjeta" }],
   });
   let acc1 = await account(1);
@@ -180,14 +182,14 @@ async function main() {
       acc1.status === "aprobada" && acc1.readyToCollect && acc1.total === 6.75 && acc1.due === 6.75 && acc1.paidOrders.length === 2,
     { status: ana.status, msg: ana.data.message, acc: [acc1.status, acc1.total, acc1.due, acc1.readyToCollect] },
   );
-  const wrongOrder = await api("dir", "POST", "/payments/collect", {
+  const wrongOrder = await api("dir", "POST", "/payments/collect", { ...PAYER,
     cruiseId, cabinNumber: 1, orderIds: [o1], lines: [{ method: "tarjeta" }],
   });
   check("Un consumo ya pagado no se vuelve a cobrar", wrongOrder.status === 409, wrongOrder.data.message);
   const reassignPaid = await api("dir", "POST", `/accounts/${cruiseId}/1/assign`, { assignments: [{ orderId: o1, passengerId: betoId }] });
   check("Un consumo ya cobrado no se reasigna", reassignPaid.status === 409, reassignPaid.data.message);
-  const beto = await api("dir", "POST", "/payments/collect", {
-    cruiseId, cabinNumber: 1, orderIds: [o3], billing: { name: "Beto", idNumber: "P2" },
+  const beto = await api("dir", "POST", "/payments/collect", { ...PAYER,
+    cruiseId, cabinNumber: 1, orderIds: [o3], billing: { name: "Beto", idNumber: "P2", email: "pagador@correo.com" },
     lines: [{ method: "efectivo", cashConfirmed: true }],
   });
   acc1 = await account(1);
@@ -202,8 +204,8 @@ async function main() {
   await consume(3, gin);
   await consume(3, club); // 21,25
   await approve(3);
-  const half = await api("dir", "POST", "/payments/collect", {
-    cruiseId, cabinNumber: 3, percent: 50, billing: { name: "Dani", idNumber: "P4" }, lines: [{ method: "tarjeta" }],
+  const half = await api("dir", "POST", "/payments/collect", { ...PAYER,
+    cruiseId, cabinNumber: 3, percent: 50, billing: { name: "Dani", idNumber: "P4", email: "pagador@correo.com" }, lines: [{ method: "tarjeta" }],
   });
   let acc3 = await account(3);
   const halfHead = await Payment.findById(half.data.payment?._id);
@@ -214,8 +216,8 @@ async function main() {
       acc3.status === "aprobada" && acc3.due === 10.62,
     { status: half.status, msg: half.data.message, total: half.data.payment?.total, share: halfHead?.share, due: acc3.due },
   );
-  const rest = await api("dir", "POST", "/payments/collect", {
-    cruiseId, cabinNumber: 3, percent: 50, billing: { name: "Acompañante", idNumber: "P9" }, lines: [{ method: "efectivo", cashConfirmed: true }],
+  const rest = await api("dir", "POST", "/payments/collect", { ...PAYER,
+    cruiseId, cabinNumber: 3, percent: 50, billing: { name: "Acompañante", idNumber: "P9", email: "pagador@correo.com" }, lines: [{ method: "efectivo", cashConfirmed: true }],
   });
   acc3 = await account(3);
   const restHead = await Payment.findById(rest.data.payment?._id);
@@ -230,11 +232,11 @@ async function main() {
   await consume(4, gin); // 14,50
   await consume(5, coke); // 6,50
   await approve(4);
-  const notApproved = await api("dir", "POST", "/payments/collect", { cruiseId, cabins: [4, 5], lines: [{ method: "tarjeta" }] });
+  const notApproved = await api("dir", "POST", "/payments/collect", { ...PAYER, cruiseId, cabins: [4, 5], lines: [{ method: "tarjeta" }] });
   check("Cabinas juntas exigen todas aprobadas", notApproved.status === 409 && /cabina 5/.test(notApproved.data.message), notApproved.data.message);
   await approve(5);
-  const group = await api("dir", "POST", "/payments/collect", {
-    cruiseId, cabins: [4, 5], billing: { name: "Eva", idNumber: "P5" },
+  const group = await api("dir", "POST", "/payments/collect", { ...PAYER,
+    cruiseId, cabins: [4, 5], billing: { name: "Eva", idNumber: "P5", email: "pagador@correo.com" },
     lines: [{ method: "efectivo", amount: 10, cashConfirmed: true }, { method: "tarjeta" }],
   });
   const [acc4, acc5] = [await account(4), await account(5)];

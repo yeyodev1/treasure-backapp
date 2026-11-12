@@ -13,6 +13,8 @@ import { MongoMemoryReplSet } from "mongodb-memory-server";
 import { AddressInfo } from "net";
 import bcrypt from "bcryptjs";
 
+// Correo del pagador: obligatorio al cobrar (12-nov-2026).
+const PAYER = { billing: { email: "pagador@correo.com" } };
 let failures = 0;
 function check(label: string, ok: boolean, detail: unknown = "") {
   if (!ok) failures++;
@@ -132,13 +134,13 @@ async function main() {
   // ---- 01 y 03: cobrar conserva productos; pago registrado con factura pendiente
   await api("bar", "POST", `/accounts/${cruiseId}/2/submit`);
   await api("dir", "POST", `/accounts/${cruiseId}/2/approve`);
-  const badMail = await api("dir", "POST", "/payments/collect", {
+  const badMail = await api("dir", "POST", "/payments/collect", { ...PAYER,
     cruiseId, cabinNumber: 2, method: "efectivo", cashConfirmed: true, billing: { idNumber: "P123", email: "esto-no-es-correo" },
   });
   check("Correo inválido para la factura: mensaje claro", badMail.status === 400 && /nombre@dominio\.com/.test(badMail.data.message), badMail.data.message);
   const [pay1, pay2] = await Promise.all([
-    api("dir", "POST", "/payments/collect", { cruiseId, cabinNumber: 2, method: "efectivo", cashConfirmed: true, billing: { idNumber: "P123" } }),
-    api("dir", "POST", "/payments/collect", { cruiseId, cabinNumber: 2, method: "efectivo", cashConfirmed: true, billing: { idNumber: "P123" } }),
+    api("dir", "POST", "/payments/collect", { ...PAYER, cruiseId, cabinNumber: 2, method: "efectivo", cashConfirmed: true, billing: { idNumber: "P123", email: "pagador@correo.com" } }),
+    api("dir", "POST", "/payments/collect", { ...PAYER, cruiseId, cabinNumber: 2, method: "efectivo", cashConfirmed: true, billing: { idNumber: "P123", email: "pagador@correo.com" } }),
   ]);
   const pays = await Payment.countDocuments({ cruise: cruiseId, cabinNumber: 2 });
   check("Doble clic en Cobrar: un solo pago", pays === 1, { pays, status: [pay1.status, pay2.status] });
@@ -264,7 +266,7 @@ async function main() {
   await Order.collection.updateMany({ cruise: new mongoose.Types.ObjectId(cruiseId), cabinNumber: 3 }, { $set: { createdAt: yesterday } });
   await api("bar", "POST", `/accounts/${cruiseId}/3/submit`);
   await api("dir", "POST", `/accounts/${cruiseId}/3/approve`);
-  await api("dir", "POST", "/payments/collect", { cruiseId, cabinNumber: 3, method: "transferencia", reference: "TR-1", billing: { idNumber: "P3" } });
+  await api("dir", "POST", "/payments/collect", { ...PAYER, cruiseId, cabinNumber: 3, method: "transferencia", reference: "TR-1", billing: { idNumber: "P3", email: "pagador@correo.com" } });
   const todayAfter = (await api("duena", "GET", `/reports/owner?from=${today}&to=${today}`)).data;
   check(
     "Cobrar hoy una deuda de ayer no aumenta los consumos de hoy",
@@ -497,7 +499,7 @@ async function main() {
   );
   const twice = await api("dir", "POST", `/accounts/${cruiseId}/5/approve`);
   check("Aprobar dos veces: la segunda se rechaza", twice.status === 409);
-  const barCollect = await api("bar", "POST", "/payments/collect", { cruiseId, cabinNumber: 5, method: "efectivo", cashConfirmed: true });
+  const barCollect = await api("bar", "POST", "/payments/collect", { ...PAYER, cruiseId, cabinNumber: 5, method: "efectivo", cashConfirmed: true });
   check("El bar no cobra", barCollect.status === 403);
   await api("bar", "POST", "/consumptions", { cruiseId, cabinNumber: 5, productId: coke, idempotencyKey: "c5-late" });
   acc5 = (await api("dir", "GET", `/accounts/${cruiseId}/5`)).data.account;
@@ -507,10 +509,10 @@ async function main() {
       acc5.history.some((h: any) => h.action === "invalidada" && /^Aprobación anulada: Consumo/.test(h.reason)),
     { status: acc5.status, due: acc5.due },
   );
-  const stale = await api("dir", "POST", "/payments/collect", { cruiseId, cabinNumber: 5, method: "efectivo", cashConfirmed: true });
+  const stale = await api("dir", "POST", "/payments/collect", { ...PAYER, cruiseId, cabinNumber: 5, method: "efectivo", cashConfirmed: true });
   check("Sin nueva aprobación no se cobra", stale.status === 409);
   await api("dir", "POST", `/accounts/${cruiseId}/5/approve`);
-  const pay5 = await api("dir", "POST", "/payments/collect", { cruiseId, cabinNumber: 5, method: "efectivo", cashConfirmed: true, expectedDue: 21 });
+  const pay5 = await api("dir", "POST", "/payments/collect", { ...PAYER, cruiseId, cabinNumber: 5, method: "efectivo", cashConfirmed: true, expectedDue: 21 });
   acc5 = (await api("dir", "GET", `/accounts/${cruiseId}/5`)).data.account;
   check("Aprobar → Cobrar en el mismo flujo: Pagada", pay5.status === 201 && acc5.status === "cobrada" && acc5.paid === 21 && acc5.due === 0, pay5.data.message);
 
@@ -586,7 +588,7 @@ async function main() {
   );
   const recentApproved = (await api("bar", "GET", `/consumptions/summary/${cruiseId}/6`)).data.summary;
   check("En el bar la cuenta aprobada no ofrece correcciones", recentApproved.recent.every((r: any) => !r.canUndo && !r.canCourtesy));
-  const barCollect6 = await api("bar", "POST", "/payments/collect", { cruiseId, cabinNumber: 6, method: "efectivo", cashConfirmed: true });
+  const barCollect6 = await api("bar", "POST", "/payments/collect", { ...PAYER, cruiseId, cabinNumber: 6, method: "efectivo", cashConfirmed: true });
   check("El bar no cobra (403)", barCollect6.status === 403);
   const dirBonifyApproved = await api("dir", "POST", `/consumptions/${gin6.id}/bonify`, { reason: "Compensación al pasajero" });
   acc6 = (await api("dir", "GET", `/accounts/${cruiseId}/6`)).data.account;

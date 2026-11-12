@@ -14,6 +14,8 @@ import { MongoMemoryReplSet } from "mongodb-memory-server";
 import { AddressInfo } from "net";
 import bcrypt from "bcryptjs";
 
+// Correo del pagador: obligatorio al cobrar (12-nov-2026).
+const PAYER = { billing: { email: "pagador@correo.com" } };
 let failures = 0;
 function check(label: string, ok: boolean, detail: unknown = "") {
   if (!ok) failures++;
@@ -224,9 +226,9 @@ async function main() {
   check("El bar no aprueba cuentas", barApprove.status === 403);
   const direct = await api("dir", "POST", "/accounts/" + cruiseId + "/3/approve");
   check("Dirección aprueba directo desde abierta", direct.status === 200 && direct.data.account.status === "aprobada" && direct.data.account.readyToCollect, direct.data.message);
-  const barPay = await api("bar", "POST", "/payments/collect", { cruiseId, cabinNumber: 3, method: "efectivo", cashConfirmed: true, billing: { idNumber: "0912345678" } });
+  const barPay = await api("bar", "POST", "/payments/collect", { ...PAYER, cruiseId, cabinNumber: 3, method: "efectivo", cashConfirmed: true, billing: { idNumber: "0912345678", email: "pagador@correo.com" } });
   check("El bar no cobra", barPay.status === 403);
-  const pay = await api("dir", "POST", "/payments/collect", { cruiseId, cabinNumber: 3, method: "efectivo", cashConfirmed: true, billing: { idNumber: "0912345678" } });
+  const pay = await api("dir", "POST", "/payments/collect", { ...PAYER, cruiseId, cabinNumber: 3, method: "efectivo", cashConfirmed: true, billing: { idNumber: "0912345678", email: "pagador@correo.com" } });
   check("Dirección de crucero cobra (sin depender de caja)", pay.status === 201, pay.data.message);
   const owner1 = await api("duena", "GET", `/reports/owner?cruiseId=${cruiseId}`);
   check("Panel: consumo neto, cobrado y por cobrar", owner1.data.netConsumption === 27.5 && owner1.data.collected === 6.5 && owner1.data.pendingCollection === 21, owner1.data);
