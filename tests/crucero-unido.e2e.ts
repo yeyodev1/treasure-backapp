@@ -123,9 +123,22 @@ async function main() {
   const paidAcc = paid.account ?? paid;
   check("Cuenta B-5 pagada, sin saldo", paidAcc.due === 0 && paidAcc.paidOrders.length === 2, { due: paidAcc.due, paid: paidAcc.paidOrders?.length });
 
+  // 12-nov-2026: una cabina vacía en origen no se une (no arrastra consumos de prueba)
+  await api("bar", "POST", "/consumptions", { cruiseId: a, cabinNumber: 6, productId: coke, idempotencyKey: "a6" }).catch(() => null);
+  const empty = await api("dir", "PUT", `/cruises/${b}/continuations`, { links: [{ to: 6, fromCruise: a, fromCabin: 6 }] });
+  check("Cabina vacía de origen no se une", empty.status === 200 && !empty.data.cruise.cabins.find((c: any) => c.number === 6).continuesFrom, empty.data);
+
+  // 12-nov-2026: pasajeros distintos a los de origen sueltan la unión
+  await api("dir", "PUT", `/cruises/${b}/cabins/5/passengers`, { passengers: [{ name: "Marta Ruiz", isPayer: true, idNumber: "P3" }, { name: "Otro" }] });
+  let c5 = (await api("dir", "GET", `/cruises/${b}`)).data.cruise.cabins.find((c: any) => c.number === 5);
+  check("Misma gente + uno nuevo: sigue unida", Boolean(c5.continuesFrom), c5.continuesFrom);
+  await api("dir", "PUT", `/cruises/${b}/cabins/2/passengers`, { passengers: [{ name: "Pasajero Nuevo", isPayer: true }] });
+  const c2 = (await api("dir", "GET", `/cruises/${b}`)).data.cruise.cabins.find((c: any) => c.number === 2);
+  check("Gente nueva: la cabina ya no suma lo anterior", !c2.continuesFrom, c2.continuesFrom);
+
   // Deshacer
-  const undo = await api("dir", "PUT", `/cruises/${b}/continuations`, { links: [{ to: 2, fromCruise: null }] });
-  check("Deshacer la unión", undo.status === 200 && !undo.data.cruise.cabins.find((c: any) => c.number === 2).continuesFrom);
+  const undo = await api("dir", "PUT", `/cruises/${b}/continuations`, { links: [{ to: 5, fromCruise: null }] });
+  check("Deshacer la unión", undo.status === 200 && !undo.data.cruise.cabins.find((c: any) => c.number === 5).continuesFrom);
 
   server.close();
   await mongoose.disconnect();

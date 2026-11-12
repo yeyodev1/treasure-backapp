@@ -15,8 +15,10 @@ import {
   freeUsername,
   hasRealEmail,
   issueTemporaryPin,
+  isValidNewPin,
   listCrew,
   placeholderEmail,
+  setPinFor,
 } from "../services/ismCrew.service";
 import { EMAIL_ERROR, isValidOptionalEmail } from "../utils/email";
 import { sweepOverdue } from "../services/ismNotify.service";
@@ -70,7 +72,8 @@ const roleForPosition = (position: string) => (position === "CAP" ? "capitan" : 
 export async function createCrewMember(req: Request, res: Response, next: NextFunction) {
   try {
     assertKeeper(req);
-    const { firstName, lastName, email, position, onboard } = req.body as {
+    const { firstName, lastName, email, position, onboard, pin } = req.body as {
+      pin?: string;
       firstName?: string;
       lastName?: string;
       email?: string;
@@ -82,6 +85,7 @@ export async function createCrewMember(req: Request, res: Response, next: NextFu
     if (first.length < 2) throw badRequest("Escribe el nombre");
     if (last.length < 2) throw badRequest("Escribe el apellido");
     if (!validPosition(position)) throw badRequest("Elige el cargo");
+    if (pin && !isValidNewPin(pin)) throw badRequest("La clave son 4 números que no sean seguidos ni repetidos.");
     const clean = `${first} ${last}`;
     const exists = await User.findOne({
       role: { $in: CREW_LIST_ROLES },
@@ -105,6 +109,7 @@ export async function createCrewMember(req: Request, res: Response, next: NextFu
     profile.onboard = onboard !== false;
     profile.updatedBy = new Types.ObjectId(req.auth!.sub);
     await profile.save();
+    if (pin) await setPinFor(user._id, pin, req.auth!.sub, req.auth!.name);
     await logEvent(req.auth, { kind: "equipo", title: `Tripulante agregado · ${user.name}`, detail: position });
     const crew = await listCrew({ includeInactive: true });
     res.status(201).json({ member: crew.find((c) => c.id === user._id.toString()) });
@@ -119,7 +124,8 @@ export async function updateCrewMember(req: Request, res: Response, next: NextFu
     assertKeeper(req);
     const user = await User.findById(req.params.id);
     if (!user || !CREW_LIST_ROLES.includes(user.role as never)) throw notFound("Tripulante no encontrado");
-    const { name, email, position, onboard, active, sharedDevice } = req.body as {
+    const { name, email, position, onboard, active, sharedDevice, pin } = req.body as {
+      pin?: string;
       name?: string;
       email?: string;
       position?: string;
@@ -145,12 +151,17 @@ export async function updateCrewMember(req: Request, res: Response, next: NextFu
     }
     if (typeof active === "boolean" && managed) user.active = active;
     // Cuenta compartida (tablet del barco): solo se marca a mano, nunca por el nombre o el correo.
+    if (pin && !isValidNewPin(pin)) throw badRequest("La clave son 4 números que no sean seguidos ni repetidos.");
     if (typeof sharedDevice === "boolean") {
       if (sharedDevice && user.role !== "tripulante") throw badRequest("Solo una cuenta de tripulante puede ser la tablet compartida");
       user.sharedDevice = sharedDevice;
     }
     user.updatedBy = new Types.ObjectId(req.auth!.sub);
     await user.save();
+    if (pin) {
+      await setPinFor(user._id, pin, req.auth!.sub, req.auth!.name);
+      await logEvent(req.auth, { kind: "equipo", title: `Clave de firma · ${user.name}` });
+    }
     if (typeof onboard === "boolean") {
       const profile = await crewProfile(user._id);
       profile.onboard = onboard;

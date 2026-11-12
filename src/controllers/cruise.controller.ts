@@ -775,9 +775,23 @@ export async function updatePassengers(req: Request, res: Response, next: NextFu
       if (p.isPayer) payerSeen = true;
     }
 
+    // Cabina unida que recibe gente distinta a la de origen: ya no es la misma cuenta (12-nov-2026).
+    let unlinked = "";
+    if (cabin.continuesFrom && clean.length) {
+      const origin = await Cruise.findById(cabin.continuesFrom.cruise).select("code name cabins.number cabins.passengers");
+      const from = origin?.cabins.find((c) => c.number === cabin.continuesFrom!.cabinNumber);
+      const before = new Set((from?.passengers ?? []).map(keyOf));
+      if (!clean.some((p) => before.has(keyOf(p)))) {
+        unlinked = origin?.code || origin?.name || "el crucero anterior";
+        cabin.continuesFrom = null;
+      }
+    }
     cabin.passengers = clean as never;
     cabin.guestName = cabinDisplayName(cabin);
     await cruise.save();
+    if (unlinked) {
+      await chargesChanged(cruise._id, cabinNumber, req.auth!.sub, `Pasajeros nuevos: ya no suma lo de ${unlinked}`);
+    }
 
     await logEvent(req.auth, {
       kind: "salida",
@@ -833,6 +847,12 @@ export async function updateContinuations(req: Request, res: Response, next: Nex
         if (origin.startDate >= cruise.startDate) throw badRequest(`${originName} no es anterior a ${name}`);
         const fromCabin = origin.cabins.find((c) => c.number === Number(link.fromCabin));
         if (!fromCabin) throw badRequest(`La cabina ${link.fromCabin} no existe en ${originName}`);
+        // Cabina vacía en origen: no hay nadie que continúe; unirla arrastraría consumos de prueba (12-nov-2026).
+        if (!fromCabin.passengers.length) {
+          lines.push(`cabina ${cabin.number}: ${originName} cabina ${fromCabin.number} no tenía pasajeros, no se une`);
+          if (before) changed.push(cabin.number);
+          continue;
+        }
 
         const sameHere = cruise.cabins.find(
           (c) => c.continuesFrom?.cruise.equals(origin._id) && c.continuesFrom.cabinNumber === fromCabin.number,

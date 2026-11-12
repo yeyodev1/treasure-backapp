@@ -214,6 +214,27 @@ export async function issueTemporaryPin(userId: Types.ObjectId | string, by: str
   return pin;
 }
 
+/**
+ * Clave fija que pone Gerencia o la Persona Designada al agregar o editar
+ * (pedido del cliente, 12-nov-2026): la persona entra de una vez, sin temporal.
+ */
+export async function setPinFor(userId: Types.ObjectId | string, pin: unknown, by: string, byName = "") {
+  if (!isValidNewPin(pin)) {
+    throw pinError(400, "La clave son 4 números que no sean seguidos ni repetidos.", "clave_debil");
+  }
+  const profile = await crewProfile(userId);
+  profile.pinHash = await bcrypt.hash(pin, 10);
+  profile.pinTemporary = false;
+  profile.pinSetAt = new Date();
+  profile.failedAttempts = 0;
+  profile.lockedUntil = null;
+  profile.updatedBy = new Types.ObjectId(by);
+  profile.pinResetAt = profile.pinSetAt;
+  profile.pinResetBy = new Types.ObjectId(by);
+  profile.pinResetByName = byName;
+  await profile.save();
+}
+
 /** Cambio de clave por su dueño (sabe la actual). */
 export async function changeOwnPin(userId: string, current: unknown, next: unknown) {
   if (!isValidNewPin(next)) {
