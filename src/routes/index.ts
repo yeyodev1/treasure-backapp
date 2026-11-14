@@ -86,6 +86,7 @@ export default function routerApi(app: Application) {
   // Salidas, ciclo y pasajeros
   router.get("/cruises", requireAuth, ALL, cruises.listCruises);
   router.get("/cruises/active", requireAuth, ALL, cruises.activeCruise);
+  router.get("/cruises/:id/cobro-bar", requireAuth, LEAD, cruises.cobroBarExcel);
   router.get("/cruises/cycle-settings", requireAuth, LEAD, cruises.cycleSettings);
   router.put("/cruises/cycle-settings", requireAuth, LEAD, cruises.updateCycleSettings);
   router.post("/cruises/generate", requireAuth, LEAD, cruises.generateCycle);

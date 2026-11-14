@@ -738,6 +738,23 @@ async function main() {
     [mixedAll.status, mixedPick.status, wetPaid.status, wetPaid.data.payment?.line, wetPaid.data.payment?.invoiceError, barPaid.status, barPaid.data.payment?.line, barPaid.data.message],
   );
 
+  // Excel «Cobro bar» del crucero (14-nov-2026): cobros con factura y consumos.
+  const { cobroBarWorkbook } = await import("../src/services/cobroBar.service");
+  const ExcelJS = (await import("exceljs")).default;
+  const file = await cobroBarWorkbook(String(live!._id));
+  const book = new ExcelJS.Workbook();
+  await book.xlsx.load(file!.buffer as any);
+  const cobrosSheet = book.getWorksheet("Cobros")!;
+  const values: string[] = [];
+  cobrosSheet.eachRow((r) => values.push(JSON.stringify(r.values)));
+  const totalRow = values.find((v) => v.includes("TOTAL COBRADO")) ?? "";
+  check(
+    "Excel Cobro bar: hojas Cobros y Consumos, una fila por pago (bar y wetsuits) y el total",
+    file!.fileName.startsWith("cobro-bar-") && Boolean(book.getWorksheet("Consumos")) &&
+      values.some((v) => v.includes("Wetsuits")) && values.some((v) => v.includes("P9")) && /\d/.test(totalRow),
+    [file?.fileName, totalRow],
+  );
+
   server.close();
   await mongoose.disconnect();
   await repl.stop();

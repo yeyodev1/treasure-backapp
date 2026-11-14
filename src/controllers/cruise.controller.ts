@@ -20,6 +20,7 @@ import { addDaysKey, commercialDateKey, ecuadorDateTime, TIMEZONE } from "../uti
 import { EMAIL_ERROR, isValidOptionalEmail } from "../utils/email";
 import { Types } from "mongoose";
 import { User } from "../models/user.model";
+import { cobroBarWorkbook } from "../services/cobroBar.service";
 import { CommissionPayment } from "../models/commissionPayment.model";
 
 /** Bartender del crucero: un usuario activo con rol bartender, o null para quitarlo. */
@@ -931,6 +932,23 @@ export async function updateContinuations(req: Request, res: Response, next: Nex
       });
     }
     res.json({ cruise });
+  } catch (err) {
+    next(err);
+  }
+}
+
+/** GET /cruises/:id/cobro-bar: Excel «Cobro bar» del crucero (pedido del cliente, 14-nov-2026). */
+export async function cobroBarExcel(req: Request, res: Response, next: NextFunction) {
+  try {
+    if (!Types.ObjectId.isValid(String(req.params.id))) throw notFound("Crucero no encontrado");
+    const file = await cobroBarWorkbook(String(req.params.id));
+    if (!file) throw notFound("Crucero no encontrado");
+    res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+    res.setHeader("Content-Disposition", `attachment; filename="${file.fileName}"`);
+    res.setHeader("Cache-Control", "no-store");
+    // La app lee el nombre del archivo desde otro dominio.
+    res.setHeader("Access-Control-Expose-Headers", "Content-Disposition");
+    res.send(file.buffer);
   } catch (err) {
     next(err);
   }
