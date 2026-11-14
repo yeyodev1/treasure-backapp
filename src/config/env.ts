@@ -40,6 +40,18 @@ export const env = {
   CONTIFICO_CARD_PROCESSOR: process.env.CONTIFICO_CARD_PROCESSOR ?? "",
   /** Producto genérico para cócteles creados en el bar que no existen en Contífico. */
   CONTIFICO_GENERIC_PRODUCT_ID: process.env.CONTIFICO_GENERIC_PRODUCT_ID ?? "",
+  /**
+   * Wetsuits (pedido del cliente, 14-nov-2026): se facturan en otra empresa de
+   * Contífico, con su propia API key, token y serie. Sin key/token sus facturas
+   * quedan pendientes hasta configurarlas.
+   */
+  CONTIFICO_WETSUIT_API_KEY: process.env.CONTIFICO_WETSUIT_API_KEY ?? "",
+  CONTIFICO_WETSUIT_API_TOKEN: process.env.CONTIFICO_WETSUIT_API_TOKEN ?? "",
+  CONTIFICO_WETSUIT_SERIE: process.env.CONTIFICO_WETSUIT_SERIE ?? process.env.CONTIFICO_SERIE ?? "001-100",
+  CONTIFICO_WETSUIT_BANK_ACCOUNT_ID: process.env.CONTIFICO_WETSUIT_BANK_ACCOUNT_ID ?? "",
+  CONTIFICO_WETSUIT_CARD_PROCESSOR: process.env.CONTIFICO_WETSUIT_CARD_PROCESSOR ?? process.env.CONTIFICO_CARD_PROCESSOR ?? "",
+  /** Producto «Wetsuit» en esa empresa; vacío = el que tenga «wetsuit» en el nombre. */
+  CONTIFICO_WETSUIT_PRODUCT_ID: process.env.CONTIFICO_WETSUIT_PRODUCT_ID ?? "",
   RESEND_API_KEY: process.env.RESEND_API_KEY ?? "",
   EMAIL_FROM: process.env.EMAIL_FROM ?? "Treasure <no-reply@bakano.ec>",
   /** Archivos y fotos (logos, recursos, comprobantes). */

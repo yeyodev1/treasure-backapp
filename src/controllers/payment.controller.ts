@@ -156,6 +156,20 @@ export async function collectCabin(req: Request, res: Response, next: NextFuncti
     if (mode === "consumos" && !orderIds!.length) throw badRequest("Elige los consumos que paga esta persona");
 
     const summaries = await Promise.all(cabinList.map((n) => buildCabinAccount(cruiseId, n)));
+    // Bar y wetsuits son empresas distintas en Contífico (pedido del cliente,
+    // 14-nov-2026): un cobro lleva solo una de las dos, con su propia factura.
+    const charged = summaries.flatMap((s) => s.orders).filter((o) => o.total > 0);
+    const linesInScope = new Set(
+      (mode === "consumos" ? charged.filter((o) => orderIds!.includes(o.id)) : charged).map((o) => o.line),
+    );
+    if (linesInScope.size > 1) {
+      throw badRequest(
+        mode === "consumos"
+          ? "Cobra el bar y los wetsuits por separado: cada uno lleva su propia factura."
+          : "Esta cuenta tiene bar y wetsuits: cóbralos por separado, cada uno con su factura.",
+      );
+    }
+    const billingLine = [...linesInScope][0] ?? "bar";
     for (const s of summaries) {
       if (!s.orders.length) {
         throw badRequest(cabinList.length > 1 ? `La cabina ${s.cabinNumber} no tiene consumos por cobrar` : "La cabina no tiene consumos abiertos");
@@ -333,6 +347,7 @@ export async function collectCabin(req: Request, res: Response, next: NextFuncti
             share: head ? share : 1,
             invoiceTotal: head && invoiced ? invoiceTotal : null,
             cabins: head && mode === "grupo" ? cabinList : [],
+            line: billingLine,
             method: chunk.line.method,
             reference: chunk.line.reference,
             cashConfirmed: chunk.line.cashConfirmed,

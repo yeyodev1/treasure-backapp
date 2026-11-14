@@ -1,7 +1,7 @@
 import { Types } from "mongoose";
 import { Account, AccountStatus, IAccount } from "../models/account.model";
 import { chargeableQty, IOrder, Order, pendingQty } from "../models/order.model";
-import { Payment } from "../models/payment.model";
+import { BillingLine, Payment } from "../models/payment.model";
 import { Cruise } from "../models/cruise.model";
 import { round2 } from "../utils/units";
 
@@ -30,6 +30,8 @@ export interface AccountOrder {
   /** Pasajero de la cabina que lo consumió (null = sin asignar). */
   consumerId: string | null;
   consumerName: string;
+  /** Bar o wetsuits: se cobran por separado, cada uno con su factura (14-nov-2026). */
+  line: BillingLine;
 }
 
 export interface AccountPayment {
@@ -49,6 +51,7 @@ export interface AccountPayment {
   payer: string;
   /** Cabinas cobradas juntas (en la cabeza del cobro). */
   cabins: number[];
+  line: BillingLine;
   invoiceStatus: string;
   invoiceNumber: string;
   invoiceError: string;
@@ -196,6 +199,11 @@ type PopulatedOrder = IOrder & { _id: Types.ObjectId };
 const isAgencyCourtesy = (item: { courtesy: boolean; courtesyKind?: string }) =>
   item.courtesy && item.courtesyKind === "agencia";
 
+/** Wetsuit (o lo que tenga precio por trayecto): se cobra y factura aparte del bar. */
+export function orderLine(order: { items: Array<{ product?: unknown }> }): BillingLine {
+  return order.items.some((i) => ((i.product as { legs?: string[] } | null)?.legs?.length ?? 0) > 0) ? "wetsuit" : "bar";
+}
+
 /** Líneas de un pedido con su estado de entrega y lo que sigue contando (sin las de agencia). */
 function mapOrder(order: PopulatedOrder) {
   let total = 0;
@@ -234,6 +242,7 @@ function mapOrder(order: PopulatedOrder) {
       total: round2(total),
       consumerId: order.consumer ? order.consumer.toString() : null,
       consumerName: order.consumer ? (order.consumerName ?? "") : "",
+      line: orderLine(order),
     },
     total,
     courtesy,
@@ -254,6 +263,7 @@ export async function buildCabinAccount(
     Account.findOne({ cruise: cruiseId, cabinNumber }).populate("history.by", "name"),
     Order.find({ $or: scope, status: { $nin: ["cancelada", "retenida"] } })
       .populate("createdBy", "name")
+      .populate("items.product", "legs")
       .sort({ createdAt: 1 }),
     Payment.find({ $or: scope, status: "vigente" }).sort({ createdAt: 1 }),
   ]);
@@ -322,6 +332,7 @@ export async function buildCabinAccount(
       head: !p.group || p.group.equals(p._id),
       payer: p.billing?.name ?? "",
       cabins: p.cabins ?? [],
+      line: p.line ?? "bar",
       invoiceStatus: p.invoiceStatus,
       invoiceNumber: p.invoiceNumber,
       invoiceError: p.invoiceError,

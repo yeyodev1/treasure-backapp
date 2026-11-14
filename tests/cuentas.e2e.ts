@@ -717,6 +717,27 @@ async function main() {
     [customWs.status, customWs.data.order?.total, zeroWs.status],
   );
 
+  // Bar y wetsuits se cobran por separado, cada uno con su factura (14-nov-2026).
+  await api("bar", "POST", "/consumptions", { cruiseId: live!._id, cabinNumber: wetCabin, productId: coke, idempotencyKey: "wet-bar-coke" });
+  await api("dir", "POST", `/accounts/${live!._id}/${wetCabin}/approve`);
+  const mixedAcc = (await api("dir", "GET", `/accounts/${live!._id}/${wetCabin}`)).data.account;
+  const wetIds = (mixedAcc.orders as any[]).filter((o) => o.line === "wetsuit" && o.total > 0).map((o) => o.id);
+  const barIds = (mixedAcc.orders as any[]).filter((o) => o.line === "bar" && o.total > 0).map((o) => o.id);
+  const payWet = { ...PAYER, cruiseId: live!._id, cabinNumber: wetCabin, method: "efectivo", cashConfirmed: true, billing: { idNumber: "P9", email: "pagador@correo.com" } };
+  const mixedAll = await api("dir", "POST", "/payments/collect", payWet);
+  const mixedPick = await api("dir", "POST", "/payments/collect", { ...payWet, orderIds: [wetIds[0], barIds[0]] });
+  const wetPaid = await api("dir", "POST", "/payments/collect", { ...payWet, orderIds: wetIds });
+  const barPaid = await api("dir", "POST", "/payments/collect", payWet);
+  check(
+    "Cuenta con bar y wetsuits: no se cobran juntos; cada uno aparte con su línea y su factura",
+    wetIds.length > 0 && barIds.length > 0 &&
+      mixedAll.status === 400 && mixedPick.status === 400 &&
+      wetPaid.status === 201 && wetPaid.data.payment?.line === "wetsuit" &&
+      /Contífico de wetsuits/.test(wetPaid.data.payment?.invoiceError ?? "") &&
+      barPaid.status === 201 && barPaid.data.payment?.line === "bar" && barPaid.data.settled === true,
+    [mixedAll.status, mixedPick.status, wetPaid.status, wetPaid.data.payment?.line, wetPaid.data.payment?.invoiceError, barPaid.status, barPaid.data.payment?.line, barPaid.data.message],
+  );
+
   server.close();
   await mongoose.disconnect();
   await repl.stop();

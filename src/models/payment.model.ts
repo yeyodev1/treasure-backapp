@@ -1,5 +1,9 @@
 import mongoose, { Schema, Types } from "mongoose";
 
+/** Línea de negocio de un cobro: el bar y los wetsuits son empresas distintas en Contífico. */
+export const BILLING_LINES = ["bar", "wetsuit"] as const;
+export type BillingLine = (typeof BILLING_LINES)[number];
+
 /**
  * Cobro de la cuenta de una cabina al final del crucero.
  * Quien cobra marca el método; con efectivo debe confirmar la recaudación en caja.
@@ -84,6 +88,8 @@ export interface IPayment {
   invoiceTotal: number | null;
   /** Cabinas cobradas juntas en este cobro (cabeza). Vacío = una sola. */
   cabins: number[];
+  /** Bar o wetsuits: cada uno se cobra aparte y se factura en su Contífico (14-nov-2026). */
+  line: BillingLine;
   method: PaymentMethod;
   /** Referencia del pago: voucher, número de transferencia… */
   reference: string;
@@ -153,6 +159,7 @@ const paymentSchema = new Schema<IPayment>(
     share: { type: Number, default: 1, min: 0, max: 1 },
     invoiceTotal: { type: Number, default: null },
     cabins: { type: [Number], default: [] },
+    line: { type: String, enum: BILLING_LINES, default: "bar" },
     method: { type: String, enum: PAYMENT_METHODS, required: true },
     reference: { type: String, default: "", trim: true },
     cashConfirmed: { type: Boolean, default: false },
