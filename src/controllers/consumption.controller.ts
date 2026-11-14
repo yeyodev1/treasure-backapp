@@ -140,7 +140,7 @@ async function cabinSummary(cruiseId: Types.ObjectId | string, cabinNumber: numb
 
 export async function createConsumption(req: Request, res: Response, next: NextFunction) {
   try {
-    const { cruiseId, cabinNumber, productId, qty, courtesy, courtesyReason, courtesyKind, idempotencyKey, clientAt, swaps } =
+    const { cruiseId, cabinNumber, productId, qty, courtesy, courtesyReason, courtesyKind, idempotencyKey, clientAt, swaps, customPrice } =
       req.body as {
         cruiseId?: string;
         cabinNumber?: number;
@@ -153,6 +153,8 @@ export async function createConsumption(req: Request, res: Response, next: NextF
         clientAt?: string;
         /** Cóctel con cambio de gaseosa o licor: [{ from, to }] (ids de insumos). */
         swaps?: unknown;
+        /** Wetsuit con otro valor por persona (IVA incluido), pedido del cliente 13-nov-2026. */
+        customPrice?: unknown;
       };
     if (!cruiseId || !cabinNumber || !productId) {
       throw badRequest("Crucero, cabina y bebida son obligatorios");
@@ -194,11 +196,18 @@ export async function createConsumption(req: Request, res: Response, next: NextF
     if (product.legs?.length && !product.legs.includes(cruise.leg)) {
       throw badRequest(`${product.name} no es del ${cruise.code ? `crucero ${cruise.code}` : "trayecto de este crucero"}`);
     }
+    const hasCustomPrice = customPrice !== undefined && customPrice !== null && customPrice !== "";
+    if (hasCustomPrice) {
+      if (!product.legs?.length) throw badRequest("Solo los wetsuits admiten otro valor");
+      if (typeof customPrice !== "number" || !Number.isFinite(customPrice) || customPrice <= 0 || customPrice > 10000) {
+        throw badRequest("El valor del wetsuit debe ser mayor a $0");
+      }
+    }
     const hasSwaps = Array.isArray(swaps) && swaps.length > 0;
     if (hasSwaps && product.category !== "coctel") throw badRequest("Solo los cócteles admiten cambio de ingrediente");
     const { applied, surcharge, note } = await swapIngredients(await appliedFor(product), swaps);
     const itemName = product.name + note;
-    const unitPrice = round2(product.price + surcharge);
+    const unitPrice = hasCustomPrice ? round2(customPrice as number) : round2(product.price + surcharge);
     const cost = costOf(applied);
     const late = cruise.status === "cerrado";
     const item = {

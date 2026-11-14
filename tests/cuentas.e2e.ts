@@ -704,6 +704,18 @@ async function main() {
       !(cabinAcc.orders as any[]).some((o) => o.id === byAgency.data.order?._id),
     accLines.map((i: any) => [i.name, i.courtesyKind]),
   );
+  // Otro valor por persona (13-nov-2026): solo wetsuits y mayor a $0.
+  const customWs = await api("dir", "POST", "/consumptions", {
+    cruiseId: live!._id, cabinNumber: wetCabin, productId: ws.data.product._id, qty: 2, customPrice: 40, idempotencyKey: "wet-4",
+  });
+  const zeroWs = await api("dir", "POST", "/consumptions", {
+    cruiseId: live!._id, cabinNumber: wetCabin, productId: ws.data.product._id, qty: 1, customPrice: 0, idempotencyKey: "wet-5",
+  });
+  check(
+    "Wetsuit con otro valor: 2 × $40 = $80; $0 se rechaza",
+    customWs.status === 201 && customWs.data.order?.total === 80 && customWs.data.order?.items[0].unitPrice === 40 && zeroWs.status === 400,
+    [customWs.status, customWs.data.order?.total, zeroWs.status],
+  );
 
   server.close();
   await mongoose.disconnect();

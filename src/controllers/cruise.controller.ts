@@ -65,11 +65,31 @@ export async function getCruise(req: Request, res: Response, next: NextFunction)
   }
 }
 
+/** Ciclo viejo (A sábado→martes, C sábado→sábado) que pasa al de 13-nov-2026; lo que Gerencia ya cambió no se toca. */
+const OLD_LEGS: Record<string, { label: string; durationDays: number }> = {
+  A: { label: "Sábado a martes", durationDays: 3 },
+  C: { label: "Sábado a sábado", durationDays: 7 },
+};
+
 async function getSettings() {
-  return (
+  const settings =
     (await CycleSettings.findOne({ key: "main" })) ??
-    (await CycleSettings.create({ key: "main", legs: DEFAULT_LEGS, cabinCount: 9 }))
-  );
+    (await CycleSettings.create({ key: "main", legs: DEFAULT_LEGS, cabinCount: 9 }));
+  let changed = false;
+  for (const leg of settings.legs) {
+    const old = OLD_LEGS[leg.code];
+    const now = DEFAULT_LEGS.find((l) => l.code === leg.code);
+    if (old && now && leg.label === old.label && leg.durationDays === old.durationDays) {
+      leg.label = now.label;
+      leg.durationDays = now.durationDays;
+      changed = true;
+    }
+  }
+  if (changed) {
+    settings.markModified("legs");
+    await settings.save();
+  }
+  return settings;
 }
 
 export async function cycleSettings(_req: Request, res: Response, next: NextFunction) {
@@ -105,8 +125,8 @@ export async function updateCycleSettings(req: Request, res: Response, next: Nex
   }
 }
 
-/** Día de zarpe de cada tramo (guía V3): A y C zarpan sábado, B martes. */
-const LEG_WEEKDAY: Record<string, number> = { A: 6, B: 2, C: 6 };
+/** Día de zarpe de cada tramo (13-nov-2026): A viernes, B martes, C sábado. */
+const LEG_WEEKDAY: Record<string, number> = { A: 5, B: 2, C: 6 };
 const WEEKDAYS = ["domingo", "lunes", "martes", "miércoles", "jueves", "viernes", "sábado"];
 
 function weekdayOf(dateKey: string): number {
@@ -310,7 +330,7 @@ export async function createNewCruise(req: Request, res: Response, next: NextFun
     const { plan, cabinCount } = await reviewNewCruise(leg, startDate);
     const crew = bartender ? await resolveBartender(bartender) : {};
     // Pedido del cliente (31-oct-2026): los cruceros solo inician y terminan
-    // sábado o martes; cada tipo zarpa en su día, sin excepciones.
+    // viernes, sábado o martes; cada tipo zarpa en su día, sin excepciones.
     if (!plan.weekday.ok) {
       throw new HttpError(
         400,

@@ -75,23 +75,23 @@ async function main() {
     while (new Date(`${key}T12:00:00Z`).getUTCDay() !== dow) key = dates.addDaysKey(key, 1);
     return key;
   };
-  const sat = nextDow(6);
+  const fri = nextDow(5);
   const opts0 = (await api("dir", "GET", "/cruises/plan/options")).data;
   check(
-    "Opciones: cada tipo solo en su día (A y C sábado, B martes) y sugerencia sin crucero previo = A",
-    opts0.legs.find((l: any) => l.code === "A").dates.every((d: any) => new Date(`${d.date}T12:00:00Z`).getUTCDay() === 6) &&
+    "Opciones: cada tipo solo en su día (A viernes, B martes) y sugerencia sin crucero previo = A",
+    opts0.legs.find((l: any) => l.code === "A").dates.every((d: any) => new Date(`${d.date}T12:00:00Z`).getUTCDay() === 5) &&
       opts0.legs.find((l: any) => l.code === "B").dates.every((d: any) => new Date(`${d.date}T12:00:00Z`).getUTCDay() === 2) &&
-      opts0.suggestion?.leg === "A" && opts0.suggestion.startDate === sat,
+      opts0.suggestion?.leg === "A" && opts0.suggestion.startDate === fri,
     opts0.suggestion,
   );
-  const wrongDay = await api("dir", "POST", "/cruises/plan", { leg: "A", startDate: dates.addDaysKey(sat, 1), acceptWeekday: true });
-  check("Un crucero A en domingo se rechaza aunque se confirme", wrongDay.status === 400 && /sábados/.test(wrongDay.data.message), wrongDay.data.message);
-  const a = await api("dir", "POST", "/cruises/plan", { leg: "A", startDate: sat });
-  check("Crea el A en su sábado", a.status === 201, a.data.message);
+  const wrongDay = await api("dir", "POST", "/cruises/plan", { leg: "A", startDate: dates.addDaysKey(fri, 1), acceptWeekday: true });
+  check("Un crucero A en sábado se rechaza aunque se confirme", wrongDay.status === 400 && /viernes/.test(wrongDay.data.message), wrongDay.data.message);
+  const a = await api("dir", "POST", "/cruises/plan", { leg: "A", startDate: fri });
+  check("Crea el A en su viernes", a.status === 201, a.data.message);
   const opts1 = (await api("dir", "GET", "/cruises/plan/options")).data;
-  const tue = dates.addDaysKey(sat, 3);
+  const tue = dates.addDaysKey(fri, 4);
   check("La sugerencia sigue el ciclo: B el martes en que termina A", opts1.suggestion?.leg === "B" && opts1.suggestion.startDate === tue, opts1.suggestion);
-  const busyC = opts1.legs.find((l: any) => l.code === "C").dates.find((d: any) => d.date === sat);
+  const busyC = opts1.legs.find((l: any) => l.code === "C").dates.find((d: any) => d.date === dates.addDaysKey(fri, 1));
   check("La fecha ocupada dice por qué crucero", busyC && !busyC.free && busyC.conflict.code === a.data.cruise.code, busyC);
 
   // ---- Operación

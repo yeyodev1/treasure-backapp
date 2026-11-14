@@ -1,8 +1,8 @@
 import mongoose, { Schema } from "mongoose";
 
 /**
- * Configuración del ciclo de salidas (guía V3): A sábado→martes,
- * B martes→sábado, C sábado→sábado, y vuelve a A.
+ * Configuración del ciclo de salidas: A viernes→martes, B martes→sábado,
+ * C sábado→viernes, y vuelve a A (pedido del cliente, 13-nov-2026).
  */
 export interface ICycleLeg {
   code: string;
@@ -22,10 +22,10 @@ export interface ICycleSettings {
 export const DEFAULT_LEGS: ICycleLeg[] = [
   {
     code: "A",
-    label: "Sábado a martes",
+    label: "Viernes a martes",
     routeFrom: "Baltra",
     routeTo: "San Cristóbal",
-    durationDays: 3,
+    durationDays: 4,
     departureTime: "10:00",
   },
   {
@@ -38,10 +38,10 @@ export const DEFAULT_LEGS: ICycleLeg[] = [
   },
   {
     code: "C",
-    label: "Sábado a sábado",
+    label: "Sábado a viernes",
     routeFrom: "Puerto Ayora",
     routeTo: "Baltra",
-    durationDays: 7,
+    durationDays: 6,
     departureTime: "10:00",
   },
 ];
