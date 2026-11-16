@@ -119,6 +119,8 @@ async function cabinSummary(cruiseId: Types.ObjectId | string, cabinNumber: numb
       at: o.clientAt ?? o.createdAt,
       fromCruise: originName.get(o.cruise.toString()) ?? null,
       by: (o.createdBy as unknown as { name?: string })?.name ?? "",
+      consumerId: o.consumer ? o.consumer.toString() : null,
+      consumerName: o.consumer ? (o.consumerName ?? "") : "",
       canUndo: open,
       canCourtesy: open && !item?.courtesy,
     };
@@ -140,7 +142,7 @@ async function cabinSummary(cruiseId: Types.ObjectId | string, cabinNumber: numb
 
 export async function createConsumption(req: Request, res: Response, next: NextFunction) {
   try {
-    const { cruiseId, cabinNumber, productId, qty, courtesy, courtesyReason, courtesyKind, idempotencyKey, clientAt, swaps, customPrice } =
+    const { cruiseId, cabinNumber, productId, qty, courtesy, courtesyReason, courtesyKind, idempotencyKey, clientAt, swaps, customPrice, consumerId } =
       req.body as {
         cruiseId?: string;
         cabinNumber?: number;
@@ -155,6 +157,8 @@ export async function createConsumption(req: Request, res: Response, next: NextF
         swaps?: unknown;
         /** Wetsuit con otro valor por persona (IVA incluido), pedido del cliente 13-nov-2026. */
         customPrice?: unknown;
+        /** Pasajero de la cabina que lo consume (cuentas separadas desde el bar, 16-nov-2026). */
+        consumerId?: unknown;
       };
     if (!cruiseId || !cabinNumber || !productId) {
       throw badRequest("Crucero, cabina y bebida son obligatorios");
@@ -184,6 +188,9 @@ export async function createConsumption(req: Request, res: Response, next: NextF
     if (!cabin.passengers.length) {
       throw badRequest(`Cabina ${cabinNumber} sin pasajeros. Dirección de crucero debe registrarlos.`);
     }
+
+    // Si la persona ya no está en la cabina (cola sin señal), el consumo queda sin asignar: no se pierde.
+    const consumer = cabin.passengers.find((p) => p._id && consumerId && p._id.toString() === String(consumerId)) ?? null;
 
     const product = await Product.findOne({ _id: productId, active: true });
     if (!product) throw badRequest("Esa bebida no está activa");
@@ -242,6 +249,8 @@ export async function createConsumption(req: Request, res: Response, next: NextF
           createdBy: req.auth!.sub,
           idempotencyKey,
           source: "directo",
+          consumer: consumer?._id ?? null,
+          consumerName: consumer?.name ?? "",
           clientAt: Number.isNaN(at.getTime()) ? null : at,
           deliveries: late
             ? []
