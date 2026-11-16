@@ -220,6 +220,7 @@ function mapOrder(order: PopulatedOrder) {
     else total += line;
     return {
       index,
+      productId: String((item.product as { _id?: unknown } | null)?._id ?? item.product ?? ""),
       name: item.name,
       qty: item.qty,
       deliveredQty: item.deliveredQty,

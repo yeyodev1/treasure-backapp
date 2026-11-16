@@ -108,6 +108,7 @@ export default function routerApi(app: Application) {
   router.get("/wetsuits", requireAuth, DIRECTOR, consumptions.wetsuitForCruise);
   router.post("/consumptions/:id/undo", requireAuth, BAR, consumptions.undoConsumption);
   router.post("/consumptions/:id/bonify", requireAuth, BAR, consumptions.bonifyConsumption);
+  router.post("/consumptions/:id/upgrade", requireAuth, BAR, consumptions.upgradeCourtesy);
   router.post("/consumptions/:id/held-review", requireAuth, DIRECTOR, consumptions.reviewHeld);
   router.get(
     "/consumptions/summary/:cruiseId/:cabinNumber",

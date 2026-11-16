@@ -441,6 +441,129 @@ export async function bonifyConsumption(req: Request, res: Response, next: NextF
 }
 
 /**
+ * Cambiar una cortesía por algo de más valor y cobrar la diferencia (pedido
+ * del cliente, 16-nov-2026: botella de cortesía cambiada por una mejor). La
+ * cortesía sigue registrada con su valor (casa o agencia) pero sin producto:
+ * su stock vuelve. Se carga la nueva al precio de la diferencia.
+ * Body: { productId, reason? }.
+ */
+export async function upgradeCourtesy(req: Request, res: Response, next: NextFunction) {
+  try {
+    const productId = String(req.body?.productId ?? "");
+    const why = (req.body?.reason as string | undefined)?.trim().slice(0, 200) || "El pasajero pidió cambiarla";
+    if (!Types.ObjectId.isValid(productId)) throw badRequest("Elige el producto nuevo");
+    const order = await Order.findById(req.params.id);
+    if (!order) throw notFound("Consumo no encontrado");
+    const blocked = correctionBlock(order, await accountStatusOf(order.cruise, order.cabinNumber), req.auth!.role);
+    if (blocked) throw blocked;
+    if (order.status !== "entregada") throw conflict("Solo se cambia una cortesía ya servida");
+    const old = order.items[0]!;
+    if (!old.courtesy) throw conflict("Solo se cambia un consumo que es cortesía");
+    const units = chargeableQty(old);
+    if (units <= 0) throw conflict("No queda nada que cambiar");
+
+    const product = await Product.findOne({ _id: productId, active: true });
+    if (!product || (product.kind === "fisico" && !product.sellable) || product.legs?.length) {
+      throw badRequest("Ese producto no se vende en el bar");
+    }
+    const diff = round2(product.price - old.unitPrice);
+    if (diff <= 0) throw badRequest(`${product.name} no vale más que ${old.name}: no hay diferencia que cobrar`);
+
+    const applied = await appliedFor(product);
+    const cost = costOf(applied);
+    const name = `${product.name} (cambio de cortesía: ${old.name})`;
+    const key = `upgrade:${order._id.toString()}`;
+
+    await mongoose.connection.transaction(async (session) => {
+      const fresh = await Order.findById(order._id).session(session);
+      const item = fresh?.items[0];
+      if (!fresh || !item?.courtesy || fresh.status !== "entregada") throw conflict("La cortesía cambió: actualiza la cuenta");
+      if (!item.applied.length && item.name.includes("(cambiada por")) throw conflict("Esta cortesía ya se cambió");
+      const delivered = Math.min(units, item.deliveredQty - item.annulledQty);
+      if (delivered > 0 && item.applied.length) {
+        await moveStock({
+          session,
+          guard: false,
+          type: "reverso",
+          location: "abordo",
+          deltas: deltasFromApplied(item.applied, delivered),
+          userId: req.auth!.sub,
+          cruise: fresh.cruise,
+          order: fresh._id,
+          reason: `Cortesía cambiada por ${product.name}`,
+        });
+      }
+      item.name = `${item.name} (cambiada por ${product.name})`;
+      item.applied = [];
+      item.unitCost = 0;
+      fresh.cancellations.push({ items: [], reason: `Cambio de cortesía: ${why}`, by: req.auth!.sub as never, at: new Date() });
+      await fresh.save({ session });
+
+      const doc = new Order({
+        cruise: fresh.cruise,
+        cabinNumber: fresh.cabinNumber,
+        items: [
+          {
+            product: product._id,
+            name,
+            qty: units,
+            unitPrice: diff,
+            courtesy: false,
+            courtesyKind: "casa",
+            deliveredQty: units,
+            cancelledQty: 0,
+            annulledQty: 0,
+            applied,
+            unitCost: cost.unitCost,
+            costComplete: cost.complete,
+          },
+        ],
+        status: "entregada",
+        total: round2(units * diff),
+        createdBy: req.auth!.sub,
+        // Una sola vez por cortesía: un segundo toque choca con este identificador.
+        idempotencyKey: key,
+        source: "directo",
+        consumer: fresh.consumer ?? null,
+        consumerName: fresh.consumerName ?? "",
+        clientAt: new Date(),
+        deliveries: [{ key, items: [{ index: 0, qty: units }], by: req.auth!.sub, at: new Date() }],
+      });
+      await doc.save({ session });
+      await moveStock({
+        session,
+        guard: true,
+        type: "venta",
+        location: "abordo",
+        deltas: new Map([...deltasFromApplied(applied, units)].map(([id, q]) => [id, -q] as [string, number])),
+        userId: req.auth!.sub,
+        cruise: fresh.cruise,
+        order: doc._id,
+        reason: `Cambio de cortesía · cabina ${fresh.cabinNumber}`,
+      });
+    });
+
+    const what = `${units}× ${old.name} → ${product.name}, paga ${round2(units * diff)}`;
+    await chargesChanged(order.cruise, order.cabinNumber, req.auth!.sub, `Cortesía cambiada: ${what} · ${why}`);
+    await logEvent(req.auth, {
+      kind: "consumo",
+      title: `Cortesía cambiada · cabina ${order.cabinNumber}`,
+      detail: `${what} · ${why}`,
+      amount: round2(units * diff),
+      cruise: order.cruise,
+      cabinNumber: order.cabinNumber,
+    });
+    res.status(201).json({ summary: await cabinSummary(order.cruise, order.cabinNumber, req.auth!) });
+  } catch (err) {
+    if ((err as { code?: number }).code === 11000) {
+      next(conflict("Esta cortesía ya se cambió"));
+      return;
+    }
+    next(err);
+  }
+}
+
+/**
  * Envío tardío: Dirección de crucero acepta (se carga en su salida original y
  * descuenta stock) o rechaza con motivo. Nunca pasa al viaje nuevo.
  */
