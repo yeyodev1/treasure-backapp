@@ -189,6 +189,12 @@ async function reserveNumber(acc: ContificoAccount, remoteDocs: ContificoDocumen
   return `${serie}-${String(n).padStart(9, "0")}`;
 }
 
+/** Devuelve el número reservado si sigue siendo el último (factura rechazada: sin huecos). */
+async function releaseNumber(acc: ContificoAccount, documento: string) {
+  const n = sequenceOf(documento, acc.serie);
+  if (n) await sequences().updateOne({ _id: acc.sequenceKey, last: n }, { $inc: { last: -1 } });
+}
+
 // ---- Armado de la factura ----
 
 /** Cédula, RUC o pasaporte → cliente de Contífico. */
@@ -230,8 +236,13 @@ const round6 = (v: number) => Math.round(v * 1e6) / 1e6;
 /**
  * Convierte las líneas con IVA en detalles sin IVA y cuadra el subtotal de
  * cada tarifa: el centavo de redondeo va a la línea más grande.
+ *
+ * Contífico calcula el IVA sobre el subtotal de la tarifa y rechaza el asiento
+ * si no da el total cobrado. Hay totales a los que ningún subtotal llega
+ * (16-nov-2026: $1.107,49 → $963,03 + $144,45 = $1.107,48): ese centavo va en
+ * una línea «Ajuste por redondeo» con IVA 0%.
  */
-function buildDetails(lines: DraftLine[]) {
+export function buildDetails(lines: DraftLine[]) {
   const byRate = new Map<number, DraftLine[]>();
   for (const line of lines) {
     const group = byRate.get(line.iva) ?? [];
@@ -242,25 +253,28 @@ function buildDetails(lines: DraftLine[]) {
   const detalles: Array<Record<string, unknown>> = [];
   let subtotal0 = 0;
   let subtotalTaxed = 0;
+  let iva = 0;
   let grossTotal = 0;
+  // En centavos enteros: 13,70 × 15% = 2,055 → 2,06 (en coma flotante salía 2,05).
+  const ivaOf = (base: number, rate: number) => Math.round((Math.round(base * 100) * rate) / 100) / 100;
 
   for (const [rate, group] of byRate) {
     const factor = 1 + rate / 100;
     const gross = round2(group.reduce((s, l) => s + l.qty * l.gross, 0));
     grossTotal += gross;
-    const subtotal = round2(gross / factor);
+    let subtotal = round2(gross / factor);
+    while (rate > 0 && subtotal > 0 && round2(subtotal + ivaOf(subtotal, rate)) > gross) subtotal = round2(subtotal - 0.01);
+    const adjust = rate > 0 ? round2(gross - subtotal - ivaOf(subtotal, rate)) : 0;
     const bases = group.map((l) => round2((l.qty * l.gross) / factor));
     const residual = round2(subtotal - bases.reduce((s, b) => s + b, 0));
-    if (residual !== 0) {
-      const biggest = bases.indexOf(Math.max(...bases));
-      bases[biggest] = round2(bases[biggest] + residual);
-    }
+    const biggest = bases.indexOf(Math.max(...bases));
+    if (residual !== 0) bases[biggest] = round2(bases[biggest]! + residual);
     group.forEach((l, i) => {
       detalles.push({
         producto_id: l.productId,
         descripcion: l.name,
         cantidad: l.qty,
-        precio: round6(bases[i] / l.qty),
+        precio: round6(bases[i]! / l.qty),
         porcentaje_iva: rate,
         porcentaje_descuento: 0,
         base_cero: rate === 0 ? bases[i] : 0,
@@ -268,19 +282,33 @@ function buildDetails(lines: DraftLine[]) {
         base_no_gravable: 0,
       });
     });
+    if (adjust > 0) {
+      detalles.push({
+        producto_id: group[biggest]!.productId,
+        descripcion: "Ajuste por redondeo",
+        cantidad: 1,
+        precio: adjust,
+        porcentaje_iva: 0,
+        porcentaje_descuento: 0,
+        base_cero: adjust,
+        base_gravable: 0,
+        base_no_gravable: 0,
+      });
+      subtotal0 += adjust;
+    }
     if (rate === 0) subtotal0 += subtotal;
-    else subtotalTaxed += subtotal;
+    else {
+      subtotalTaxed += subtotal;
+      iva += ivaOf(subtotal, rate);
+    }
   }
 
-  grossTotal = round2(grossTotal);
-  subtotal0 = round2(subtotal0);
-  subtotalTaxed = round2(subtotalTaxed);
   return {
     detalles,
-    subtotal0,
-    subtotalTaxed,
-    iva: round2(grossTotal - subtotal0 - subtotalTaxed),
-    total: grossTotal,
+    subtotal0: round2(subtotal0),
+    subtotalTaxed: round2(subtotalTaxed),
+    iva: round2(iva),
+    total: round2(grossTotal),
   };
 }
 
@@ -533,6 +561,8 @@ async function emitInvoice(payment: IPayment & { _id: Types.ObjectId }): Promise
       } catch (err) {
         lastError = errorText(err);
         const rejected = axios.isAxiosError(err) && err.response?.status === 400;
+        // Rechazada (no es número repetido): se libera el número si nadie tomó otro después.
+        if (rejected && !DUPLICATE_NUMBER.test(lastError)) await releaseNumber(acc, body.documento);
         // Número usado desde la web de Contífico: se toma el siguiente.
         if (rejected && DUPLICATE_NUMBER.test(lastError)) {
           remote = await recentSalesInvoices(acc, 120);
