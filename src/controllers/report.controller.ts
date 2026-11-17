@@ -164,3 +164,45 @@ export async function ownerPanel(req: Request, res: Response, next: NextFunction
 function round(v: number) {
   return Math.round(v * 100) / 100;
 }
+
+/**
+ * Registro de cruceros para Gerencia (pedido del cliente, 16-nov-2026):
+ * por salida, fechas, cuántos pasajeros y de qué países. Solo cifras, sin
+ * datos personales.
+ */
+export async function cruiseCalendar(_req: Request, res: Response, next: NextFunction) {
+  try {
+    const cruises = await Cruise.find()
+      .sort({ startDate: 1 })
+      .limit(400)
+      .select("code name leg routeFrom routeTo startDate endDate status cabins.passengers.nationality cabins.passengers.country")
+      .lean();
+    res.json({
+      cruises: cruises.map((c) => {
+        const countries = new Map<string, number>();
+        let passengers = 0;
+        for (const cabin of c.cabins ?? []) {
+          for (const p of cabin.passengers ?? []) {
+            passengers += 1;
+            const where = (p.nationality || p.country || "").trim() || "Sin país";
+            countries.set(where, (countries.get(where) ?? 0) + 1);
+          }
+        }
+        return {
+          id: c._id.toString(),
+          code: c.code,
+          name: c.name,
+          leg: c.leg,
+          route: [c.routeFrom, c.routeTo].filter(Boolean).join(" → "),
+          startDate: c.startDate,
+          endDate: c.endDate,
+          status: c.status,
+          passengers,
+          countries: [...countries].map(([country, count]) => ({ country, count })).sort((a, b) => b.count - a.count),
+        };
+      }),
+    });
+  } catch (err) {
+    next(err);
+  }
+}

@@ -230,6 +230,7 @@ export default function routerApi(app: Application) {
   router.get("/reports/sales", requireAuth, OWNER, reports.salesSummary);
   router.get("/reports/by-cruise", requireAuth, OWNER, reports.salesByCruise);
   router.get("/reports/owner", requireAuth, OWNER, reports.ownerPanel);
+  router.get("/reports/cruise-calendar", requireAuth, OWNER, reports.cruiseCalendar);
 
   // Comisiones del bartender: se acumulan por crucero y se pagan juntas (solo Gerencia).
   router.get("/commissions", requireAuth, OWNER, commissions.listCommissions);
