@@ -756,9 +756,12 @@ export async function updatePassengers(req: Request, res: Response, next: NextFu
     const badEmail = passengers.find((p) => p.name?.trim() && !isValidOptionalEmail(p.email));
     if (badEmail) throw badRequest(`${badEmail.name!.trim()}: ${EMAIL_ERROR}`);
 
+    // Se conserva el id de quien ya estaba: los consumos asignados («¿Quién?») lo usan (16-nov-2026).
+    const known = new Set(cabin.passengers.map((p) => String(p._id)));
     const clean = passengers
       .filter((p) => p.name?.trim())
       .map((p) => ({
+        ...(p._id && known.has(String(p._id)) ? { _id: new Types.ObjectId(String(p._id)) } : {}),
         name: p.name!.trim(),
         country: p.country?.trim() ?? "",
         nationality: p.nationality?.trim() ?? "",
