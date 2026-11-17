@@ -78,9 +78,10 @@ export interface LineProgress {
 }
 
 /**
- * Avance del pedido aprobado según sus entregas y envíos (guía 4 perfiles):
- * la entrega de la administradora ya está en el barco; el envío de Quito
- * cuenta como "en camino" hasta confirmar la llegada.
+ * Avance del pedido aprobado según sus entregas y envíos. Flujo simple
+ * (Gabriel, 16-nov-2026): todo va "en camino" hasta que el bar confirma, y
+ * cuenta lo que recibió; si llegó menos, lo que falta vuelve a quedar pendiente.
+ * Entregas anteriores al cambio (sin awaitsBar) ya estaban en el barco.
  */
 export function orderProgress(order: Pick<IWeeklyOrder, "lines" | "deliveries">): Map<string, LineProgress> {
   const result = new Map<string, LineProgress>();
@@ -89,7 +90,8 @@ export function orderProgress(order: Pick<IWeeklyOrder, "lines" | "deliveries">)
     for (const item of d.items) {
       const row = result.get(item.product.toString());
       if (!row) continue;
-      if (d.kind === "entrega" || d.arrivedAt) row.delivered += item.qty;
+      if (d.arrivedAt) row.delivered += item.received ?? item.qty;
+      else if (d.kind === "entrega" && !d.awaitsBar) row.delivered += item.qty;
       else row.inTransit += item.qty;
     }
   }
@@ -197,6 +199,7 @@ export function newLine(
     barQty: null,
     approvedQty: null,
     observation: "",
+    counted: null,
     editedByName: "",
     editedAt: null,
   };

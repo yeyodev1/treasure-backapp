@@ -190,7 +190,8 @@ export default function routerApi(app: Application) {
   // Cada responsable confirma su parte del pedido aprobado (guía 4 perfiles).
   router.post("/weekly-orders/:id/deliver", requireAuth, requireRole("admin"), weeklyOrders.deliverWeeklyOrder);
   router.post("/weekly-orders/:id/ship", requireAuth, OWNER, weeklyOrders.shipWeeklyOrder);
-  router.post("/weekly-orders/:id/deliveries/:key/arrive", requireAuth, LEAD, weeklyOrders.arriveWeeklyOrder);
+  // El bar confirma lo recibido (flujo simple, 16-nov-2026).
+  router.post("/weekly-orders/:id/deliveries/:key/arrive", requireAuth, BAR, weeklyOrders.arriveWeeklyOrder);
 
   // Conteos físicos: Administración cuenta y documenta; Gerencia autoriza
   router.get("/counts", requireAuth, COUNTERS, counts.listCounts);

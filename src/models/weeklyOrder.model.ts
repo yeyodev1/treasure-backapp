@@ -44,6 +44,8 @@ export interface IWeeklyOrderLine {
   approvedQty: number | null;
   /** "Hay otra cantidad": aviso de diferencia; no cambia el inventario. */
   observation: string;
+  /** Envases que contó el bar a bordo (flujo simple, Gabriel 16-nov-2026); null = no contó. */
+  counted: number | null;
   editedByName: string;
   editedAt: Date | null;
 }
@@ -60,6 +62,8 @@ export interface IWeeklyOrderDeliveryItem {
   qty: number;
   /** Costo por envase de una compra nueva (0 = sin costo registrado). */
   cost: number;
+  /** Envases que el bar confirmó recibir; null = aún no confirma. */
+  received: number | null;
 }
 
 /**
@@ -77,6 +81,11 @@ export interface IWeeklyOrderDelivery {
   document: string;
   arrivedAt: Date | null;
   arrivedByName: string;
+  /**
+   * Flujo simple (Gabriel, 16-nov-2026): nada sube al barco hasta que el bar
+   * confirma lo recibido. Las entregas anteriores (false) ya sumaron al barco.
+   */
+  awaitsBar: boolean;
 }
 
 export interface IWeeklyOrderEvent {
@@ -131,6 +140,7 @@ const lineSchema = new Schema<IWeeklyOrderLine>(
     barQty: { type: Number, default: null },
     approvedQty: { type: Number, default: null },
     observation: { type: String, default: "", maxlength: 300 },
+    counted: { type: Number, default: null, min: 0 },
     editedByName: { type: String, default: "" },
     editedAt: { type: Date, default: null },
   },
@@ -164,6 +174,7 @@ const deliverySchema = new Schema<IWeeklyOrderDelivery>(
             source: { type: String, enum: DELIVERY_SOURCES, required: true },
             qty: { type: Number, required: true, min: 1 },
             cost: { type: Number, default: 0, min: 0 },
+            received: { type: Number, default: null, min: 0 },
           },
           { _id: false },
         ),
@@ -173,6 +184,7 @@ const deliverySchema = new Schema<IWeeklyOrderDelivery>(
     document: { type: String, default: "", maxlength: 120 },
     arrivedAt: { type: Date, default: null },
     arrivedByName: { type: String, default: "" },
+    awaitsBar: { type: Boolean, default: false },
   },
   { _id: false },
 );

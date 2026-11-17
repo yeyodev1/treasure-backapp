@@ -32,6 +32,10 @@ import { round2 } from "../utils/units";
 
 type OrderDoc = InstanceType<typeof WeeklyOrder>;
 
+/** Hay una entrega o envío esperando que el bar confirme lo recibido. */
+const toReceive = (o: Pick<IWeeklyOrder, "deliveries">) =>
+  o.deliveries.some((d) => !d.arrivedAt && (d.kind === "envio" || d.awaitsBar));
+
 /** Pedido con el avance de entregas por línea (envases), quién aportó qué y su fase visible. */
 function serialize(order: OrderDoc) {
   const progress = orderProgress(order);
@@ -40,7 +44,16 @@ function serialize(order: OrderDoc) {
     const contributions = order.deliveries.flatMap((d) =>
       d.items
         .filter((i) => i.product.toString() === id)
-        .map((i) => ({ key: d.key, kind: d.kind, source: i.source, qty: i.qty, byName: d.byName, at: d.at, arrived: d.kind === "entrega" || Boolean(d.arrivedAt) })),
+        .map((i) => ({
+          key: d.key,
+          kind: d.kind,
+          source: i.source,
+          qty: i.qty,
+          received: i.received ?? null,
+          byName: d.byName,
+          at: d.at,
+          arrived: Boolean(d.arrivedAt) || (d.kind === "entrega" && !d.awaitsBar),
+        })),
     );
     return { ...(l as unknown as { toObject(): IWeeklyOrderLine }).toObject(), ...progress.get(id)!, contributions };
   });
@@ -52,6 +65,7 @@ function serialize(order: OrderDoc) {
     phase,
     phaseLabel: PHASE_LABELS[phase],
     overdue: isOverdue(order),
+    toReceive: toReceive(order),
   };
 }
 
@@ -127,6 +141,7 @@ export async function currentWeeklyOrder(_req: Request, res: Response, next: Nex
         status: o.status,
         phase: phaseOf(o),
         overdue: isOverdue(o),
+        toReceive: toReceive(o),
       })),
       nextCut: new Date(latestCut().getTime() + 7 * 86_400_000),
     });
@@ -153,19 +168,25 @@ export async function saveWeeklyOrder(req: Request, res: Response, next: NextFun
   try {
     const { version, lines } = req.body as {
       version?: number;
-      lines?: Array<{ productId: string; qty: number; observation?: string }>;
+      lines?: Array<{ productId: string; qty: number; observation?: string; counted?: number | null }>;
     };
     if (!Array.isArray(lines)) throw badRequest("Falta la lista del pedido");
     const order = await load(String(req.params.id));
     assertCanEdit(req, order);
     assertVersion(order, version);
 
-    const wanted = new Map<string, { qty: number; observation: string }>();
+    const wanted = new Map<string, { qty: number; observation: string; counted: number | null }>();
     for (const l of lines) {
       const qty = Number(l.qty);
       if (!Number.isInteger(qty) || qty < 0 || qty > 10_000) throw badRequest("Las cantidades son envases enteros, de 0 en adelante");
       if (wanted.has(l.productId)) throw badRequest("Hay un producto repetido en el pedido");
-      wanted.set(l.productId, { qty, observation: String(l.observation ?? "").trim().slice(0, 300) });
+      const counted = l.counted === null || l.counted === undefined || (l.counted as unknown) === "" ? null : Number(l.counted);
+      if (counted !== null && (!(counted >= 0) || counted > 100_000)) throw badRequest("El conteo son envases, de 0 en adelante");
+      wanted.set(l.productId, {
+        qty,
+        observation: String(l.observation ?? "").trim().slice(0, 300),
+        counted: counted === null ? null : round2(counted),
+      });
     }
 
     const approved = order.status === "aprobado";
@@ -196,8 +217,10 @@ export async function saveWeeklyOrder(req: Request, res: Response, next: NextFun
       if (approved && next.qty < bought - 1e-9) {
         throw conflict(`${line.name}: ya se entregaron o enviaron ${bought} ${line.containerLabel}; no puedes pedir menos`);
       }
-      if (next.qty !== line.qty || next.observation !== line.observation) {
+      if (next.qty !== line.qty || next.observation !== line.observation || next.counted !== (line.counted ?? null)) {
         if (next.qty !== line.qty) changes.push(`${line.name}: ${line.qty} → ${next.qty}`);
+        if (next.counted !== (line.counted ?? null) && next.counted !== null) changes.push(`${line.name}: contó ${next.counted}`);
+        line.counted = next.counted;
         if (next.observation !== line.observation && next.observation) changes.push(`${line.name}: hay otra cantidad (${next.observation})`);
         line.qty = next.qty;
         line.observation = next.observation;
@@ -218,6 +241,7 @@ export async function saveWeeklyOrder(req: Request, res: Response, next: NextFun
         const line = newLine(p, stockOf(p), { target: p.stockTarget ?? 0, incoming: 0, consumption: 0, suggested: null, basis: "agregado" });
         line.qty = w.qty;
         line.observation = w.observation;
+        line.counted = w.counted;
         line.editedByName = req.auth!.name;
         line.editedAt = now;
         order.lines.push(line);
@@ -385,7 +409,7 @@ function parseItems(order: OrderDoc, kind: IWeeklyOrderDelivery["kind"], body: D
       throw conflict(`${line.name}: faltan ${pending} ${line.containerLabel}; no puedes atender ${total}`);
     }
     asked.set(raw.productId, total);
-    items.push({ product: line.product, name: line.name, source: raw.source, qty, cost: raw.source === "compra" ? cost : 0 });
+    items.push({ product: line.product, name: line.name, source: raw.source, qty, cost: raw.source === "compra" ? cost : 0, received: null });
   }
   return items;
 }
@@ -423,6 +447,7 @@ async function recordDelivery(
         document: String(body.document ?? "").trim().slice(0, 120),
         arrivedAt: null,
         arrivedByName: "",
+        awaitsBar: true,
       };
       await apply(order, delivery, session);
       order.deliveries.push(delivery);
@@ -519,12 +544,11 @@ async function activeCruiseId(session: ClientSession) {
   return cruise?._id ?? null;
 }
 
-/** Administradora: "Confirmar mi entrega". Puerto −lo tomado, barco +todo lo entregado. */
+/** Administradora: "Confirmar mi entrega". Puerto −lo tomado; el barco suma cuando el bar confirma lo recibido. */
 export async function deliverWeeklyOrder(req: Request, res: Response, next: NextFunction) {
   try {
     const order = await recordDelivery(req, "entrega", async (o, d, session) => {
       await takeFrom(req, o, "puerto", d.items, d.key, session);
-      await addToBoard(req, o, d.items, d.key, session);
     });
     await logEvent(req.auth, { kind: "inventario", title: `Pedido ${order.code}: entrega al barco`, detail: req.auth!.name });
     res.json({ order: serialize(order) });
@@ -547,33 +571,57 @@ export async function shipWeeklyOrder(req: Request, res: Response, next: NextFun
 }
 
 /**
- * "Confirmar llegada" de un envío de Quito en el mismo pedido: barco +lo
- * enviado, sin volver a descontar Quito. Confirmar dos veces no suma dos veces.
- * Quién la confirma aún no está acordado: pueden la directora, la administradora o la dueña.
+ * Bar: "Confirmar lo recibido" (flujo simple, Gabriel 16-nov-2026). Por cada
+ * producto de una entrega o envío dice cuántos envases llegaron de verdad: el
+ * barco suma solo eso y lo que no llegó vuelve a quedar pendiente en el pedido.
+ * Confirmar dos veces no suma dos veces.
  */
 export async function arriveWeeklyOrder(req: Request, res: Response, next: NextFunction) {
   try {
     const key = String(req.params.key);
+    const body = (req.body ?? {}) as { items?: Array<{ productId: string; source: DeliverySource; received: number }>; note?: string };
     let order: OrderDoc | null = null;
     let arrived = false;
+    let short = "";
     try {
       await mongoose.connection.transaction(async (session) => {
         const o = await WeeklyOrder.findById(String(req.params.id)).session(session);
         if (!o) throw notFound("Pedido no encontrado");
-        const delivery = o.deliveries.find((d) => d.key === key && d.kind === "envio");
-        if (!delivery) throw notFound("Envío no encontrado");
+        const delivery = o.deliveries.find((d) => d.key === key);
+        if (!delivery || (delivery.kind === "entrega" && !delivery.awaitsBar)) throw notFound("Entrega no encontrada");
         order = o;
         if (delivery.arrivedAt) return;
-        await addToBoard(req, o, delivery.items, `${key}:llegada`, session);
+        const said = new Map((body.items ?? []).map((i) => [`${i.productId}:${i.source}`, Number(i.received)]));
+        const missing: string[] = [];
+        for (const item of delivery.items) {
+          // Sin dato = llegó todo lo enviado.
+          const got = said.get(`${item.product.toString()}:${item.source}`) ?? item.qty;
+          if (!Number.isInteger(got) || got < 0 || got > item.qty) {
+            throw badRequest(`${item.name}: lo recibido va de 0 a ${item.qty} envases`);
+          }
+          item.received = got;
+          if (got < item.qty) missing.push(`${item.name} ${item.qty - got}`);
+        }
+        const got = delivery.items.filter((i) => (i.received ?? 0) > 0).map((i) => ({ ...(i as unknown as { toObject(): IWeeklyOrderDeliveryItem }).toObject(), qty: i.received! }));
+        if (got.length) await addToBoard(req, o, got, `${key}:llegada`, session);
         delivery.arrivedAt = new Date();
         delivery.arrivedByName = req.auth!.name;
+        const note = String(body.note ?? "").trim().slice(0, 200);
+        short = missing.join(", ");
         o.history.push({
           at: delivery.arrivedAt,
           by: new Types.ObjectId(req.auth!.sub),
           byName: req.auth!.name,
-          action: "Confirmó la llegada del envío de Quito",
-          detail: describe(delivery.items),
+          action: missing.length ? "Confirmó lo recibido (llegó menos)" : "Confirmó lo recibido",
+          detail: [
+            got.map((i) => `${i.name} ${i.qty}`).join(", ") || "no llegó nada",
+            missing.length ? `faltó: ${short} (queda pendiente)` : "",
+            note,
+          ]
+            .filter(Boolean)
+            .join(" · "),
         });
+        o.markModified("deliveries");
         await o.save({ session });
         arrived = true;
       });
@@ -583,7 +631,11 @@ export async function arriveWeeklyOrder(req: Request, res: Response, next: NextF
     }
     const result = order as unknown as OrderDoc;
     if (arrived) {
-      await logEvent(req.auth, { kind: "inventario", title: `Pedido ${result.code}: llegó el envío de Quito`, detail: req.auth!.name });
+      await logEvent(req.auth, {
+        kind: "inventario",
+        title: `Pedido ${result.code}: el bar confirmó lo recibido`,
+        detail: short ? `${req.auth!.name} · faltó ${short}` : req.auth!.name,
+      });
     }
     res.json({ order: serialize(result) });
   } catch (err) {
