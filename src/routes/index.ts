@@ -20,6 +20,7 @@ import * as supply from "../controllers/supply.controller";
 import * as commissions from "../controllers/commission.controller";
 import * as agency from "../controllers/agency.controller";
 import * as weeklyOrders from "../controllers/weeklyOrder.controller";
+import * as shipStops from "../controllers/shipStop.controller";
 import { ismRoutes } from "./ism.routes";
 
 /**
@@ -98,6 +99,9 @@ export default function routerApi(app: Application) {
   router.patch("/cruises/:id", requireAuth, LEAD, cruises.updateCruise);
   router.put("/cruises/:id/cabins/:cabinNumber/passengers", requireAuth, LEAD, cruises.updatePassengers);
   router.put("/cruises/:id/continuations", requireAuth, LEAD, cruises.updateContinuations);
+  // Eliminar crucero sin nada registrado y cambio de cabina (17-nov-2026).
+  router.delete("/cruises/:id", requireAuth, LEAD, cruises.deleteCruise);
+  router.post("/cruises/:id/cabins/:cabinNumber/move", requireAuth, LEAD, cruises.moveCabin);
   router.get("/cruises/:id/start-check", requireAuth, LEAD, cruises.startCheck);
   router.post("/cruises/:id/start", requireAuth, DIRECTOR, cruises.startCruise);
   router.get("/cruises/:id/finish-check", requireAuth, LEAD, cruises.finishCheck);
@@ -232,6 +236,10 @@ export default function routerApi(app: Application) {
   router.get("/reports/by-cruise", requireAuth, OWNER, reports.salesByCruise);
   router.get("/reports/owner", requireAuth, OWNER, reports.ownerPanel);
   router.get("/reports/cruise-calendar", requireAuth, OWNER, reports.cruiseCalendar);
+  // Paras y dique del barco en el registro de cruceros (17-nov-2026).
+  router.get("/ship-stops", requireAuth, OWNER, shipStops.listShipStops);
+  router.post("/ship-stops", requireAuth, OWNER, shipStops.createShipStop);
+  router.delete("/ship-stops/:id", requireAuth, OWNER, shipStops.deleteShipStop);
 
   // Comisiones del bartender: se acumulan por crucero y se pagan juntas (solo Gerencia).
   router.get("/commissions", requireAuth, OWNER, commissions.listCommissions);

@@ -18,10 +18,15 @@ import { chargesChanged, continuesToOf } from "../services/account.service";
 import { badRequest, conflict, HttpError, notFound } from "../errors/httpError";
 import { addDaysKey, commercialDateKey, ecuadorDateTime, TIMEZONE } from "../utils/dates";
 import { EMAIL_ERROR, isValidOptionalEmail } from "../utils/email";
-import { Types } from "mongoose";
+import mongoose, { Types } from "mongoose";
 import { User } from "../models/user.model";
 import { cobroBarWorkbook } from "../services/cobroBar.service";
 import { CommissionPayment } from "../models/commissionPayment.model";
+import { AgencyInvoice } from "../models/agencyInvoice.model";
+import { StockMovement } from "../models/stockMovement.model";
+import { Requisition } from "../models/requisition.model";
+import { StockCount } from "../models/stockCount.model";
+import { IsmRecord } from "../models/ismRecord.model";
 
 /** Bartender del crucero: un usuario activo con rol bartender, o null para quitarlo. */
 async function resolveBartender(id: unknown) {
@@ -487,6 +492,56 @@ export async function updateCruise(req: Request, res: Response, next: NextFuncti
   }
 }
 
+/**
+ * Eliminar crucero (pedido del cliente, 17-nov-2026): solo uno programado y
+ * sin nada registrado. Con consumos, cobros, facturas o inventario no se borra.
+ * Se van con él sus cuentas vacías.
+ */
+export async function deleteCruise(req: Request, res: Response, next: NextFunction) {
+  try {
+    if (!Types.ObjectId.isValid(String(req.params.id))) throw notFound("Crucero no encontrado");
+    const cruise = await Cruise.findById(req.params.id);
+    if (!cruise) throw notFound("Crucero no encontrado");
+    const name = cruise.code || cruise.name;
+    const started = `El crucero ${name} ya inició: no se puede eliminar`;
+    if (cruise.status !== "planificado") throw conflict(started);
+
+    const id = cruise._id;
+    const found = await Promise.all([
+      Order.exists({ cruise: id }).then((x) => x && "consumos"),
+      Account.exists({ cruise: id, $or: [{ version: { $gt: 1 } }, { status: { $ne: "abierta" } }] }).then((x) => x && "cuentas con cargos"),
+      Payment.exists({ cruise: id }).then((x) => x && "cobros"),
+      AgencyInvoice.exists({ "items.cruise": id }).then((x) => x && "factura de agencia"),
+      CommissionPayment.exists({ "items.cruise": id }).then((x) => x && "comisiones pagadas"),
+      StockMovement.exists({ cruise: id }).then((x) => x && "movimientos de inventario"),
+      Requisition.exists({ cruise: id }).then((x) => x && "pedidos de abastecimiento"),
+      StockCount.exists({ cruise: id }).then((x) => x && "conteos"),
+      IsmRecord.exists({ cruise: id }).then((x) => x && "registros ISM"),
+      Cruise.exists({ "cabins.continuesFrom.cruise": id }).then((x) => x && "otro crucero unido a este"),
+    ]);
+    const reasons = found.filter(Boolean);
+    if (reasons.length) {
+      throw conflict(`El crucero ${name} ya tiene ${reasons.join(", ")}: no se puede eliminar`);
+    }
+
+    await mongoose.connection.transaction(async (session) => {
+      const gone = await Cruise.findOneAndDelete({ _id: id, status: "planificado" }, { session });
+      if (!gone) throw conflict(started);
+      await Account.deleteMany({ cruise: id }, { session });
+      await Device.updateMany({ cruise: id }, { $set: { cruise: null } }, { session });
+    });
+
+    await logEvent(req.auth, {
+      kind: "salida",
+      title: `Crucero eliminado · ${name}`,
+      detail: `${dayLabel(cruise.startDate)}${cruise.endDate ? ` a ${dayLabel(cruise.endDate)}` : ""} · sin consumos ni cobros`,
+    });
+    res.json({ ok: true });
+  } catch (err) {
+    next(err);
+  }
+}
+
 function normalizeName(value: string) {
   return value.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/\s+/g, " ").trim();
 }
@@ -830,7 +885,137 @@ export async function updatePassengers(req: Request, res: Response, next: NextFu
   }
 }
 
-type ContinuationLink = { to?: number; fromCruise?: string | null; fromCabin?: number };
+/** Deja exactamente un pagador entre los pasajeros de una cabina. */
+function onePayer(passengers: IPassenger[]) {
+  let seen = false;
+  for (const p of passengers) {
+    if (p.isPayer && seen) p.isPayer = false;
+    if (p.isPayer) seen = true;
+  }
+  if (!seen && passengers[0]) passengers[0].isPayer = true;
+}
+
+/**
+ * Cambio de cabina (pedido del cliente, 17-nov-2026: upgrades, piden arriba).
+ * - Toda la cabina a una cabina vacía: la cuenta se va con ellos (consumos,
+ *   cuenta, QR y unión con otros cruceros) al número nuevo.
+ * - Algunos pasajeros, o a una cabina ocupada: se mueven con su id; la cuenta
+ *   se queda donde está. Quien ya tiene consumos asignados no se mueve solo.
+ * Con cobros registrados no se mueve: el cobro y la factura llevan el número.
+ */
+export async function moveCabin(req: Request, res: Response, next: NextFunction) {
+  try {
+    const fromNumber = Number(req.params.cabinNumber);
+    const { to, passengerIds } = req.body as { to?: number; passengerIds?: string[] };
+    const toNumber = Number(to);
+    const cruise = await Cruise.findById(req.params.id);
+    if (!cruise) throw notFound("Crucero no encontrado");
+    if (cruise.status === "cerrado") throw conflict("El crucero está finalizado: ya no se cambian cabinas");
+    const from = cruise.cabins.find((c) => c.number === fromNumber);
+    const target = cruise.cabins.find((c) => c.number === toNumber);
+    if (!from) throw notFound("Cabina no encontrada");
+    if (!target || target === from) throw badRequest("Elige otra cabina de este crucero");
+
+    const ids = new Set(
+      Array.isArray(passengerIds) ? passengerIds.map(String) : from.passengers.map((p) => String(p._id)),
+    );
+    const moving = from.passengers.filter((p) => ids.has(String(p._id)));
+    if (!moving.length) throw badRequest("Elige quién cambia de cabina");
+    const whole = moving.length === from.passengers.length;
+    const id = cruise._id;
+    const [fromOrders, fromPaid] = await Promise.all([
+      Order.exists({ cruise: id, cabinNumber: fromNumber }),
+      Payment.exists({ cruise: id, $or: [{ cabinNumber: fromNumber }, { cabins: fromNumber }] }),
+    ]);
+    const copy = (p: IPassenger) => ({
+      _id: p._id,
+      name: p.name,
+      country: p.country,
+      nationality: p.nationality,
+      idNumber: p.idNumber,
+      email: p.email,
+      phone: p.phone,
+      isPayer: p.isPayer,
+    });
+
+    let detail: string;
+    if (whole && !target.passengers.length) {
+      // Toda la cabina: se renumera su cuenta. La de destino debe estar limpia.
+      if (fromPaid) throw conflict(`La cabina ${fromNumber} ya tiene cobros: no se puede cambiar de cabina`);
+      const [targetOrders, targetPaid] = await Promise.all([
+        Order.exists({ cruise: id, cabinNumber: toNumber }),
+        Payment.exists({ cruise: id, $or: [{ cabinNumber: toNumber }, { cabins: toNumber }] }),
+      ]);
+      if (targetOrders || targetPaid) throw conflict(`La cabina ${toNumber} tiene consumos registrados: elige otra cabina vacía`);
+      if (target.continuesFrom) throw conflict(`La cabina ${toNumber} está unida a un crucero anterior: elige otra cabina vacía`);
+
+      const token = target.accountToken;
+      target.passengers = moving.map(copy) as never;
+      target.guestName = from.guestName;
+      target.capacity = Math.max(target.capacity, moving.length);
+      target.accountToken = from.accountToken;
+      target.continuesFrom = from.continuesFrom ?? null;
+      from.passengers = [] as never;
+      from.guestName = "";
+      from.accountToken = token;
+      from.continuesFrom = null;
+
+      await mongoose.connection.transaction(async (session) => {
+        await Account.deleteMany({ cruise: id, cabinNumber: toNumber }, { session });
+        await Account.updateOne({ cruise: id, cabinNumber: fromNumber }, { $set: { cabinNumber: toNumber } }, { session });
+        await Order.updateMany({ cruise: id, cabinNumber: fromNumber }, { $set: { cabinNumber: toNumber } }, { session });
+        // Un crucero posterior que sigue de esta cabina ahora sigue de la nueva.
+        await Cruise.updateMany(
+          { "cabins.continuesFrom.cruise": id },
+          { $set: { "cabins.$[c].continuesFrom.cabinNumber": toNumber } },
+          { arrayFilters: [{ "c.continuesFrom.cruise": id, "c.continuesFrom.cabinNumber": fromNumber }], session },
+        );
+        await cruise.save({ session });
+      });
+      detail = `${cruise.code || cruise.name}: toda la cabina ${fromNumber} pasa a la ${toNumber}${fromOrders ? " con su cuenta" : ""}`;
+    } else {
+      if (whole && (fromOrders || fromPaid || from.continuesFrom)) {
+        throw conflict(`La cabina ${fromNumber} tiene cuenta con consumos: para moverla completa elige una cabina vacía`);
+      }
+      const assigned = await Order.find({ cruise: id, cabinNumber: fromNumber, consumer: { $in: moving.map((p) => p._id) } })
+        .select("consumerName")
+        .limit(1);
+      if (assigned.length) {
+        throw conflict(
+          `${assigned[0]!.consumerName || "Ese pasajero"} ya tiene consumos asignados en la cabina ${fromNumber}: quita la asignación en su cuenta o mueve la cabina completa a una vacía`,
+        );
+      }
+      const total = target.passengers.length + moving.length;
+      if (total > 6) throw badRequest(`La cabina ${toNumber} quedaría con ${total} pasajeros (máximo 6)`);
+
+      const arriving = moving.map(copy);
+      if (target.passengers.length) for (const p of arriving) p.isPayer = false;
+      const staying = from.passengers.filter((p) => !ids.has(String(p._id))).map(copy);
+      onePayer(arriving);
+      onePayer(staying);
+      target.passengers = [...target.passengers.map(copy), ...arriving] as never;
+      target.capacity = Math.max(target.capacity, total);
+      target.guestName = cabinDisplayName(target);
+      from.passengers = staying as never;
+      from.guestName = cabinDisplayName(from);
+      await cruise.save();
+      detail = `${cruise.code || cruise.name}: ${moving.map((p) => p.name).join(", ")} de la ${fromNumber} a la ${toNumber}`;
+    }
+
+    await logEvent(req.auth, {
+      kind: "salida",
+      title: `Cambio de cabina · ${fromNumber} → ${toNumber}`,
+      detail,
+      cruise: id,
+      cabinNumber: toNumber,
+    });
+    res.json({ cruise });
+  } catch (err) {
+    next(err);
+  }
+}
+
+type ContinuationLink ={ to?: number; fromCruise?: string | null; fromCabin?: number };
 
 /**
  * Crucero unido (pedido del cliente, 6-nov-2026): las cabinas de este crucero
