@@ -167,8 +167,8 @@ function round(v: number) {
 
 /**
  * Registro de cruceros para Gerencia (pedido del cliente, 16-nov-2026):
- * por salida, fechas, cuántos pasajeros y de qué países. Solo cifras, sin
- * datos personales.
+ * por salida, fechas, cuántos pasajeros, de qué países y cuánto consumieron.
+ * Solo cifras, sin datos personales.
  */
 export async function cruiseCalendar(_req: Request, res: Response, next: NextFunction) {
   try {
@@ -177,6 +177,11 @@ export async function cruiseCalendar(_req: Request, res: Response, next: NextFun
       .limit(400)
       .select("code name leg routeFrom routeTo startDate endDate status cabins.passengers.nationality cabins.passengers.country")
       .lean();
+    const sales = await Order.aggregate<{ _id: Types.ObjectId; total: number }>([
+      { $match: { cruise: { $in: cruises.map((c) => c._id) }, status: { $nin: ["cancelada", "retenida"] } } },
+      { $group: { _id: "$cruise", total: { $sum: "$total" } } },
+    ]);
+    const consumedBy = new Map(sales.map((x) => [x._id.toString(), Math.round(x.total * 100) / 100]));
     res.json({
       cruises: cruises.map((c) => {
         const countries = new Map<string, number>();
@@ -198,6 +203,7 @@ export async function cruiseCalendar(_req: Request, res: Response, next: NextFun
           endDate: c.endDate,
           status: c.status,
           passengers,
+          consumed: consumedBy.get(c._id.toString()) ?? 0,
           countries: [...countries].map(([country, count]) => ({ country, count })).sort((a, b) => b.count - a.count),
         };
       }),
