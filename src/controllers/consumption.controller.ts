@@ -12,6 +12,7 @@ import {
   moveStock,
   onboardAvailability,
   swapIngredients,
+  addMixers,
 } from "../services/inventory.service";
 import { accountScope, chargesChanged } from "../services/account.service";
 import { claimBartender } from "../services/commission.service";
@@ -142,7 +143,7 @@ async function cabinSummary(cruiseId: Types.ObjectId | string, cabinNumber: numb
 
 export async function createConsumption(req: Request, res: Response, next: NextFunction) {
   try {
-    const { cruiseId, cabinNumber, productId, qty, courtesy, courtesyReason, courtesyKind, idempotencyKey, clientAt, swaps, customPrice, consumerId } =
+    const { cruiseId, cabinNumber, productId, qty, courtesy, courtesyReason, courtesyKind, idempotencyKey, clientAt, swaps, mixers, customPrice, consumerId } =
       req.body as {
         cruiseId?: string;
         cabinNumber?: number;
@@ -155,6 +156,8 @@ export async function createConsumption(req: Request, res: Response, next: NextF
         clientAt?: string;
         /** Cóctel con cambio de gaseosa o licor: [{ from, to }] (ids de insumos). */
         swaps?: unknown;
+        /** Trago o cóctel con acompañante (gaseosa, agua o jugo): ids que también se descuentan. */
+        mixers?: unknown;
         /** Wetsuit con otro valor por persona (IVA incluido), pedido del cliente 13-nov-2026. */
         customPrice?: unknown;
         /** Pasajero de la cabina que lo consume (cuentas separadas desde el bar, 16-nov-2026). */
@@ -212,8 +215,15 @@ export async function createConsumption(req: Request, res: Response, next: NextF
     }
     const hasSwaps = Array.isArray(swaps) && swaps.length > 0;
     if (hasSwaps && product.category !== "coctel") throw badRequest("Solo los cócteles admiten cambio de ingrediente");
-    const { applied, surcharge, note } = await swapIngredients(await appliedFor(product), swaps);
-    const itemName = product.name + note;
+    const hasMixers = Array.isArray(mixers) && mixers.length > 0;
+    if (hasMixers && !(product.kind === "receta" && ["licor", "coctel"].includes(product.category))) {
+      throw badRequest("Solo los tragos y cócteles llevan acompañante");
+    }
+    const swapped = await swapIngredients(await appliedFor(product), swaps);
+    const { surcharge } = swapped;
+    const mixed = await addMixers(swapped.applied, mixers);
+    const applied = mixed.applied;
+    const itemName = product.name + swapped.note + mixed.note;
     const unitPrice = hasCustomPrice ? round2(customPrice as number) : round2(product.price + surcharge);
     const cost = costOf(applied);
     const late = cruise.status === "cerrado";
