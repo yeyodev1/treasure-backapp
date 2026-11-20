@@ -201,6 +201,37 @@ export async function swapIngredients(applied: IAppliedIngredient[], swaps: unkn
   return { applied: next, surcharge: liquor ? LIQUOR_SWAP_SURCHARGE : 0, note: ` (con ${names.join(", ")})` };
 }
 
+/** Gaseosas, aguas y jugos que se sirven como acompañante de un trago o cóctel. */
+export const MIXER_CATEGORIES = ["gaseosa", "agua", "jugo"];
+const MAX_MIXERS = 3;
+
+/**
+ * Trago o cóctel con acompañante (pedido del bar, 19-nov-2026): «Aperol con Sprite»,
+ * «whisky con agua tónica». Suma el envase entero del acompañante a lo que se descuenta
+ * del stock; no cambia el precio (va incluido en el trago).
+ */
+export async function addMixers(applied: IAppliedIngredient[], mixers: unknown) {
+  const ids = (Array.isArray(mixers) ? mixers : []).map((m) => String(m ?? "")).filter(Boolean);
+  if (!ids.length) return { applied, note: "" };
+  if (ids.length > MAX_MIXERS) throw badRequest(`Máximo ${MAX_MIXERS} acompañantes por bebida`);
+  if (!ids.every((id) => Types.ObjectId.isValid(id))) throw badRequest("Acompañante inválido");
+  const products = await Product.find({ _id: { $in: ids } }).select(
+    "name kind category stockUnit containerSize costPerUnit active",
+  );
+  const byId = new Map(products.map((p) => [p._id.toString(), p]));
+  const next = [...applied];
+  const names: string[] = [];
+  for (const id of ids) {
+    const p = byId.get(id);
+    if (!p || !p.active || p.kind !== "fisico" || !MIXER_CATEGORIES.includes(p.category)) {
+      throw badRequest("Ese acompañante no se puede servir: elige una gaseosa, agua o jugo");
+    }
+    next.push({ product: p._id, name: p.name, qty: p.containerSize || 1, stockUnit: p.stockUnit, unitCost: p.costPerUnit ?? 0 });
+    names.push(p.name);
+  }
+  return { applied: next, note: ` + ${names.join(", ")}` };
+}
+
 /** Costo de una unidad vendida y si todos sus insumos tienen costo. */
 export function costOf(applied: IAppliedIngredient[]): { unitCost: number; complete: boolean } {
   const unitCost = applied.reduce((sum, a) => sum + a.qty * a.unitCost, 0);
