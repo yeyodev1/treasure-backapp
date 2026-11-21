@@ -149,7 +149,8 @@ export async function ownerReport(query: OwnerReportQuery) {
       const entry = costByProduct.get(key) ?? { name: item.name, qty: 0, cost: 0, complete: true };
       entry.qty += units;
       entry.cost += lineCost;
-      if (!item.costComplete) {
+      // Un servicio (wetsuit) no tiene insumos: costo $0, no «falta el costo». Cubre consumos ya guardados.
+      if (!item.costComplete && item.applied?.length) {
         entry.complete = false;
         missingCost.set(key, item.name);
       }

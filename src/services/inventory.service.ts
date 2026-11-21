@@ -237,7 +237,8 @@ export function costOf(applied: IAppliedIngredient[]): { unitCost: number; compl
   const unitCost = applied.reduce((sum, a) => sum + a.qty * a.unitCost, 0);
   return {
     unitCost: Math.round(unitCost * 10000) / 10000,
-    complete: applied.length > 0 && applied.every((a) => a.unitCost > 0),
+    // Sin insumos solo queda un servicio (wetsuit): no gasta inventario, su costo es $0.
+    complete: applied.every((a) => a.unitCost > 0),
   };
 }
 
