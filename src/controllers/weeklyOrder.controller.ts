@@ -22,6 +22,7 @@ import {
 } from "../services/weeklyOrder.service";
 import { moveStock, stockOf, updateCost } from "../services/inventory.service";
 import { logEvent } from "../services/audit.service";
+import { recordBarCount } from "./count.controller";
 import { badRequest, conflict, forbidden, notFound, unauthorized } from "../errors/httpError";
 import { round2 } from "../utils/units";
 
@@ -268,7 +269,18 @@ export async function saveWeeklyOrder(req: Request, res: Response, next: NextFun
   }
 }
 
-/** Bar → directora. No compra ni mueve stock. */
+/** El conteo del pedido pasa a ser el conteo físico del barco; repetirlo no ajusta dos veces. */
+async function saveBarCount(req: Request, order: OrderDoc) {
+  const result = await recordBarCount(order, req.auth!.sub);
+  if (!result) return;
+  await logEvent(req.auth, {
+    kind: "conteo",
+    title: `Conteo ${result.code} del bar (pedido ${order.code})`,
+    detail: `${result.adjusted} diferencia(s) · el conteo físico es la nueva referencia`,
+  });
+}
+
+/** Bar → directora. Guarda el conteo del bar como conteo físico; no compra. */
 export async function sendWeeklyOrder(req: Request, res: Response, next: NextFunction) {
   try {
     const order = await load(String(req.params.id));
@@ -280,6 +292,7 @@ export async function sendWeeklyOrder(req: Request, res: Response, next: NextFun
     push(order, req, "Enviado a revisión", `${order.lines.filter((l) => l.qty > 0).length} producto(s) con cantidad`);
     await save(order);
     await logEvent(req.auth, { kind: "requerimiento", title: `Pedido ${order.code} enviado a revisión`, detail: "" });
+    await saveBarCount(req, order);
     res.json({ order: serialize(order) });
   } catch (err) {
     next(err);
@@ -313,6 +326,8 @@ export async function approveWeeklyOrder(req: Request, res: Response, next: Next
         : `${withQty.length} producto(s) · para ${ORDER_RECIPIENT}${skippedBar ? " · el bar no lo revisó" : ""}`,
     );
     await save(order);
+    // Aprobó sin que el bar enviara: lo que el bar alcanzó a contar también queda como conteo.
+    if (skippedBar) await saveBarCount(req, order);
     await logEvent(req.auth, {
       kind: "requerimiento",
       title: noNeeds ? `Pedido ${order.code} cerrado sin necesidades` : `Pedido ${order.code} aprobado`,

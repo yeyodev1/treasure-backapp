@@ -206,6 +206,46 @@ async function applyDifferences(count: InstanceType<typeof StockCount>, userId: 
 }
 
 /**
+ * BAR - STOCK (pedido del cliente, 19-nov-2026): lo que el bar cuenta en el
+ * pedido semanal queda guardado al enviarlo como conteo físico del barco ya
+ * confirmado (pasa a ser la referencia; queda la diferencia con lo calculado).
+ */
+export async function recordBarCount(
+  order: { code: string; lines: Array<{ product: Types.ObjectId; counted?: number | null }> },
+  userId: string,
+) {
+  const counted = order.lines.filter((l) => typeof l.counted === "number");
+  if (!counted.length) return null;
+  const field = LOCATION_FIELD.abordo;
+  const [cruise, products] = await Promise.all([
+    Cruise.findOne({ status: "abordo" }).select("_id"),
+    Product.find({ _id: { $in: counted.map((l) => l.product) } }).select(`name stockUnit containerSize ${field}`),
+  ]);
+  const byId = new Map(products.map((p) => [p._id.toString(), p]));
+  const now = new Date();
+  const count = await StockCount.create({
+    code: await nextCode(),
+    location: "abordo",
+    cruise: cruise?._id ?? null,
+    status: "aprobado",
+    cutAt: now,
+    lines: counted.flatMap((l) => {
+      const p = byId.get(l.product.toString());
+      if (!p) return [];
+      return [{ product: p._id, name: p.name, stockUnit: p.stockUnit, digitalAtCut: p[field], physical: round2(l.counted! * (p.containerSize || 1)), reason: "" }];
+    }),
+    notes: `Conteo del bar en el pedido ${order.code}`,
+    createdBy: userId,
+    submittedBy: userId,
+    submittedAt: now,
+    reviewedBy: userId,
+    reviewedAt: now,
+  });
+  const adjusted = await applyDifferences(count, userId);
+  return { code: count.code, adjusted };
+}
+
+/**
  * "Confirmar inventario del barco" (guía 4 perfiles, 4-nov-2026): quien cuenta
  * confirma y el conteo físico pasa a ser la referencia, sin enviarlo a otra
  * persona ni esperar aprobación. Queda la diferencia con autor y fecha; una
