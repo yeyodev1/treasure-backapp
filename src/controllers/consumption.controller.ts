@@ -24,8 +24,9 @@ import { QTY_POSITIVE_ERROR, round2 } from "../utils/units";
 /**
  * Consumo directo del bar (guía auditada 27-oct-2026): elegir cabina y tocar
  * la bebida registra lo servido, carga el precio a la cabina y descuenta
- * los ingredientes a bordo, todo en una sola transacción. Si falta un
- * insumo no se guarda nada. Cada toque lleva su `idempotencyKey`: los
+ * los ingredientes a bordo, todo en una sola transacción. Nunca se bloquea
+ * por stock: si el sistema marca cero, el stock queda negativo y el conteo
+ * lo corrige. Cada toque lleva su `idempotencyKey`: los
  * reintentos sin señal nunca duplican.
  */
 
@@ -273,7 +274,8 @@ export async function createConsumption(req: Request, res: Response, next: NextF
         if (!late) {
           await moveStock({
             session,
-            guard: true,
+            // Siempre se vende aunque el sistema marque sin stock (pedido del cliente, 21-nov): el conteo corrige.
+            guard: false,
             type: "venta",
             location: "abordo",
             deltas: new Map(
@@ -542,7 +544,8 @@ export async function upgradeCourtesy(req: Request, res: Response, next: NextFun
       await doc.save({ session });
       await moveStock({
         session,
-        guard: true,
+        // Siempre se vende aunque el sistema marque sin stock (pedido del cliente, 21-nov): el conteo corrige.
+            guard: false,
         type: "venta",
         location: "abordo",
         deltas: new Map([...deltasFromApplied(applied, units)].map(([id, q]) => [id, -q] as [string, number])),
@@ -611,7 +614,8 @@ export async function reviewHeld(req: Request, res: Response, next: NextFunction
         await fresh.save({ session });
         await moveStock({
           session,
-          guard: true,
+          // Siempre se vende aunque el sistema marque sin stock (pedido del cliente, 21-nov): el conteo corrige.
+            guard: false,
           type: "venta",
           location: "abordo",
           deltas: new Map(

@@ -169,12 +169,14 @@ async function main() {
   const s3sum = await api("bar", "GET", `/consumptions/summary/${cruiseId}/3`);
   check("Cada consumo queda en su cabina", s2sum.data.summary.tripTotal === 35.5 && s3sum.data.summary.tripTotal === 6.5, [s2sum.data.summary.tripTotal, s3sum.data.summary.tripTotal]);
 
-  // ---- Falta gin: no se guarda nada ni se descuentan los otros insumos
+  // ---- Falta gin: igual se vende (pedido del cliente, 21-nov) y el stock queda negativo hasta el conteo
   await api("duena", "POST", "/inventory/adjust", { productId: gin, qty: -1350, reason: "Prueba: dejar 30 ml", location: "abordo" });
   const tonicBefore = (await stock(tonic)).abordo;
   const short = await api("bar", "POST", "/consumptions", { cruiseId, cabinNumber: 2, productId: ginTonic, idempotencyKey: "gt-3" });
-  check("Sin gin suficiente: no se guarda", short.status === 409 && short.data.code === "sin_stock", short.data);
-  check("Sin cargo parcial ni descuento de tónica", (await stock(tonic)).abordo === tonicBefore && (await api("bar", "GET", `/consumptions/summary/${cruiseId}/2`)).data.summary.tripTotal === 35.5);
+  check("Sin gin suficiente: igual se vende", short.status === 201, short.data.message);
+  check("El gin queda negativo hasta el conteo", (await stock(gin)).abordo === -30, await stock(gin));
+  const back = await api("bar", "POST", `/consumptions/${short.data.order._id}/undo`, { reason: "Prueba" });
+  check("Retirarlo devuelve todo", back.status === 200 && (await stock(tonic)).abordo === tonicBefore && back.data.summary.tripTotal === 35.5, back.data.message);
   const avail = await api("bar", "GET", "/consumptions/availability");
   check("Gin Tonic aparece no disponible (solo ese producto)", avail.data.availability[ginTonic].available === false && avail.data.availability[coke].available === true, avail.data.availability[ginTonic]);
   const rv = await api("bar", "POST", "/requisitions", { kind: "revision", lines: [{ productId: gin, qty: 0 }], note: "Hay una botella abierta en la barra" });
