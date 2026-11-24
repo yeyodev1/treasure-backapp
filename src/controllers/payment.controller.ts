@@ -77,12 +77,15 @@ interface CollectBody {
   reference?: string;
   cashConfirmed?: boolean;
   expectedDue?: number;
-  billing?: { name?: string; idNumber?: string; email?: string; country?: string; passengerId?: string };
+  billing?: { name?: string; idNumber?: string; email?: string; country?: string; passengerId?: string; noEmail?: boolean };
   /** false: no se le envía el resumen por correo al cliente (4-nov-2026). */
   notify?: boolean;
 }
 
 type CollectMode = "cuenta" | "consumos" | "porcentaje" | "grupo";
+
+/** «Cliente no da correo» (pedido de Gerencia, 24-nov-2026): la factura llega a este buzón de la casa. */
+export const NO_CLIENT_EMAIL = "facturaspaulateran@gmail.com";
 
 function cleanLines(body: CollectBody) {
   const raw: PayLine[] = Array.isArray(body.lines) && body.lines.length
@@ -188,7 +191,9 @@ export async function collectCabin(req: Request, res: Response, next: NextFuncti
     const chosen = billing?.passengerId ? firstCabin?.passengers.find((p) => String(p._id) === billing.passengerId) : undefined;
     const payer = chosen ?? firstCabin?.passengers.find((p) => p.isPayer) ?? firstCabin?.passengers[0];
 
-    const typedEmail = billing?.email?.trim() ?? "";
+    const noEmail = billing?.noEmail === true;
+    // El correo de la casa lo pone el servidor, no la tableta.
+    const typedEmail = noEmail ? NO_CLIENT_EMAIL : (billing?.email?.trim() ?? "");
     if (typedEmail && !isValidOptionalEmail(typedEmail)) {
       throw badRequest("Revisa el correo. Ejemplo: nombre@dominio.com.");
     }
@@ -198,6 +203,7 @@ export async function collectCabin(req: Request, res: Response, next: NextFuncti
       // Un correo guardado inválido no bloquea el cobro: se factura sin correo.
       email: typedEmail || (payer?.email && isValidOptionalEmail(payer.email) ? payer.email : ""),
       country: billing?.country?.trim() || payer?.country || "",
+      noEmail,
     };
     if (!finalBilling.name || !finalBilling.idNumber) {
       throw badRequest("Falta el nombre o la identificación del pagador para facturar");
@@ -388,7 +394,8 @@ export async function collectCabin(req: Request, res: Response, next: NextFuncti
     // Si el pagador no tenía identificación o correo, se guardan para la próxima.
     if (cruise && firstCabin && payer) {
       payer.idNumber = payer.idNumber || finalBilling.idNumber;
-      payer.email = payer.email || finalBilling.email;
+      // El correo de la casa no se guarda como correo del pasajero.
+      if (!noEmail) payer.email = payer.email || finalBilling.email;
       payer.country = payer.country || finalBilling.country;
       await cruise.save();
     }

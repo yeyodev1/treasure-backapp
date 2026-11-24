@@ -26,6 +26,8 @@ export interface IBillingInfo {
   idNumber: string;
   email: string;
   country: string;
+  /** El cliente no dio correo: la factura va al correo de la casa (24-nov-2026). */
+  noEmail: boolean;
 }
 
 export const SUMMARY_EMAIL_STATUSES = ["no_aplica", "enviando", "enviado", "error"] as const;
@@ -123,6 +125,7 @@ const billingSchema = new Schema<IBillingInfo>(
     idNumber: { type: String, default: "", trim: true },
     email: { type: String, default: "", lowercase: true, trim: true },
     country: { type: String, default: "", trim: true },
+    noEmail: { type: Boolean, default: false },
   },
   { _id: false },
 );
