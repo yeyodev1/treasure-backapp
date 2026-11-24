@@ -115,6 +115,8 @@ export interface IPayment {
   /** Factura autorizada por el SRI enviada por correo con Resend (PDF y XML, 12-nov-2026). */
   invoiceEmail: ISummaryEmail;
   collectedBy: Types.ObjectId;
+  /** Efectivo depositado en el banco (especificación, 24-nov-2026). null = sigue en caja. */
+  deposit: { at: Date; reference: string; by: Types.ObjectId; byName: string } | null;
   createdAt?: Date;
   updatedAt?: Date;
 }
@@ -177,6 +179,18 @@ const paymentSchema = new Schema<IPayment>(
     summaryEmail: { type: summaryEmailSchema, default: () => ({}) },
     invoiceEmail: { type: summaryEmailSchema, default: () => ({}) },
     collectedBy: { type: Schema.Types.ObjectId, ref: "User", required: true },
+    deposit: {
+      type: new Schema(
+        {
+          at: { type: Date, required: true },
+          reference: { type: String, default: "", trim: true, maxlength: 80 },
+          by: { type: Schema.Types.ObjectId, ref: "User", required: true },
+          byName: { type: String, default: "" },
+        },
+        { _id: false },
+      ),
+      default: null,
+    },
   },
   { timestamps: true },
 );

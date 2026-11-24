@@ -144,7 +144,7 @@ async function cabinSummary(cruiseId: Types.ObjectId | string, cabinNumber: numb
 
 export async function createConsumption(req: Request, res: Response, next: NextFunction) {
   try {
-    const { cruiseId, cabinNumber, productId, qty, courtesy, courtesyReason, courtesyKind, idempotencyKey, clientAt, swaps, mixers, customPrice, consumerId } =
+    const { cruiseId, cabinNumber, productId, qty, courtesy, courtesyReason, courtesyKind, idempotencyKey, clientAt, swaps, mixers, customPrice, priceReason, consumerId } =
       req.body as {
         cruiseId?: string;
         cabinNumber?: number;
@@ -161,6 +161,8 @@ export async function createConsumption(req: Request, res: Response, next: NextF
         mixers?: unknown;
         /** Wetsuit con otro valor por persona (IVA incluido), pedido del cliente 13-nov-2026. */
         customPrice?: unknown;
+        /** Motivo del otro valor (obligatorio; solo Gerencia, 24-nov-2026). */
+        priceReason?: unknown;
         /** Pasajero de la cabina que lo consume (cuentas separadas desde el bar, 16-nov-2026). */
         consumerId?: unknown;
       };
@@ -210,6 +212,9 @@ export async function createConsumption(req: Request, res: Response, next: NextF
     const hasCustomPrice = customPrice !== undefined && customPrice !== null && customPrice !== "";
     if (hasCustomPrice) {
       if (!product.legs?.length) throw badRequest("Solo los wetsuits admiten otro valor");
+      // Tarifa fija por tipo de crucero; otro valor solo con motivo y aprobación de Gerencia (especificación del Resumen).
+      if (req.auth!.role !== "duena") throw forbidden("Otro valor de wetsuit solo lo pone Gerencia, con motivo");
+      if (!String(priceReason ?? "").trim()) throw badRequest("Escribe el motivo del otro valor");
       if (typeof customPrice !== "number" || !Number.isFinite(customPrice) || customPrice <= 0 || customPrice > 10000) {
         throw badRequest("El valor del wetsuit debe ser mayor a $0");
       }
@@ -329,7 +334,9 @@ export async function createConsumption(req: Request, res: Response, next: NextF
     await logEvent(req.auth, {
       kind: "consumo",
       title: `Consumo · cabina ${cabinNumber}`,
-      detail: `${units}× ${itemName}${item.courtesy ? ` (cortesía · ${courtesyWhy})` : ""}`,
+      detail: `${units}× ${itemName}${item.courtesy ? ` (cortesía · ${courtesyWhy})` : ""}${
+        hasCustomPrice ? ` · otro valor $${unitPrice} (tarifa $${product.price}): ${String(priceReason).trim()}` : ""
+      }`,
       amount: saved.total,
       cruise: cruise._id,
       cabinNumber,

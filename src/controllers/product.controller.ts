@@ -44,6 +44,16 @@ interface ProductBody {
   contificoId?: string;
   wineStyle?: WineStyle | "";
   servingIcon?: ServingIcon | "";
+  /** Costo de un envase (IVA incluido): obligatorio al crear un insumo físico (24-nov-2026). */
+  containerCost?: number;
+}
+
+/** Costo del envase → costo por unidad base. */
+function applyContainerCost(product: IProduct, cost: unknown) {
+  const value = Number(cost);
+  if (!Number.isFinite(value) || value <= 0 || value > 100_000) throw badRequest("Pon el costo del envase: sin costo no se calcula el margen");
+  product.costPerUnit = Math.round((value / (product.containerSize || 1)) * 10000) / 10000;
+  product.costUpdatedAt = new Date();
 }
 
 function applyServingIcon(product: IProduct, icon: ServingIcon | "" | undefined) {
@@ -119,7 +129,11 @@ export async function createProduct(req: Request, res: Response, next: NextFunct
       recipe: body.kind === "receta" ? body.recipe : [],
       createdBy: req.auth!.sub,
     });
-    if (body.kind === "fisico") applyPhysicalFields(product, body);
+    if (body.kind === "fisico") {
+      applyPhysicalFields(product, body);
+      // Costo obligatorio al crear (especificación del Resumen, «Datos que hay que corregir» 1).
+      applyContainerCost(product, body.containerCost);
+    }
     applyWineStyle(product, body.wineStyle);
     applyServingIcon(product, body.servingIcon);
     if (body.price !== undefined && body.price > 0) applyPrice(product, body.price, req);
@@ -234,6 +248,11 @@ export async function updateProduct(req: Request, res: Response, next: NextFunct
       changes.push(`tipo ${body.kind}`);
     }
     if (product.kind === "fisico") applyPhysicalFields(product, body);
+    // Cargar el costo que falta (o corregirlo): solo quien ve costos.
+    if (product.kind === "fisico" && body.containerCost !== undefined && body.containerCost !== null && canSeeCosts(req.auth?.role)) {
+      applyContainerCost(product, body.containerCost);
+      changes.push("costo");
+    }
     if (product.kind === "receta" && body.recipe !== undefined) {
       await validateRecipe(body.recipe);
       product.recipe = body.recipe as never;

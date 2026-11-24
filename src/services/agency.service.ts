@@ -13,6 +13,7 @@ import { round2 } from "../utils/units";
 export interface AgencyItem {
   cruiseId: string;
   orderId: string;
+  productId: string;
   cabinNumber: number;
   name: string;
   qty: number;
@@ -45,6 +46,7 @@ export async function agencyCourtesyItems(cruiseId?: string): Promise<AgencyItem
       items.push({
         cruiseId: order.cruise.toString(),
         orderId: order._id.toString(),
+        productId: item.product.toString(),
         cabinNumber: order.cabinNumber,
         name: item.name,
         qty,

@@ -12,6 +12,7 @@ import { badRequest, conflict, forbidden, notFound, unauthorized } from "../erro
 import { parseRangeEdge } from "../utils/dates";
 import { isValidOptionalEmail } from "../utils/email";
 import { sendAccountSummary } from "../services/accountEmail.service";
+import { isTestOrTeamEmail, teamEmails, TEST_EMAIL_ERROR } from "../services/emailRules.service";
 
 
 /** Cobra Dirección de crucero (guía auditada 27-oct-2026) o Gerencia. */
@@ -197,6 +198,8 @@ export async function collectCabin(req: Request, res: Response, next: NextFuncti
     if (typedEmail && !isValidOptionalEmail(typedEmail)) {
       throw badRequest("Revisa el correo. Ejemplo: nombre@dominio.com.");
     }
+    // Sin correos de prueba ni del equipo (especificación del Resumen, 24-nov-2026).
+    if (!noEmail && typedEmail && isTestOrTeamEmail(typedEmail, await teamEmails())) throw badRequest(TEST_EMAIL_ERROR);
     const finalBilling = {
       name: billing?.name?.trim() || payer?.name || "",
       idNumber: billing?.idNumber?.trim() || payer?.idNumber || "",
@@ -586,12 +589,19 @@ export async function reversePayment(req: Request, res: Response, next: NextFunc
 
 export async function listPayments(req: Request, res: Response, next: NextFunction) {
   try {
-    const { cruiseId, from, to, before, limit, invoice, line } = req.query as Record<string, string>;
+    const { cruiseId, from, to, before, limit, invoice, line, method, deposit } = req.query as Record<string, string>;
     const filter: Record<string, unknown> = {};
     if (cruiseId) filter.cruise = cruiseId;
     // Bar o wetsuits (23-nov-2026). Los cobros de antes del 14-nov no tienen línea: son del bar.
     if (line === "wetsuit") filter.line = "wetsuit";
     else if (line === "bar") filter.line = { $ne: "wetsuit" };
+    if (method && PAYMENT_METHODS.includes(method as PaymentMethod)) filter.method = method;
+    // Efectivo que sigue en caja (bloque «Dónde está la plata»).
+    if (deposit === "pendiente") {
+      filter.method = "efectivo";
+      filter.status = "vigente";
+      filter.deposit = null;
+    }
     // Facturas pendientes: pagos vigentes cuya factura no se emitió.
     if (invoice === "pendiente") {
       filter.status = "vigente";

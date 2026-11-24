@@ -2,31 +2,36 @@ import { Types } from "mongoose";
 import { Order } from "../models/order.model";
 import { Cruise } from "../models/cruise.model";
 import { CommissionPayment } from "../models/commissionPayment.model";
+import { Payment } from "../models/payment.model";
 import { round2 } from "../utils/units";
+import { goalsAt } from "./goals.service";
+import { isGenericName, liveUnits, productIndex } from "./lines.service";
 
 /**
- * Comisión del bartender (pedido de Gerencia, 3-nov-2026). Solo el bartender
- * comisiona; la Dirección de crucero y el resto de la tripulación no.
+ * Comisión del bartender (pedido de Gerencia, 3-nov-2026; regla nueva de la
+ * especificación del Resumen, 24-nov-2026). Solo el bartender comisiona.
  *
- * Comisión neta = ventas del bar × 10 % ÷ 1,21. Ej.: $10 → $1,00 → $0,83.
+ * Comisión = ventas de bar COBRADAS del crucero × 10 % ÷ divisor (1,21 por
+ * defecto; meta con vigencia, se usa la que regía al zarpar). No incluye
+ * wetsuits, descorche ni otros servicios, ni cortesías.
  *
- * Ventas del bar = la misma cifra "Consumos del bar" del Resumen: lo cargado a
- * las cabinas (entregado o por entregar), sin cortesías, cancelaciones,
- * anulaciones ni consumos retenidos. Se cuenta lo consumido, no lo cobrado.
+ * - Crucero en curso: se muestra la comisión proyectada (sobre todo lo
+ *   vendido) y no se puede pagar.
+ * - Sin bartender o con un usuario genérico: la comisión queda retenida hasta
+ *   que Gerencia asigne la persona.
  *
- * Cada crucero tiene su bartender (lo elige la Dirección o queda el primero que
- * registra un consumo). Gerencia elige qué cruceros de un bartender paga y el
- * pago guarda ese detalle (prefactura). Los pagos antiguos sin detalle (antes
- * del 4-nov-2026) cubren primero los cruceros más antiguos.
+ * Gerencia elige qué cruceros de un bartender paga y el pago guarda ese
+ * detalle. Los pagos antiguos sin detalle (antes del 4-nov-2026) cubren
+ * primero los cruceros más antiguos.
  */
 export const COMMISSION_RATE = 0.1;
 export const COMMISSION_DIVISOR = 1.21;
 
-export function netCommission(sales: number): number {
-  return round2((sales * COMMISSION_RATE) / COMMISSION_DIVISOR);
+export function netCommission(sales: number, divisor: number = COMMISSION_DIVISOR): number {
+  return round2((sales * COMMISSION_RATE) / (divisor > 0 ? divisor : COMMISSION_DIVISOR));
 }
 
-export type CruiseCommissionState = "pagada" | "parcial" | "pendiente";
+export type CruiseCommissionState = "pagada" | "parcial" | "pendiente" | "en_curso" | "retenida";
 
 /**
  * El primer bartender que registra un consumo en un crucero sin bartender
@@ -42,18 +47,34 @@ export async function claimBartender(cruiseId: Types.ObjectId | string, auth: { 
 }
 
 export async function commissionSummary() {
-  const [salesRows, payments] = await Promise.all([
-    Order.aggregate<{ _id: Types.ObjectId; sales: number; orders: number }>([
-      { $match: { status: { $in: ["entregada", "pendiente"] } } },
-      { $group: { _id: "$cruise", sales: { $sum: "$total" }, orders: { $sum: 1 } } },
-    ]),
+  const [products, orders, livePayments, payments] = await Promise.all([
+    productIndex(),
+    Order.find({ status: { $in: ["entregada", "pendiente"] } }).select("cruise items payment").lean(),
+    Payment.find({ status: "vigente" }).select("_id").lean(),
     CommissionPayment.find().sort({ paidAt: -1, createdAt: -1 }).lean(),
   ]);
+  const paidIds = new Set(livePayments.map((p) => p._id.toString()));
+  // Ventas de bar por crucero: todas (proyección) y las cobradas (base de la comisión).
+  const salesRows = new Map<string, { all: number; paid: number; orders: number }>();
+  for (const o of orders) {
+    let bar = 0;
+    for (const i of o.items) {
+      if (i.courtesy || products.get(i.product.toString())?.line === "wetsuit") continue;
+      if (products.get(i.product.toString())?.line === "servicio") continue;
+      bar += liveUnits(i) * i.unitPrice;
+    }
+    if (!bar) continue;
+    const row = salesRows.get(o.cruise.toString()) ?? { all: 0, paid: 0, orders: 0 };
+    row.all += bar;
+    row.orders += 1;
+    if (o.payment && paidIds.has(o.payment.toString())) row.paid += bar;
+    salesRows.set(o.cruise.toString(), row);
+  }
 
-  const cruises = await Cruise.find({ _id: { $in: salesRows.map((r) => r._id) } })
+  const cruises = await Cruise.find({ _id: { $in: [...salesRows.keys()] } })
     .select("code name routeFrom routeTo startDate endDate startedAt closedAt status bartender bartenderName")
     .lean();
-  const salesByCruise = new Map(salesRows.map((r) => [r._id.toString(), r]));
+  const salesByCruise = salesRows;
 
   const valid = payments.filter((p) => p.status === "vigente");
   const paidTotal = round2(valid.reduce((s, p) => s + p.amount, 0));
@@ -71,7 +92,8 @@ export async function commissionSummary() {
   const ordered = cruises
     .map((c) => {
       const row = salesByCruise.get(c._id.toString())!;
-      const sales = round2(row.sales);
+      const sales = round2(row.paid);
+      const retained = !c.bartender || isGenericName(c.bartenderName);
       return {
         id: c._id.toString(),
         code: c.code,
@@ -87,15 +109,25 @@ export async function commissionSummary() {
         bartenderName: c.bartender ? c.bartenderName || "Bartender" : "",
         orders: row.orders,
         sales,
+        salesAll: round2(row.all),
+        retained,
+        divisor: COMMISSION_DIVISOR,
         commission: netCommission(sales),
+        projected: 0,
       };
     })
-    .filter((c) => c.sales > 0)
     // Orden real de operación: cuándo se inició (o su fecha programada si no consta).
     .sort(
       (a, b) =>
         new Date(a.startedAt ?? a.startDate).getTime() - new Date(b.startedAt ?? b.startDate).getTime(),
     );
+
+  // Divisor que regía al zarpar cada crucero (un cambio de 2027 no toca 2026).
+  for (const c of ordered) {
+    c.divisor = (await goalsAt(new Date(c.startDate))).commissionDivisor ?? COMMISSION_DIVISOR;
+    c.commission = c.status === "abordo" ? 0 : netCommission(c.sales, c.divisor);
+    c.projected = c.status === "abordo" ? netCommission(c.salesAll, c.divisor) : 0;
+  }
 
   let generated = 0;
   let sales = 0;
@@ -107,7 +139,16 @@ export async function commissionSummary() {
     pool = round2(pool - legacy);
     const covered = round2(itemized + legacy);
     const pending = round2(c.commission - covered);
-    const state: CruiseCommissionState = pending <= 0 ? "pagada" : covered > 0 ? "parcial" : "pendiente";
+    const state: CruiseCommissionState =
+      c.status === "abordo"
+        ? "en_curso"
+        : pending <= 0
+          ? "pagada"
+          : c.retained
+            ? "retenida"
+            : covered > 0
+              ? "parcial"
+              : "pendiente";
     return { ...c, paid: covered, pending, state, accumulated: round2(generated) };
   });
 
@@ -132,7 +173,10 @@ export async function commissionSummary() {
       sales: round2(sales),
       generated,
       paid: paidTotal,
-      pending: round2(rows.reduce((s, r) => s + r.pending, 0)),
+      // Por pagar: sin las retenidas (falta asignar la persona).
+      pending: round2(rows.filter((r) => r.state !== "retenida").reduce((s, r) => s + r.pending, 0)),
+      retained: round2(rows.filter((r) => r.state === "retenida").reduce((s, r) => s + r.pending, 0)),
+      projected: round2(rows.reduce((s, r) => s + r.projected, 0)),
       cruises: rows.length,
     },
     bartenders: [...byBartender.values()].sort((a, b) => b.pending - a.pending || a.name.localeCompare(b.name)),
@@ -142,6 +186,8 @@ export async function commissionSummary() {
       id: p._id.toString(),
       amount: p.amount,
       paidAt: p.paidAt,
+      method: p.method ?? "",
+      reference: p.reference ?? "",
       note: p.note,
       status: p.status,
       by: p.byName,

@@ -25,6 +25,9 @@ export interface ICommissionPayment {
   items: ICommissionPaymentItem[];
   /** Día en que se le pagó (puede ser anterior al registro). */
   paidAt: Date;
+  /** Transferencia o efectivo, y su comprobante (pago en un paso, 24-nov-2026). */
+  method: "transferencia" | "efectivo" | "";
+  reference: string;
   note: string;
   status: CommissionPaymentStatus;
   by: Types.ObjectId;
@@ -54,6 +57,8 @@ const commissionPaymentSchema = new Schema<ICommissionPayment>(
       default: [],
     },
     paidAt: { type: Date, required: true },
+    method: { type: String, enum: ["transferencia", "efectivo", ""], default: "" },
+    reference: { type: String, default: "", trim: true, maxlength: 80 },
     note: { type: String, default: "", trim: true, maxlength: 300 },
     status: { type: String, enum: COMMISSION_PAYMENT_STATUSES, default: "vigente" },
     by: { type: Schema.Types.ObjectId, ref: "User", required: true },

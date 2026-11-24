@@ -21,7 +21,16 @@ export async function listCommissions(_req: Request, res: Response, next: NextFu
 /** Registra el pago de los cruceros elegidos de un bartender. */
 export async function createCommissionPayment(req: Request, res: Response, next: NextFunction) {
   try {
-    const { cruiseIds, paidAt, note } = req.body as { cruiseIds?: unknown; paidAt?: string; note?: string };
+    const { cruiseIds, paidAt, note, method, reference } = req.body as {
+      cruiseIds?: unknown;
+      paidAt?: string;
+      note?: string;
+      method?: string;
+      reference?: string;
+    };
+    if (method !== undefined && method !== "transferencia" && method !== "efectivo") {
+      throw badRequest("Elige transferencia o efectivo");
+    }
     const ids = Array.isArray(cruiseIds) ? [...new Set(cruiseIds.map(String))] : [];
     if (!ids.length) throw badRequest("Elige los cruceros que pagas");
 
@@ -35,6 +44,8 @@ export async function createCommissionPayment(req: Request, res: Response, next:
     const picked = [];
     for (const id of ids) {
       const row = summary.cruises.find((c) => c.id === id);
+      if (row?.state === "en_curso") throw conflict(`El crucero ${row.code || row.name} sigue en curso: su comisión es proyectada`);
+      if (row?.state === "retenida") throw conflict(`Asigna la persona que atendió el crucero ${row.code || row.name} antes de pagar`);
       if (!row || row.pending <= 0) {
         throw conflict(`${row ? `El crucero ${row.code || row.name}` : "Un crucero elegido"} ya no tiene comisión pendiente. Recarga la página.`);
       }
@@ -52,6 +63,8 @@ export async function createCommissionPayment(req: Request, res: Response, next:
       items: picked.map((r) => ({ cruise: new Types.ObjectId(r.id), code: r.code || r.name, sales: r.sales, amount: r.pending })),
       // Mediodía en Galápagos: la fecha no cambia de día por la zona horaria.
       paidAt: new Date(parseRangeEdge(day, "start")!.getTime() + 12 * 3600_000),
+      method: method ?? "",
+      reference: String(reference ?? "").trim().slice(0, 80),
       note: String(note ?? "").trim().slice(0, 300),
       by: new Types.ObjectId(req.auth!.sub),
       byName: req.auth!.name,

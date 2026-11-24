@@ -18,6 +18,7 @@ import * as ism from "../controllers/ism.controller";
 import * as consumptions from "../controllers/consumption.controller";
 import * as supply from "../controllers/supply.controller";
 import * as commissions from "../controllers/commission.controller";
+import * as summary from "../controllers/summary.controller";
 import * as agency from "../controllers/agency.controller";
 import * as weeklyOrders from "../controllers/weeklyOrder.controller";
 import * as shipStops from "../controllers/shipStop.controller";
@@ -237,6 +238,14 @@ export default function routerApi(app: Application) {
   router.get("/reports/by-cruise", requireAuth, OWNER, reports.salesByCruise);
   router.get("/reports/owner", requireAuth, OWNER, reports.ownerPanel);
   router.get("/reports/cruise-calendar", requireAuth, OWNER, reports.cruiseCalendar);
+  // Resumen de Gerencia en dos vistas (especificación, 24-nov-2026)
+  router.get("/reports/summary/bar", requireAuth, OWNER, summary.barView);
+  router.get("/reports/summary/operacion", requireAuth, OWNER, summary.operationView);
+  router.get("/goals", requireAuth, OWNER, summary.listGoals);
+  router.post("/goals", requireAuth, OWNER, summary.saveGoal);
+  router.post("/payments/deposit", requireAuth, OWNER, summary.depositCash);
+  router.post("/agency-billing/invoices/:id/payments", requireAuth, OWNER, summary.agencyInvoicePayment);
+  router.get("/commissions/payments/:id/receipt", requireAuth, OWNER, summary.commissionReceipt);
   // Paras y dique del barco en el registro de cruceros (17-nov-2026).
   router.get("/ship-stops", requireAuth, OWNER, shipStops.listShipStops);
   router.post("/ship-stops", requireAuth, OWNER, shipStops.createShipStop);

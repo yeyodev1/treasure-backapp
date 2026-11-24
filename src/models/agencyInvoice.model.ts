@@ -28,6 +28,10 @@ export interface IAgencyInvoice {
   sentAt: Date | null;
   note: string;
   status: AgencyInvoiceStatus;
+  /** Agencia facturada (del campo Agencia de sus cruceros). */
+  agency: { name: string; ruc: string; email: string };
+  /** Cobros de la factura (aceptan parcial); cobrada cuando suman el total. */
+  payments: Array<{ at: Date; amount: number; reference: string; by: Types.ObjectId; byName: string }>;
   by: Types.ObjectId;
   byName: string;
   voided: { by: Types.ObjectId; byName: string; at: Date; reason: string } | null;
@@ -58,6 +62,25 @@ const agencyInvoiceSchema = new Schema<IAgencyInvoice>(
     sentAt: { type: Date, default: null },
     note: { type: String, default: "", trim: true, maxlength: 300 },
     status: { type: String, enum: AGENCY_INVOICE_STATUSES, default: "vigente" },
+    agency: {
+      type: new Schema({ name: String, ruc: String, email: String }, { _id: false }),
+      default: () => ({}),
+    },
+    payments: {
+      type: [
+        new Schema(
+          {
+            at: { type: Date, required: true },
+            amount: { type: Number, required: true, min: 0.01 },
+            reference: { type: String, default: "", trim: true, maxlength: 80 },
+            by: { type: Schema.Types.ObjectId, ref: "User", required: true },
+            byName: { type: String, default: "" },
+          },
+          { _id: false },
+        ),
+      ],
+      default: [],
+    },
     by: { type: Schema.Types.ObjectId, ref: "User", required: true },
     byName: { type: String, default: "" },
     voided: {

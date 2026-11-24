@@ -1,3 +1,4 @@
+import { Cruise } from "../models/cruise.model";
 import { NextFunction, Request, Response } from "express";
 import { Types } from "mongoose";
 import { AgencyInvoice } from "../models/agencyInvoice.model";
@@ -31,7 +32,7 @@ export async function createAgencyInvoice(req: Request, res: Response, next: Nex
     const body = req.body as { cruiseIds?: unknown; to?: unknown; invoiceNumber?: unknown; note?: unknown; month?: unknown };
     const ids = Array.isArray(body.cruiseIds) ? [...new Set(body.cruiseIds.map(String))] : [];
     if (!ids.length) throw badRequest("Elige los cruceros que facturas");
-    const to = String(body.to ?? "").trim();
+    let to = String(body.to ?? "").trim();
     if (!isValidOptionalEmail(to)) throw badRequest(EMAIL_ERROR);
     if (to && !mailerConfigured()) throw badRequest("El envío de correos no está configurado");
     const month = String(body.month ?? "") || commercialDateKey().slice(0, 7);
@@ -46,12 +47,23 @@ export async function createAgencyInvoice(req: Request, res: Response, next: Nex
       return row;
     });
     const amount = round2(picked.reduce((s, r) => s + r.pending, 0));
+    // Solo cruceros finalizados de una misma agencia (especificación del Resumen, bloque 7).
+    if (picked.some((r) => r.status !== "cerrado")) throw badRequest("Solo se facturan cruceros finalizados");
+    const cruiseDocs = await Cruise.find({ _id: { $in: picked.map((r) => r.id) } }).select("code agency").lean();
+    const agencies = new Set(cruiseDocs.map((c) => (c.agency?.name ?? "").trim().toLowerCase()));
+    if (agencies.size > 1) throw badRequest("Junta solo cruceros de la misma agencia");
+    const agency = cruiseDocs[0]?.agency ?? { name: "", ruc: "", email: "" };
+    if (!agency.name) throw badRequest("Pon la agencia del crucero (en Cruceros) antes de facturar");
+    if (!to) to = agency.email ?? "";
+    // Mientras Contífico no emite estas facturas, se anota el número de la emitida a mano.
+    if (!String(body.invoiceNumber ?? "").trim()) throw badRequest("Escribe el número de la factura emitida en Contífico");
 
     const invoice = await AgencyInvoice.create({
       month,
       amount,
       items: picked.map((r) => ({ cruise: new Types.ObjectId(r.id), code: r.code || r.name, count: r.count, amount: r.pending })),
       invoiceNumber: String(body.invoiceNumber ?? "").trim().slice(0, 60),
+      agency: { name: agency.name, ruc: agency.ruc ?? "", email: agency.email ?? "" },
       note: String(body.note ?? "").trim().slice(0, 300),
       by: new Types.ObjectId(req.auth!.sub),
       byName: req.auth!.name,

@@ -389,7 +389,8 @@ export async function createPurchase(req: Request, res: Response, next: NextFunc
       const product = map.get(line.productId);
       if (!product) throw badRequest("Solo se compran insumos físicos");
       if (!isPositiveQty(line.containers)) throw badRequest(`${product.name}: ${QTY_POSITIVE_ERROR.toLowerCase()}`);
-      if (line.containerCost !== undefined && !(line.containerCost >= 0)) throw badRequest("Costo inválido");
+      // Costo obligatorio en la compra (especificación del Resumen, 24-nov-2026): de ahí sale el costo de lo servido.
+      if (!(Number(line.containerCost) > 0)) throw badRequest(`${product.name}: pon el costo del envase`);
       return {
         product: product._id,
         name: product.name,
@@ -495,6 +496,7 @@ export async function receivePurchase(req: Request, res: Response, next: NextFun
             )} ${line.containerLabel}${round2(pending / line.containerSize) === 1 ? "" : "s"} por recibir. Si llegó de más, recibe solo lo facturado y registra lo adicional como una compra nueva (o devuélvelo al proveedor).`,
           );
         }
+        if (!(line.containerCost > 0)) throw badRequest(`${line.name}: la compra no tiene costo. Edítala y pon el costo antes de recibir`);
         const costPerUnit = line.containerSize ? line.containerCost / line.containerSize : 0;
         await updateCost(line.product.toString(), qty, costPerUnit, session);
         await moveStock({

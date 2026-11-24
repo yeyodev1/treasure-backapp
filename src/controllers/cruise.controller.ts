@@ -164,7 +164,9 @@ function isDateKey(value: unknown): value is string {
  */
 async function planLeg(leg: ICycleLeg, dateKey: string) {
   const endKey = addDaysKey(dateKey, leg.durationDays);
-  const sequence = (await Cruise.countDocuments({ leg: leg.code })) + 1;
+  // Una sola numeración por tipo que sigue siempre: el más alto + 1 (no la cantidad: B-005 existe → B-006).
+  const codes = await Cruise.find({ leg: leg.code }).select("code").lean();
+  const sequence = codes.reduce((max, c) => Math.max(max, Number(/-(\d+)$/.exec(c.code ?? "")?.[1] ?? 0)), 0) + 1;
   const code = `${leg.code}-${String(sequence).padStart(3, "0")}`;
   return {
     code,
@@ -334,7 +336,9 @@ export async function createNewCruise(req: Request, res: Response, next: NextFun
   try {
     const { leg, startDate, bartender } = req.body as { leg?: string; startDate?: string; bartender?: string };
     const { plan, cabinCount } = await reviewNewCruise(leg, startDate);
-    const crew = bartender ? await resolveBartender(bartender) : {};
+    // Bartender obligatorio (especificación del Resumen, 24-nov-2026): la comisión no queda sin persona.
+    if (!bartender) throw badRequest("Elige el bartender del crucero");
+    const crew = await resolveBartender(bartender);
     // Pedido del cliente (31-oct-2026): los cruceros solo inician y terminan
     // viernes, sábado o martes; cada tipo zarpa en su día, sin excepciones.
     if (!plan.weekday.ok) {
@@ -464,11 +468,12 @@ export async function createCruise(req: Request, res: Response, next: NextFuncti
 
 export async function updateCruise(req: Request, res: Response, next: NextFunction) {
   try {
-    const { name, status, notes, bartender } = req.body as {
+    const { name, status, notes, bartender, agency } = req.body as {
       name?: string;
       status?: CruiseStatus;
       notes?: string;
       bartender?: string | null;
+      agency?: { name?: string; ruc?: string; email?: string };
     };
     const cruise = await Cruise.findById(req.params.id);
     if (!cruise) throw notFound("Crucero no encontrado");
@@ -478,6 +483,13 @@ export async function updateCruise(req: Request, res: Response, next: NextFuncti
 
     if (name !== undefined) cruise.name = name;
     if (notes !== undefined) cruise.notes = notes;
+    if (agency !== undefined) {
+      const email = String(agency?.email ?? "").trim().toLowerCase();
+      if (email && !isValidOptionalEmail(email)) throw badRequest("Revisa el correo de facturación de la agencia");
+      const ruc = String(agency?.ruc ?? "").trim();
+      if (ruc && !/^\d{10}(\d{3})?$/.test(ruc)) throw badRequest("El RUC de la agencia son 13 números (o cédula de 10)");
+      cruise.agency = { name: String(agency?.name ?? "").trim().slice(0, 120), ruc, email };
+    }
     if (bartender !== undefined && String(bartender ?? "") !== String(cruise.bartender ?? "")) {
       // La comisión ya pagada queda a nombre de quien la cobró.
       if (await CommissionPayment.exists({ status: "vigente", "items.cruise": cruise._id })) {
@@ -722,10 +734,20 @@ async function finishReview(cruise: InstanceType<typeof Cruise>) {
         ? "por_revisar"
         : "por_cobrar";
 
+  // Conteo del bar obligatorio para finalizar (especificación del Resumen, 24-nov-2026): sin él no hay merma.
+  const barCount = await StockCount.findOne({
+    location: "abordo",
+    status: { $in: ["enviado", "aprobado"] },
+    $or: [{ cruise: cruise._id }, { cutAt: { $gte: cruise.startedAt ?? cruise.startDate } }],
+  })
+    .select("code cutAt status")
+    .lean();
+
   return {
     cabins,
     devices: deviceRows,
     issues,
+    barCount: barCount ? { code: barCount.code, cutAt: barCount.cutAt, status: barCount.status } : null,
     held,
     finance,
     totals: { consumed: round2(totals.consumed), paid: round2(totals.paid), due: round2(totals.due) },
@@ -759,6 +781,12 @@ export async function finishCruise(req: Request, res: Response, next: NextFuncti
     }
     if (cruise.status !== "abordo") throw conflict("Solo se finaliza un crucero en curso");
     const review = await finishReview(cruise);
+    if (!review.barCount) {
+      if (req.auth!.role !== "duena") {
+        throw badRequest("Falta el conteo del bar: cuenta el bar (Inventario → Conteos) antes de finalizar el crucero");
+      }
+      if (!reason) throw badRequest("Sin conteo del bar: indica el motivo para finalizar igual");
+    }
     if (review.issues.length && !reason) {
       throw badRequest(`Cierre excepcional: indica el motivo (${review.issues.join(" · ")})`);
     }
