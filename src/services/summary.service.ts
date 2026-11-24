@@ -516,14 +516,14 @@ export async function barSummary(kind: unknown, value: unknown) {
   const orphanInvoices = agency.invoices.filter(
     (i) => i.status === "vigente" && i.items.some((it) => !cruiseById.has(it.cruiseId)),
   );
-  for (const inv of orphanInvoices) {
+  for (const inv of period.cruise ? [] : orphanInvoices) {
     const gone = inv.items.filter((it) => !cruiseById.has(it.cruiseId)).map((it) => it.code);
     actions.push({ tone: "rojo", text: `Anular prefactura antigua a la agencia (${gone.join(", ")} no existe${gone.length > 1 ? "n" : ""})`, amount: inv.amount, to: "#agencia", label: "Ir a Agencia" });
   }
   const agencyMaxDays = goals.agencyMaxDays ?? 30;
   const agencyInvoices = await AgencyInvoice.find({ status: "vigente" }).lean();
   const invoicePaid = (i: { payments?: Array<{ amount: number }> }) => sum(i.payments ?? [], (p) => p.amount);
-  for (const inv of agencyInvoices) {
+  for (const inv of period.cruise ? [] : agencyInvoices) {
     if (orphanInvoices.some((o) => o.id === inv._id.toString())) continue;
     const due = round2(inv.amount - invoicePaid(inv));
     const days = Math.floor((now.getTime() - new Date(inv.createdAt!).getTime()) / 86_400_000);
@@ -546,7 +546,7 @@ export async function barSummary(kind: unknown, value: unknown) {
       actions.push({ tone: "rojo", text: `Revisar cobro de ${r.diff > 0 ? "más" : "menos"} en ${r.code}`, amount: Math.abs(r.diff), to: `/admin/pagos?crucero=${r.id}`, label: "Ir a Cobros" });
     }
   }
-  if (cashUndeposited.length && cashDays > (goals.cashMaxDays ?? 7)) {
+  if (!period.cruise && cashUndeposited.length && cashDays > (goals.cashMaxDays ?? 7)) {
     actions.push({ tone: "rojo", text: `Depositar el efectivo: ${cashUndeposited.length} cobro${cashUndeposited.length === 1 ? "" : "s"}, el más antiguo de hace ${cashDays} días`, amount: sum(cashUndeposited, (p) => p.total), to: "/admin/pagos?metodo=efectivo", label: "Ir a Cobros" });
   }
   for (const r of commissionRows) {
@@ -561,11 +561,11 @@ export async function barSummary(kind: unknown, value: unknown) {
       p.invoiceStatus === "emitida" &&
       (p.invoiceEmail?.status === "error" || (!p.billing?.noEmail && isTestOrTeamEmail(p.billing?.email ?? "", team_))),
   );
-  if (badEmail.length) {
+  if (badEmail.length && !period.cruise) {
     actions.push({ tone: "amarillo", text: `Reenviar ${badEmail.length} factura${badEmail.length === 1 ? "" : "s"} con correo inválido`, count: badEmail.length, to: "/admin/pagos", label: "Ir a Cobros" });
   }
   const runningWithoutCount = period.cruise && period.cruise.status === "abordo";
-  if (belowZero.length || runningWithoutCount) {
+  if ((!period.cruise && belowZero.length) || runningWithoutCount) {
     actions.push({
       tone: "amarillo",
       text: runningWithoutCount
@@ -825,7 +825,8 @@ export function dayStates(fromKey: string, toKey: string, cruises: LeanCruise[],
   const first = firstMonth(cruises);
   const nights = new Map<string, LeanCruise>();
   for (const c of cruises) {
-    if (c.status === "planificado" && startKey(c) > today) continue;
+    // Solo navegó lo que se inició: un crucero programado no cuenta (B-002 zarpa hoy pero aún no inicia).
+    if (c.status === "planificado") continue;
     for (let d = startKey(c); d < endKey(c); d = addDaysKey(d, 1)) if (!nights.has(d)) nights.set(d, c);
   }
   const out: Array<{ day: string; state: DayState; code: string; departs: boolean; arrives: boolean; today: boolean }> = [];

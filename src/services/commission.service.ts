@@ -3,6 +3,7 @@ import { Order } from "../models/order.model";
 import { Cruise } from "../models/cruise.model";
 import { CommissionPayment } from "../models/commissionPayment.model";
 import { Payment } from "../models/payment.model";
+import { User } from "../models/user.model";
 import { round2 } from "../utils/units";
 import { goalsAt } from "./goals.service";
 import { isGenericName, liveUnits, productIndex } from "./lines.service";
@@ -75,6 +76,12 @@ export async function commissionSummary() {
     .select("code name routeFrom routeTo startDate endDate startedAt closedAt status bartender bartenderName")
     .lean();
   const salesByCruise = salesRows;
+  // Nombre actual del bartender: el guardado en el crucero queda viejo si se renombra al usuario.
+  const bartenderIds = [...new Set(cruises.map((c) => c.bartender?.toString()).filter(Boolean))] as string[];
+  const currentName = new Map(
+    (await User.find({ _id: { $in: bartenderIds } }).select("name").lean()).map((u) => [u._id.toString(), u.name]),
+  );
+  for (const c of cruises) if (c.bartender && currentName.has(c.bartender.toString())) c.bartenderName = currentName.get(c.bartender.toString())!;
 
   const valid = payments.filter((p) => p.status === "vigente");
   const paidTotal = round2(valid.reduce((s, p) => s + p.amount, 0));
