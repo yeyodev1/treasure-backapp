@@ -579,9 +579,12 @@ export async function reversePayment(req: Request, res: Response, next: NextFunc
 
 export async function listPayments(req: Request, res: Response, next: NextFunction) {
   try {
-    const { cruiseId, from, to, before, limit, invoice } = req.query as Record<string, string>;
+    const { cruiseId, from, to, before, limit, invoice, line } = req.query as Record<string, string>;
     const filter: Record<string, unknown> = {};
     if (cruiseId) filter.cruise = cruiseId;
+    // Bar o wetsuits (23-nov-2026). Los cobros de antes del 14-nov no tienen línea: son del bar.
+    if (line === "wetsuit") filter.line = "wetsuit";
+    else if (line === "bar") filter.line = { $ne: "wetsuit" };
     // Facturas pendientes: pagos vigentes cuya factura no se emitió.
     if (invoice === "pendiente") {
       filter.status = "vigente";
@@ -640,6 +643,38 @@ export async function retryInvoice(req: Request, res: Response, next: NextFuncti
     }
 
     res.json({ payment: invoiced });
+  } catch (err) {
+    next(err);
+  }
+}
+
+/**
+ * Elimina una factura pendiente (pedido de Gerencia, 23-nov-2026): el pago
+ * queda registrado y sin factura; ya no sale en «Facturas pendientes» ni se
+ * reintenta. Para anular el pago se usa el reverso.
+ */
+export async function dropInvoice(req: Request, res: Response, next: NextFunction) {
+  try {
+    const { reason } = req.body as { reason?: string };
+    if (!reason?.trim()) throw badRequest("El motivo es obligatorio");
+    // Atómico: no pisa una emisión que esté en curso en Contífico.
+    const payment = await Payment.findOneAndUpdate(
+      { _id: req.params.id, status: "vigente", invoiceStatus: { $in: ["pendiente", "error"] } },
+      { $set: { invoiceStatus: "no_aplica", invoiceError: `Factura eliminada: ${reason.trim()}` } },
+      { new: true },
+    );
+    if (!payment) throw conflict("La factura ya no está pendiente");
+
+    await logEvent(req.auth, {
+      kind: "cobro",
+      title: `Factura pendiente eliminada · cabina ${payment.cabinNumber}`,
+      detail: reason.trim(),
+      amount: payment.total,
+      cruise: payment.cruise,
+      cabinNumber: payment.cabinNumber,
+    });
+
+    res.json({ payment });
   } catch (err) {
     next(err);
   }

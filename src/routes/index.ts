@@ -167,6 +167,7 @@ export default function routerApi(app: Application) {
   router.post("/payments/:id/resend-summary", requireAuth, DIRECTOR, payments.resendSummary);
   router.get("/contifico", requireAuth, OWNER, payments.contificoInfo);
   router.post("/payments/:id/reverse", requireAuth, OWNER, payments.reversePayment);
+  router.post("/payments/:id/drop-invoice", requireAuth, OWNER, payments.dropInvoice);
 
   // Inventario en unidad base (ml, unidad…)
   router.get("/inventory/stock", requireAuth, ALL, inventory.stockByLocation);
