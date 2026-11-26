@@ -46,7 +46,7 @@ import {
 import { logEvent } from "../services/audit.service";
 import { freezeArchivedPdf, readArchivedPdf, tryFreezeArchivedPdf } from "../services/ismArchive.service";
 import { syncNovedades } from "../services/ismNovedad.service";
-import { CREW_LIST_ROLES, PIN_RESET_WINDOW_MS, positionLabel, verifyPin } from "../services/ismCrew.service";
+import { CREW_LIST_ROLES, PIN_RESET_WINDOW_MS, crewProfile, positionLabel, transitionProfile, verifyPin } from "../services/ismCrew.service";
 import { notifyRole, notifyUsers } from "../services/ismNotify.service";
 import { nextCode } from "../services/codes.service";
 import { badRequest, conflict, forbidden, notFound } from "../errors/httpError";
@@ -909,7 +909,8 @@ export async function approve(_req: Request, _res: Response, next: NextFunction)
  */
 export async function signStep(req: Request, res: Response, next: NextFunction) {
   try {
-    const { pin, newPin, signer: signerId, deviceAt } = req.body as {
+    const { pin, newPin, signer: signerId, deviceAt, image } = req.body as {
+      image?: string;
       pin?: string;
       newPin?: string;
       signer?: string;
@@ -957,12 +958,17 @@ export async function signStep(req: Request, res: Response, next: NextFunction) 
     const person = await User.findOne({ _id: signerUser, active: true }).select("name role position sharedDevice");
     if (!person) throw forbidden("Esa persona ya no está activa en la lista de tripulantes");
     if (person.sharedDevice) throw forbidden("La tablet compartida no firma: elige a la persona que hizo el chequeo");
-    // Firma registrada una sola vez (especificación ISM, regla 2): sin ella no se firma.
-    const saved = await IsmCrew.exists({ user: signerUser, signatureImage: { $nin: ["", null] } });
-    if (!saved) throw badRequest(`${person.name} aún no tiene firma registrada. La registran Gerencia, el Capitán o la Persona Designada en Tripulantes.`);
     const sessionUser = new Types.ObjectId(req.auth!.sub);
-    // Se firma siempre con la clave (regla 3: la cuenta sola no firma), también desde la propia sesión.
-    const profile = await verifyPin(signerUser, pin, newPin);
+    // Se firma con la clave (regla 3) y la firma registrada (regla 2); en la transición, quien aún
+    // no las tiene firma desde su cuenta sin clave y dibuja su firma, que queda registrada.
+    const current = await crewProfile(signerUser);
+    const profile = await transitionProfile(
+      { id: String(signerUser), name: person.name, noPin: !current.pinHash, drawSignature: !current.signatureImage },
+      req.auth!.sub,
+      pin,
+      newPin,
+      image,
+    );
     const signatureImage = profile.signatureImage!;
 
     const now = new Date();

@@ -7,7 +7,7 @@ import { logEvent } from "../services/audit.service";
 import { hashContent, signatureIsValid } from "../services/ismSchema.service";
 import { hashRecord, ismDefinition, ismEquipment } from "../services/ism.service";
 import { tryFreezeArchivedPdf } from "../services/ismArchive.service";
-import { verifyPin } from "../services/ismCrew.service";
+import { transitionProfile } from "../services/ismCrew.service";
 import { notifyUsers } from "../services/ismNotify.service";
 import {
   FlowStep,
@@ -209,11 +209,12 @@ const EXTERNAL_ID = /^[A-Za-z0-9-]{5,20}$/;
 /** Firma una casilla: persona + clave (su firma registrada) o firma de externo. */
 export async function signSlot(req: Request, res: Response, next: NextFunction) {
   try {
-    const { field, signer, pin, newPin, external, deviceAt } = req.body as {
+    const { field, signer, pin, newPin, external, deviceAt, image } = req.body as {
       field?: string;
       signer?: string;
       pin?: string;
       newPin?: string;
+      image?: string;
       external?: { name?: string; idNumber?: string; image?: string };
       deviceAt?: string;
     };
@@ -280,12 +281,12 @@ export async function signSlot(req: Request, res: Response, next: NextFunction) 
         hashV: 2,
       };
     } else {
-      const people = await eligibleSigners(record, step, field, flow);
+      const people = await eligibleSigners(record, step, field, flow, s.uid);
       const person = people.find((p) => p.id === signer);
       if (!person) {
-        throw forbidden(people.length ? "Elige a quien firma de la lista" : `Nadie con clave y firma registrada puede firmar como ${step.label}`);
+        throw forbidden(people.length ? "Elige a quien firma de la lista" : `Nadie con clave puede firmar como ${step.label}`);
       }
-      const profile = await verifyPin(person.id, pin, newPin);
+      const profile = await transitionProfile(person, s.uid, pin, newPin, image);
       const user = await User.findById(person.id).select("role position");
       sig = {
         field,
@@ -352,7 +353,7 @@ export async function signersFor(req: Request, res: Response, next: NextFunction
     const flow = flowOf(record.code);
     const step = flow ? stepOfField(flow, String(req.params.field)) : null;
     if (!flow || !step) throw notFound("Esa casilla no es de firma");
-    const people = step.who === "externo" ? [] : await eligibleSigners(record, step, String(req.params.field), flow);
+    const people = step.who === "externo" ? [] : await eligibleSigners(record, step, String(req.params.field), flow, req.auth!.sub);
     res.json({ step: { label: step.label, who: step.who, external: step.who === "externo" }, people });
   } catch (err) {
     next(err);

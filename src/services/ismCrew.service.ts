@@ -268,3 +268,33 @@ export async function changeOwnPin(userId: string, current: unknown, next: unkno
     { $set: { pinHash: profile.pinHash, pinTemporary: false, pinSetAt: profile.pinSetAt } },
   );
 }
+
+/**
+ * Perfil con el que firma una persona en la transición (pedido de Diego, 26-nov-2026):
+ * con clave, siempre la clave; sin clave, solo desde su propia cuenta. Sin firma
+ * registrada, la dibujada queda registrada. Ver `eligibleSigners`.
+ */
+export async function transitionProfile(
+  person: { id: string; noPin: boolean; drawSignature: boolean; name: string },
+  sessionUserId: string,
+  pin: unknown,
+  newPin: unknown,
+  image: unknown,
+) {
+  if (person.drawSignature) {
+    if (typeof image !== "string" || !image.startsWith("data:image/png;base64,")) {
+      throw pinError(400, `${person.name} aún no tiene firma registrada: que firme con el dedo en el recuadro.`, "firma_falta");
+    }
+    if (image.length > 400_000) throw pinError(400, "La firma es demasiado grande", "firma_grande");
+  }
+  if (person.noPin && person.id !== sessionUserId) {
+    throw pinError(409, `${person.name} aún no tiene clave: que firme desde su cuenta o pida una clave temporal.`, "sin_clave");
+  }
+  const profile = person.noPin ? await crewProfile(person.id) : await verifyPin(person.id, pin, newPin);
+  if (person.drawSignature) {
+    profile.signatureImage = image as string;
+    profile.signatureSetAt = new Date();
+    await IsmCrew.updateOne({ _id: profile._id }, { $set: { signatureImage: profile.signatureImage, signatureSetAt: profile.signatureSetAt } });
+  }
+  return profile;
+}

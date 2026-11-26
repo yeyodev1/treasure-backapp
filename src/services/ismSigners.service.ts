@@ -33,6 +33,10 @@ export interface Signer {
   name: string;
   position: string;
   positionLabel: string;
+  /** Aún sin clave: solo firma desde su propia cuenta (transición). */
+  noPin: boolean;
+  /** Aún sin firma registrada: la dibuja al firmar y queda registrada (transición). */
+  drawSignature: boolean;
 }
 
 const fillerId = (r: Pick<IIsmRecord, "filler" | "createdBy">) =>
@@ -43,6 +47,8 @@ export async function eligibleSigners(
   step: FlowStep,
   field: string,
   flow: FormFlow,
+  /** Quien tiene la sesión abierta (en la transición firma sin clave si aún no tiene). */
+  selfId?: string,
 ): Promise<Signer[]> {
   const roles = ROLE_OF[step.who];
   if (!roles) return [];
@@ -63,14 +69,26 @@ export async function eligibleSigners(
   if (step.requester && record.area) users = users.filter((u) => ismArea(u.role, u.position) === record.area);
   const profiles = await IsmCrew.find({
     user: { $in: users.map((u) => u._id) },
-    pinHash: { $nin: ["", null] },
-    signatureImage: { $nin: ["", null] },
     ...(step.manager ? { managerTitle: step.manager } : {}),
-  }).select("user");
-  const ready = new Set(profiles.map((p) => String(p.user)));
+  }).select("user pinHash signatureImage");
+  const byUser = new Map(profiles.map((p) => [String(p.user), p]));
+  // shortcut: transición (pedido de Diego, 26-nov) mientras Gerencia carga a las personas reales:
+  // sin firma registrada se dibuja al firmar (queda registrada) y quien aún no tiene clave firma
+  // solo desde su propia cuenta, como antes. Se apaga solo cuando todos tienen clave y firma.
   return users
-    .filter((u) => ready.has(String(u._id)))
-    .map((u) => ({ id: String(u._id), name: u.name, position: u.position ?? "", positionLabel: positionLabel(u.position) }));
+    .filter((u) => (step.manager ? byUser.has(String(u._id)) : true))
+    .filter((u) => Boolean(byUser.get(String(u._id))?.pinHash) || String(u._id) === selfId)
+    .map((u) => {
+      const p = byUser.get(String(u._id));
+      return {
+        id: String(u._id),
+        name: u.name,
+        position: u.position ?? "",
+        positionLabel: positionLabel(u.position),
+        noPin: !p?.pinHash,
+        drawSignature: !p?.signatureImage,
+      };
+    });
 }
 
 /** Usuarios a avisar cuando un paso espera a un rol (el de turno si hay calendario). */

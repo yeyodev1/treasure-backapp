@@ -15,6 +15,7 @@ import { LAND_CODES, SENSITIVE_CODES, canCreateForm, canEditData, canViewRecord,
 import { DEFAULT_RULES, countsFrom, dueState, equipmentDue, periodOf } from "../services/ismFrequency.service";
 import { extendWeek, gapsOf, relevosOf, turnsOn } from "../services/ismRotation.service";
 import { validateSigners } from "../services/ismSchema.service";
+import { transitionProfile } from "../services/ismCrew.service";
 
 /**
  * Autoverificación de la especificación ISM del 25-nov-2026 (sin base):
@@ -147,4 +148,11 @@ ok(validateSigners(r14.signers).length === 0, "R-14 v2: firmas válidas");
 ok(r14.sections.length === 1 && r14.sections[0].id === "zarpe", "R-14 v2: solo la sección previa al zarpe");
 ok(r14.signers[0].who === "capitan" && r14.signers[0].print === "anexo", "R-14 v2: la firma del Capitán llena las dos casillas");
 
-console.log(`check-ism-flow: ${checks} comprobaciones OK`);
+// --- Transición (26-nov): los guardas cortan antes de tocar la base ---
+(async () => {
+  const codeOf = (p: Promise<unknown>) => p.then(() => "", (e: { code?: string }) => e.code ?? "?");
+  const me = { id: "a", name: "Ana", noPin: true, drawSignature: true };
+  ok((await codeOf(transitionProfile(me, "a", "", "", ""))) === "firma_falta", "transición: sin firma registrada hay que dibujarla");
+  ok((await codeOf(transitionProfile({ ...me, drawSignature: false }, "b", "", "", ""))) === "sin_clave", "transición: sin clave no firma en la sesión de otro");
+  console.log(`check-ism-flow: ${checks} comprobaciones OK`);
+})();
