@@ -41,15 +41,17 @@ export const env = {
   /** Producto genérico para cócteles creados en el bar que no existen en Contífico. */
   CONTIFICO_GENERIC_PRODUCT_ID: process.env.CONTIFICO_GENERIC_PRODUCT_ID ?? "",
   /**
-   * Wetsuits (pedido del cliente, 14-nov-2026): se facturan en otra empresa de
-   * Contífico, con su propia API key, token y serie. Sin key/token sus facturas
-   * quedan pendientes hasta configurarlas.
+   * Wetsuits: la renta y los souvenirs son el establecimiento 2 de la MISMA
+   * empresa de Contífico (aclaración de Gerencia, 24-nov-2026). Sin variables
+   * propias usan la key, el token y la cuenta del bar con la serie 002 y el
+   * mismo punto de emisión del bar (001-100 → 002-100).
    */
-  CONTIFICO_WETSUIT_API_KEY: process.env.CONTIFICO_WETSUIT_API_KEY ?? "",
-  CONTIFICO_WETSUIT_API_TOKEN: process.env.CONTIFICO_WETSUIT_API_TOKEN ?? "",
-  CONTIFICO_WETSUIT_SERIE: process.env.CONTIFICO_WETSUIT_SERIE ?? process.env.CONTIFICO_SERIE ?? "001-100",
-  CONTIFICO_WETSUIT_BANK_ACCOUNT_ID: process.env.CONTIFICO_WETSUIT_BANK_ACCOUNT_ID ?? "",
-  CONTIFICO_WETSUIT_CARD_PROCESSOR: process.env.CONTIFICO_WETSUIT_CARD_PROCESSOR ?? process.env.CONTIFICO_CARD_PROCESSOR ?? "",
+  CONTIFICO_WETSUIT_API_KEY: process.env.CONTIFICO_WETSUIT_API_KEY || process.env.CONTIFICO_API_KEY || "",
+  CONTIFICO_WETSUIT_API_TOKEN: process.env.CONTIFICO_WETSUIT_API_TOKEN || process.env.CONTIFICO_API_TOKEN || "",
+  CONTIFICO_WETSUIT_SERIE:
+    process.env.CONTIFICO_WETSUIT_SERIE || `002-${(process.env.CONTIFICO_SERIE || "001-100").split("-")[1] ?? "100"}`,
+  CONTIFICO_WETSUIT_BANK_ACCOUNT_ID: process.env.CONTIFICO_WETSUIT_BANK_ACCOUNT_ID || process.env.CONTIFICO_BANK_ACCOUNT_ID || "",
+  CONTIFICO_WETSUIT_CARD_PROCESSOR: process.env.CONTIFICO_WETSUIT_CARD_PROCESSOR || process.env.CONTIFICO_CARD_PROCESSOR || "",
   /** Producto «Wetsuit» en esa empresa; vacío = el que tenga «wetsuit» en el nombre. */
   CONTIFICO_WETSUIT_PRODUCT_ID: process.env.CONTIFICO_WETSUIT_PRODUCT_ID ?? "",
   RESEND_API_KEY: process.env.RESEND_API_KEY ?? "",

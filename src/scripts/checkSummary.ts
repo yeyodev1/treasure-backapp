@@ -29,6 +29,11 @@ if (today === "2026-11-24") {
   assert.equal(n("por_venir"), 6, "6 por venir");
 }
 assert.equal(days.find((d) => d.day === "2026-11-14")!.code, "C-003", "el día de cambio cuenta para el crucero que zarpa");
+// C-003 guardado hasta el 21 (dato real): el 20 igual es de A-001, que zarpa ese día.
+const overlap = [cruise("C-003", "2026-11-14", "2026-11-21", "cerrado"), cruise("A-001", "2026-11-20", "2026-11-24", "cerrado")];
+const d20 = dayStates("2026-11-20", "2026-11-20", overlap as never, new Set())[0]!;
+assert.equal(d20.code, "A-001", "el día 20 lleva la etiqueta de A-001");
+assert.ok(d20.departs, "A-001 zarpa el 20");
 const oct = dayStates("2026-10-01", "2026-10-31", cruises as never, new Set());
 assert.ok(oct.every((d) => d.state === "sin_registro"), "antes del primer mes con operación: sin registro");
 // Correos de noviembre: los 10 inválidos se detectan y los reales pasan.
