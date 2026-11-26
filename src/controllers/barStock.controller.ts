@@ -18,6 +18,8 @@ import {
   startGate,
 } from "../services/barStock.service";
 import { logEvent } from "../services/audit.service";
+import { adminControlDay, controlClosed, controlCurrent, controlPeriod, markAdminControlDone } from "../services/barControl.service";
+import { commercialDateKey } from "../utils/dates";
 import { purchaseResponsible } from "../services/weeklyOrder.service";
 import { AppSetting } from "../models/appSetting.model";
 import { badRequest, conflict, forbidden, notFound } from "../errors/httpError";
@@ -228,9 +230,11 @@ async function view(count: CountDoc, role: string) {
   };
 }
 
-async function loadCount(id: string) {
+async function loadCount(id: string, role?: string) {
   const count = Types.ObjectId.isValid(id) ? await StockCount.findById(id) : null;
   if (!count || !["cierre", "inicial", "admin"].includes(count.kind)) throw notFound("Conteo no encontrado");
+  // El control de Administración solo lo ven Administración y Gerencia; Administración solo ve el suyo.
+  if (role && role !== "duena" && (role === "admin") !== (count.kind === "admin")) throw notFound("Conteo no encontrado");
   return count;
 }
 
@@ -250,7 +254,7 @@ export async function currentCount(req: Request, res: Response, next: NextFuncti
 
 export async function getCount(req: Request, res: Response, next: NextFunction) {
   try {
-    res.json({ count: await view(await loadCount(String(req.params.id)), req.auth!.role) });
+    res.json({ count: await view(await loadCount(String(req.params.id), req.auth!.role), req.auth!.role) });
   } catch (err) {
     next(err);
   }
@@ -275,7 +279,7 @@ export async function startInitialCount(req: Request, res: Response, next: NextF
 /** Guarda lo contado (en envases: botellas cerradas + abierta, o cajas × unidades + sueltas). */
 export async function saveCountLines(req: Request, res: Response, next: NextFunction) {
   try {
-    const count = await loadCount(String(req.params.id));
+    const count = await loadCount(String(req.params.id), req.auth!.role);
     if (count.status !== "borrador") throw conflict("Este conteo ya se envió");
     const lines = Array.isArray(req.body?.lines) ? (req.body.lines as Array<{ productId?: string; physical?: number | null }>) : [];
     const products = await Product.find({ _id: { $in: count.lines.map((l) => l.product) } }).select("containerSize").lean();
@@ -298,7 +302,7 @@ export async function saveCountLines(req: Request, res: Response, next: NextFunc
 /** El bartender envía: lo que cuadra queda listo; lo que difiere pasa a la directora. */
 export async function sendCount(req: Request, res: Response, next: NextFunction) {
   try {
-    const count = await loadCount(String(req.params.id));
+    const count = await loadCount(String(req.params.id), req.auth!.role);
     if (count.status !== "borrador") throw conflict("Este conteo ya se envió");
     const missing = count.lines.filter((l) => l.physical === null);
     if (missing.length) throw badRequest(`Faltan ${missing.length} producto(s) por contar (${missing.slice(0, 3).map((l) => l.name).join(", ")}…)`);
@@ -306,6 +310,15 @@ export async function sendCount(req: Request, res: Response, next: NextFunction)
     count.submittedByName = req.auth!.name;
     count.submittedAt = new Date();
 
+    // Control de Administración: va directo a Gerencia, sin tocar el stock ni mostrarse al barco.
+    if (count.kind === "admin") {
+      count.status = "enviado";
+      await count.save();
+      await markAdminControlDone(commercialDateKey());
+      await logEvent(req.auth, { kind: "conteo", title: `Control de Administración ${count.code} enviado a Gerencia`, detail: `${count.lines.length} productos` });
+      res.json({ count: await view(count, req.auth!.role) });
+      return;
+    }
     // El inicial se cuenta entre bartender y directora juntos: queda verificado al enviarlo.
     const toRecount = count.kind === "inicial" ? 0 : await evaluateBartender(count);
     if (!toRecount) {
@@ -504,6 +517,72 @@ export async function saveSettings(req: Request, res: Response, next: NextFuncti
     );
     await logEvent(req.auth, { kind: "equipo", title: "Responsable de compras", detail: userId ? `${(await User.findById(userId).select("name"))?.name}${until ? ` hasta el ${until}` : " (fijo)"}` : "Administración (por defecto)" });
     res.json({ purchaseResponsible: await purchaseResponsible() });
+  } catch (err) {
+    next(err);
+  }
+}
+
+/* ───────────── Control del bar (Gerencia) y control de Administración ───────────── */
+
+/** Control del bar: crucero en curso, cerrados, mes o año. */
+export async function barControl(req: Request, res: Response, next: NextFunction) {
+  try {
+    const vista = String(req.query.vista ?? "curso");
+    const valor = String(req.query.valor ?? "");
+    if (vista === "cerrados") res.json({ closed: await controlClosed() });
+    else if (vista === "mes" || vista === "ano") res.json(await controlPeriod(vista, valor));
+    else res.json(await controlCurrent());
+  } catch (err) {
+    next(err);
+  }
+}
+
+/** Control de Administración: solo el día asignado, a ciegas (licores, vinos y cervezas). */
+export async function adminControl(req: Request, res: Response, next: NextFunction) {
+  try {
+    const today = commercialDateKey();
+    const nextDay = await adminControlDay();
+    let count = await StockCount.findOne({ kind: "admin", status: "borrador" }).sort({ createdAt: -1 });
+    const due = nextDay === today;
+    if (!count && due && req.auth!.role === "admin") {
+      count = await openCount("admin", null, req.auth!.sub, `Control de Administración del ${today}`, ["licores", "vinos", "cervezas"]);
+    }
+    const sent = await StockCount.findOne({ kind: "admin", status: { $ne: "borrador" } }).sort({ submittedAt: -1 }).select("code submittedAt lines").lean();
+    res.json({
+      due: due || Boolean(count),
+      nextDay: req.auth!.role === "duena" ? nextDay : null,
+      count: count ? await view(count, req.auth!.role) : null,
+      lastSent: sent ? { code: sent.code, at: sent.submittedAt, products: sent.lines.length } : null,
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
+/** Gerencia ante el control cruzado con diferencia: pide recuento o registra la merma. */
+export async function controlDecision(req: Request, res: Response, next: NextFunction) {
+  try {
+    const { action } = req.body as { action?: string };
+    if (action !== "recuento" && action !== "merma") throw badRequest("Acción inválida");
+    const count = await loadCount(String(req.params.id));
+    if (count.kind !== "admin" || count.status !== "enviado") throw conflict("Este control ya se resolvió");
+    if (action === "merma") {
+      const products = await Product.find({ _id: { $in: count.lines.map((l) => l.product) } }).select("costPerUnit").lean();
+      for (const line of count.lines) {
+        if (line.physical === null) continue;
+        line.result = Math.abs(line.physical - Math.max(0, line.digitalAtCut)) < 1e-6 ? "ok" : "merma";
+        line.unitCost = products.find((p) => p._id.equals(line.product))?.costPerUnit ?? 0;
+        line.value = round2(Math.max(0, Math.max(0, line.digitalAtCut) - line.physical) * line.unitCost);
+      }
+      count.wasteTotal = round2(count.lines.reduce((t, l) => t + (l.result === "merma" ? l.value : 0), 0));
+      await applyVerified(count, req.auth!.sub);
+    } else {
+      count.status = "aprobado";
+    }
+    count.decision = { approved: action === "merma", comment: action === "recuento" ? "Pidió recuento" : "Registró la merma", byName: req.auth!.name, at: new Date() };
+    await count.save();
+    await logEvent(req.auth, { kind: "conteo", title: `Control cruzado ${count.code}: ${action === "merma" ? "merma registrada" : "pidió recuento"}`, detail: "", amount: count.wasteTotal || null });
+    res.json({ ok: true });
   } catch (err) {
     next(err);
   }

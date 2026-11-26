@@ -68,12 +68,13 @@ export async function countableProducts() {
 }
 
 /** Conteo a bordo que crea la app: el de cierre al finalizar un crucero, el inicial o el de Administración. */
-export async function openCount(kind: CountKind, cruiseId: Types.ObjectId | null, userId: string, notes = "") {
+export async function openCount(kind: CountKind, cruiseId: Types.ObjectId | null, userId: string, notes = "", groups?: CountGroup[]) {
   if (kind === "cierre" && cruiseId) {
     const existing = await StockCount.findOne({ kind: "cierre", cruise: cruiseId });
     if (existing) return existing;
   }
-  const products = await countableProducts();
+  // Administración cuenta solo licores, vinos y cervezas.
+  const products = (await countableProducts()).filter((p) => !groups || groups.includes(groupOf(p)));
   return StockCount.create({
     code: await nextCountCode(),
     kind,

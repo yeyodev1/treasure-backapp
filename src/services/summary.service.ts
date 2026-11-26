@@ -554,7 +554,7 @@ export async function barSummary(kind: unknown, value: unknown) {
   }
   for (const c of finished) {
     if (!closingCount(c)) {
-      actions.push({ tone: "rojo", text: `${c.code} cerró sin conteo del bar: no se puede saber la merma`, to: "/inventario/conteos", label: "Ir a Conteos" });
+      actions.push({ tone: "rojo", text: `${c.code} cerró sin conteo del bar: no se puede saber la merma`, to: "/bar-stock", label: "Ir a Conteos" });
     }
   }
   for (const r of collectedRows) {
@@ -588,7 +588,7 @@ export async function barSummary(kind: unknown, value: unknown) {
         ? `Contar el bar antes de finalizar${belowZero.length ? `: ${belowZero.length} productos bajo cero` : ""}`
         : `Contar el bar: ${belowZero.length} producto${belowZero.length === 1 ? "" : "s"} bajo cero`,
       count: belowZero.length || undefined,
-      to: "/inventario/conteos",
+      to: "/bar-stock",
       label: "Ir a Conteos",
     });
   }
