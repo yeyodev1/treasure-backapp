@@ -253,6 +253,12 @@ export default function routerApi(app: Application) {
   router.post("/bar-stock/counts/:id/decide", requireAuth, OWNER, barStock.decideCount);
   router.post("/cruises/:id/start-authorization", requireAuth, DIRECTOR, barStock.startAuthorization);
   router.post("/bar-stock/receipt", requireAuth, requireRole("direccion", "bartender"), barStock.signBarReceipt);
+  router.get("/bar-stock/settings", requireAuth, requireRole("admin", "direccion", "bartender"), barStock.getSettings);
+  router.put("/bar-stock/settings", requireAuth, OWNER, barStock.saveSettings);
+  router.post("/weekly-orders/:id/purchase", requireAuth, requireRole("admin", "direccion", "bartender"), weeklyOrders.purchaseWeeklyOrder);
+  router.post("/weekly-orders/:id/deliveries/:key/director-confirm", requireAuth, DIRECTOR, weeklyOrders.directorConfirmArrival);
+  router.post("/weekly-orders/:id/outlier-decision", requireAuth, OWNER, weeklyOrders.decideOutlier);
+  router.post("/weekly-orders/:id/deliveries/:key/difference-decision", requireAuth, OWNER, weeklyOrders.decideDifference);
 
   // Resumen de Gerencia en dos vistas (especificación, 24-nov-2026)
   router.get("/reports/summary/bar", requireAuth, OWNER, summary.barView);

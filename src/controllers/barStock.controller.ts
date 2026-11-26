@@ -18,6 +18,8 @@ import {
   startGate,
 } from "../services/barStock.service";
 import { logEvent } from "../services/audit.service";
+import { purchaseResponsible } from "../services/weeklyOrder.service";
+import { AppSetting } from "../models/appSetting.model";
 import { badRequest, conflict, forbidden, notFound } from "../errors/httpError";
 import { round2 } from "../utils/units";
 
@@ -469,6 +471,39 @@ export async function signBarReceipt(req: Request, res: Response, next: NextFunc
     await cruise.save();
     await logEvent(req.auth, { kind: "salida", title: `Bar recibido · ${cruise.code}`, detail: req.auth!.name, cruise: cruise._id });
     res.json({ cruise });
+  } catch (err) {
+    next(err);
+  }
+}
+
+/* ───────────── Configuración: responsable de compras ───────────── */
+
+/** Quién compra esta semana (por defecto Administración) y a quién se puede asignar. */
+export async function getSettings(_req: Request, res: Response, next: NextFunction) {
+  try {
+    const [responsible, candidates] = await Promise.all([
+      purchaseResponsible(),
+      User.find({ role: { $in: ["admin", "bartender", "direccion"] }, active: true }).select("name role").sort({ name: 1 }).lean(),
+    ]);
+    res.json({ purchaseResponsible: responsible, candidates: candidates.map((u) => ({ id: u._id.toString(), name: u.name, role: u.role })) });
+  } catch (err) {
+    next(err);
+  }
+}
+
+/** Gerencia cambia el responsable de compras: fijo o hasta una fecha (para una semana). */
+export async function saveSettings(req: Request, res: Response, next: NextFunction) {
+  try {
+    const { userId, until } = req.body as { userId?: string | null; until?: string | null };
+    if (userId && !(await User.exists({ _id: userId, active: true }))) throw badRequest("Elige una persona activa");
+    if (until && !/^\d{4}-\d{2}-\d{2}$/.test(until)) throw badRequest("Fecha inválida");
+    await AppSetting.updateOne(
+      { key: "purchaseResponsible" },
+      { $set: { value: { userId: userId || null, until: until ? `${until}T23:59:59-06:00` : null }, updatedByName: req.auth!.name } },
+      { upsert: true },
+    );
+    await logEvent(req.auth, { kind: "equipo", title: "Responsable de compras", detail: userId ? `${(await User.findById(userId).select("name"))?.name}${until ? ` hasta el ${until}` : " (fijo)"}` : "Administración (por defecto)" });
+    res.json({ purchaseResponsible: await purchaseResponsible() });
   } catch (err) {
     next(err);
   }

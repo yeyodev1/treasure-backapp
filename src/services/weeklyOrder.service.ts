@@ -5,17 +5,26 @@ import { IWeeklyOrder, IWeeklyOrderLine, SuggestionBasis, WeeklyOrder } from "..
 import { nextCode } from "./codes.service";
 import { stockOf } from "./inventory.service";
 import { round2 } from "../utils/units";
+import { Cruise } from "../models/cruise.model";
+import { User } from "../models/user.model";
+import { AppSetting } from "../models/appSetting.model";
+import { isFresh } from "./barStock.service";
+import { goalsAt } from "./goals.service";
 
 /**
- * Pedido semanal (guía Inventario y pedidos, 4-nov-2026): corte el miércoles
- * a las 15h00 en Galápagos (UTC−6, sin horario de verano) y alerta a la
- * directora a las 18h00 si el bar no lo revisó (decisión de Diego, 4-nov).
+ * Pedido semanal (Bar-stock, especificación del 24-nov-2026): el miércoles a
+ * las 12h00 (Galápagos, UTC−6) la app propone; el bartender ajusta hasta las
+ * 15h00 y la directora aprueba hasta las 18h00. Sin aprobación a las 18h00 se
+ * aprueba solo con la propuesta y avisa a Gerencia.
  */
 const GALAPAGOS_OFFSET_MS = 6 * 3600_000;
 const DAY_MS = 86_400_000;
 const CUT_WEEKDAY = 3; // miércoles
-const CUT_HOUR = 15;
-export const ALERT_AFTER_MS = 3 * 3600_000; // 18h00
+const CUT_HOUR = 12;
+/** 15h00: termina el ajuste del bartender. */
+export const ALERT_AFTER_MS = 3 * 3600_000;
+/** 18h00: termina la aprobación de la directora. */
+export const APPROVE_AFTER_MS = 6 * 3600_000;
 /** A quién llega el pedido aprobado: por ahora solo dentro del sistema (sin correo ni WhatsApp). */
 export const ORDER_RECIPIENT = "Administración (puerto o compra nueva) y la dueña (Quito), en Pedido semanal";
 
@@ -142,40 +151,71 @@ async function incomingByProduct(before: Date) {
   return incoming;
 }
 
-/** Líneas de la propuesta con las existencias y datos de este instante (el corte). */
+/** Noches con pasajeros dentro de [from, to) de un crucero, en días de Galápagos. */
+function nightsIn(c: { startDate: Date; endDate: Date | null }, from: string, to: string) {
+  const key = (d: Date) => new Date(d.getTime() - GALAPAGOS_OFFSET_MS).toISOString().slice(0, 10);
+  const start = key(c.startDate);
+  const end = key(c.endDate ?? c.startDate);
+  const a = start > from ? start : from;
+  const b = end < to ? end : to;
+  return Math.max(0, Math.round((Date.parse(b) - Date.parse(a)) / DAY_MS));
+}
+const addDays = (key: string, n: number) => new Date(Date.parse(key) + n * DAY_MS).toISOString().slice(0, 10);
+
+/**
+ * Propuesta del miércoles 12h00 (Bar-stock, sección 6):
+ *   consumo por pasajero por día = promedio de los últimos 4 cruceros cerrados
+ *   stock al viernes = lo que hay hoy (+ lo que ya viene) − consumo esperado hasta el viernes
+ *   pedir = consumo esperado de viernes a viernes − stock al viernes (hacia arriba, en envases; ≤ 0 no se pide)
+ * Sin cruceros la semana siguiente (para o dique), la propuesta es 0.
+ */
 export async function buildLines(cutAt: Date): Promise<IWeeklyOrderLine[]> {
-  const [products, incoming, sales] = await Promise.all([
+  const today = new Date(cutAt.getTime() - GALAPAGOS_OFFSET_MS).toISOString().slice(0, 10);
+  const friday = addDays(today, (5 - CUT_WEEKDAY + 7) % 7 || 7);
+  const nextFriday = addDays(friday, 7);
+  const [products, incoming, history, coming] = await Promise.all([
     Product.find({ kind: "fisico", active: true }).sort({ category: 1, name: 1 }).lean(),
     incomingByProduct(cutAt),
-    StockMovement.aggregate<{ _id: Types.ObjectId; qty: number }>([
-      { $match: { type: "venta", createdAt: { $gte: new Date(cutAt.getTime() - 7 * DAY_MS), $lte: cutAt } } },
-      { $group: { _id: "$product", qty: { $sum: "$qty" } } },
-    ]),
+    Cruise.find({ status: "cerrado", startDate: { $lt: cutAt } }).sort({ startDate: -1 }).limit(4).select("startDate endDate cabins.passengers").lean(),
+    Cruise.find({ status: { $in: ["planificado", "abordo"] } }).select("startDate endDate cabins.passengers").lean(),
   ]);
-  const consumed = new Map(sales.map((s) => [s._id.toString(), round2(-s.qty)]));
+  const paxOf = (c: { cabins: Array<{ passengers: unknown[] }> }) => c.cabins.reduce((t, cb) => t + cb.passengers.length, 0);
+  const pastPaxDays = history.reduce((t, c) => t + paxOf(c) * nightsIn(c, "0000-01-01", "9999-12-31"), 0);
+  const avgPax = history.length ? history.reduce((t, c) => t + paxOf(c), 0) / history.length : 0;
+  // Un crucero programado sin pasajeros cargados usa el promedio de los últimos cuatro.
+  const paxDays = (from: string, to: string) => coming.reduce((t, c) => t + (paxOf(c) || avgPax) * nightsIn(c, from, to), 0);
+  const untilFriday = paxDays(today, friday);
+  const nextWeek = paxDays(friday, nextFriday);
+  const sales = history.length
+    ? await StockMovement.aggregate<{ _id: Types.ObjectId; qty: number }>([
+        { $match: { type: "venta", cruise: { $in: history.map((c) => c._id) } } },
+        { $group: { _id: "$product", qty: { $sum: "$qty" } } },
+      ])
+    : [];
+  const rate = new Map(sales.map((s) => [s._id.toString(), pastPaxDays ? Math.max(0, -s.qty) / pastPaxDays : 0]));
+
   const lines: IWeeklyOrderLine[] = [];
   for (const p of products) {
     const id = p._id.toString();
-    const atCut = stockOf(p);
-    // Necesidad del barco: solo cuenta lo que hay a bordo. Puerto y Quito son de dónde se consigue.
-    const onHand = Math.max(0, atCut.abordo);
-    const result = suggest({
-      target: p.stockTarget ?? 0,
-      containerSize: p.containerSize || 1,
-      onHand,
-      incoming: incoming.get(id) ?? 0,
-      consumption: Math.max(0, consumed.get(id) ?? 0),
-      lowThreshold: p.lowStockThreshold ?? 0,
-    });
-    // Lo vendido en la semana siempre se muestra (aunque sugiera 0): el bar decide cuánto reponer (4-nov-2026).
-    if (!result || (result.suggested === 0 && result.basis !== "consumo")) continue;
-    lines.push(newLine(p, atCut, {
-      target: p.stockTarget ?? 0,
-      incoming: incoming.get(id) ?? 0,
-      consumption: Math.max(0, consumed.get(id) ?? 0),
-      suggested: result.suggested,
-      basis: result.basis,
-    }));
+    const perPaxDay = rate.get(id) ?? 0;
+    if (!perPaxDay) continue;
+    const size = p.containerSize || 1;
+    // Los frescos no llevan stock: se pide lo que se va a consumir.
+    const fresh = isFresh(p);
+    const fridayBase = fresh ? 0 : Math.max(0, p.onboardStock ?? 0) + (incoming.get(id) ?? 0) - perPaxDay * untilFriday;
+    const need = perPaxDay * nextWeek - Math.max(0, fridayBase);
+    const suggested = nextWeek > 0 ? Math.max(0, Math.ceil(round2(need / size) - 1e-9)) : 0;
+    if (!suggested) continue;
+    lines.push(
+      newLine(p, stockOf(p), {
+        target: p.stockTarget ?? 0,
+        incoming: incoming.get(id) ?? 0,
+        consumption: round2(perPaxDay * nextWeek),
+        suggested,
+        basis: "consumo",
+        fridayStock: fresh ? null : round2(Math.max(0, fridayBase) / size),
+      }),
+    );
   }
   return lines;
 }
@@ -185,7 +225,7 @@ type ProductLike = { _id: Types.ObjectId; name: string; stockUnit: string; conta
 export function newLine(
   p: ProductLike,
   atCut: IWeeklyOrderLine["atCut"],
-  data: Pick<IWeeklyOrderLine, "target" | "incoming" | "consumption" | "suggested" | "basis">,
+  data: Pick<IWeeklyOrderLine, "target" | "incoming" | "consumption" | "suggested" | "basis"> & { fridayStock?: number | null },
 ): IWeeklyOrderLine {
   return {
     product: p._id,
@@ -200,6 +240,7 @@ export function newLine(
     approvedQty: null,
     observation: "",
     counted: null,
+    fridayStock: data.fridayStock ?? null,
     editedByName: "",
     editedAt: null,
   };
@@ -232,7 +273,7 @@ export async function ensureWeeklyOrder(now: Date = new Date()) {
           by: null,
           byName: "Sistema",
           action: "Propuesta preparada",
-          detail: `${lines.length} producto(s) con existencias del corte${late ? " (se armó después de las 15h00)" : ""}`,
+          detail: `${lines.length} producto(s) · consumo por pasajero de los últimos 4 cruceros${late ? " (se armó después de las 12h00)" : ""}`,
         },
       ],
     });
@@ -244,4 +285,69 @@ export async function ensureWeeklyOrder(now: Date = new Date()) {
     }
     throw err;
   }
+}
+
+/** Hora límite de un paso del pedido de esa semana (12h00 + offset). */
+export function deadline(order: Pick<IWeeklyOrder, "week">, afterCutMs: number) {
+  return new Date(new Date(`${order.week}T${String(CUT_HOUR).padStart(2, "0")}:00:00-06:00`).getTime() + afterCutMs);
+}
+
+/**
+ * Pedido fuera de lo normal (avisa a Gerencia al aprobarse): más del N % sobre
+ * la propuesta o un producto que nunca se pide.
+ */
+export async function outlierReasons(order: Pick<IWeeklyOrder, "lines" | "code" | "week">) {
+  const pct = (await goalsAt()).orderOutlierPct ?? 20;
+  const proposal = order.lines.reduce((t, l) => t + (l.suggested ?? 0), 0);
+  const asked = order.lines.reduce((t, l) => t + l.qty, 0);
+  const out: string[] = [];
+  if (proposal > 0 && asked > proposal * (1 + pct / 100)) out.push(`+${Math.round((asked / proposal - 1) * 100)} % sobre la propuesta`);
+  const before = await WeeklyOrder.find({ status: "aprobado", week: { $lt: order.week } }).select("lines.product lines.qty").lean();
+  const ordered = new Set(before.flatMap((o) => o.lines.filter((l) => l.qty > 0).map((l) => l.product.toString())));
+  if (before.length) {
+    for (const l of order.lines) if (l.qty > 0 && !ordered.has(l.product.toString())) out.push(`${l.name} ×${l.qty} (nunca se pide)`);
+  }
+  return out;
+}
+
+/**
+ * Plazos del miércoles, se aplican al leer el pedido y en la tarea de cada
+ * hora: a las 15h00 lo que el bar no envió pasa a la directora; a las 18h00
+ * lo que nadie aprobó se aprueba solo con la propuesta. Devuelve si cambió.
+ */
+/** Primer miércoles con los plazos automáticos: los pedidos anteriores siguen como estaban (no se aprueban solos de forma retroactiva). */
+export const DEADLINES_FROM_WEEK = "2026-12-02";
+
+export async function advanceDeadlines(order: InstanceType<typeof WeeklyOrder>, now: Date = new Date()) {
+  if (order.week < DEADLINES_FROM_WEEK) return false;
+  let changed = false;
+  if (order.status === "bar" && now >= deadline(order, ALERT_AFTER_MS)) {
+    for (const l of order.lines) l.barQty = l.qty;
+    order.status = "directora";
+    order.history.push({ at: now, by: null, byName: "Sistema", action: "Pasó a la directora a las 15h00", detail: "El bartender no envió ajustes" });
+    changed = true;
+  }
+  if (order.status === "directora" && now >= deadline(order, APPROVE_AFTER_MS)) {
+    for (const l of order.lines) l.approvedQty = l.qty;
+    order.status = "aprobado";
+    order.autoApproved = true;
+    order.noNeeds = !order.lines.some((l) => l.qty > 0);
+    order.recipient = order.noNeeds ? "" : ORDER_RECIPIENT;
+    order.outliers = order.noNeeds ? [] : await outlierReasons(order);
+    order.history.push({ at: now, by: null, byName: "Sistema", action: "Aprobado solo a las 18h00", detail: "Sin aprobación de la directora: se aprobó con la propuesta y se avisó a Gerencia" });
+    changed = true;
+  }
+  return changed;
+}
+
+/** Responsable de compras: el que fijó Gerencia (fijo o hasta una fecha) o Administración por defecto. */
+export async function purchaseResponsible(now: Date = new Date()) {
+  const setting = await AppSetting.findOne({ key: "purchaseResponsible" }).lean();
+  const value = (setting?.value ?? {}) as { userId?: string; until?: string | null };
+  if (value.userId && (!value.until || new Date(value.until) >= now)) {
+    const user = await User.findOne({ _id: value.userId, active: true }).select("name role").lean();
+    if (user) return { id: user._id.toString(), name: user.name, role: user.role, until: value.until ?? null, isDefault: false };
+  }
+  const admin = await User.findOne({ role: "admin", active: true }).sort({ createdAt: 1 }).select("name role").lean();
+  return admin ? { id: admin._id.toString(), name: admin.name, role: admin.role, until: null, isDefault: true } : null;
 }
