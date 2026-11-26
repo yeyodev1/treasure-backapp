@@ -5,10 +5,18 @@ import { IsmCrew } from "../models/ismCrew.model";
 import { User } from "../models/user.model";
 import { HttpError } from "../errors/httpError";
 import { POSITION_LABELS } from "../utils/roles";
+import { AREA_LABELS, ismArea } from "./ismAccess.service";
 import { notifyRole } from "./ismNotify.service";
 
 /** Roles que forman la lista de tripulantes (quien llena, Capitán y Persona Designada). */
 export const CREW_LIST_ROLES = ["tripulante", "capitan", "designada"] as const;
+/**
+ * Personas que firman en el ISM (especificación ISM, 25-nov-2026, sección 3):
+ * además de la tripulación, Administración (Rashell) y Gerencia (José, Jorge
+ * y Paula), cada uno con su nombre, clave y firma. Solo para firmar y para la
+ * ficha: la entrada por usuario y clave sigue siendo de CREW_LIST_ROLES.
+ */
+export const SIGNER_ROLES = [...CREW_LIST_ROLES, "admin", "duena"] as const;
 
 export const MAX_PIN_ATTEMPTS = 5;
 export const PIN_LOCK_MS = 15 * 60 * 1000;
@@ -59,14 +67,15 @@ export function splitName(name: string): [string, string] {
  */
 export async function listCrew(opts: { onboardOnly?: boolean; includeInactive?: boolean; includeShared?: boolean } = {}) {
   const users = await User.find({
-    role: { $in: CREW_LIST_ROLES },
+    role: { $in: SIGNER_ROLES },
     ...(opts.includeInactive ? {} : { active: true }),
     ...(opts.includeShared ? {} : { sharedDevice: { $ne: true } }),
   })
     .select("name email role position active sharedDevice username crewManaged")
     .sort({ name: 1 });
   for (const u of users) {
-    if (u.sharedDevice) continue;
+    // Gerencia y Administración son cuentas del bar: no se les inventa usuario ni se les cambia el rol.
+    if (u.sharedDevice || !CREW_LIST_ROLES.includes(u.role as never)) continue;
     if (!u.username) {
       u.username = await freeUsername(...splitName(u.name));
       await User.updateOne({ _id: u._id, username: { $exists: false } }, { $set: { username: u.username } });
@@ -102,6 +111,10 @@ export async function listCrew(opts: { onboardOnly?: boolean; includeInactive?: 
         hasPin: Boolean(p?.pinHash),
         pinTemporary: Boolean(p?.pinTemporary),
         hasSignature: Boolean(p?.signatureSetAt),
+        // Cuenta (área) desde la que firma y, en Gerencia, qué gerente es (R-11, R-24, R-30).
+        area: ismArea(u.role, u.position),
+        areaLabel: AREA_LABELS[ismArea(u.role, u.position)],
+        managerTitle: p?.managerTitle ?? "",
         lockedUntil: p?.lockedUntil && p.lockedUntil.getTime() > now ? p.lockedUntil : null,
       };
     })
@@ -218,13 +231,13 @@ export async function issueTemporaryPin(userId: Types.ObjectId | string, by: str
  * Clave fija que pone Gerencia o la Persona Designada al agregar o editar
  * (pedido del cliente, 12-nov-2026): la persona entra de una vez, sin temporal.
  */
-export async function setPinFor(userId: Types.ObjectId | string, pin: unknown, by: string, byName = "") {
+export async function setPinFor(userId: Types.ObjectId | string, pin: unknown, by: string, byName = "", temporary = false) {
   if (!isValidNewPin(pin)) {
     throw pinError(400, "La clave son 4 números que no sean seguidos ni repetidos.", "clave_debil");
   }
   const profile = await crewProfile(userId);
   profile.pinHash = await bcrypt.hash(pin, 10);
-  profile.pinTemporary = false;
+  profile.pinTemporary = temporary;
   profile.pinSetAt = new Date();
   profile.failedAttempts = 0;
   profile.lockedUntil = null;

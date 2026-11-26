@@ -9,7 +9,7 @@ import { badRequest, forbidden, notFound } from "../errors/httpError";
 import { CREW_POSITIONS } from "../utils/roles";
 import { logEvent } from "../services/audit.service";
 import {
-  CREW_LIST_ROLES,
+  SIGNER_ROLES,
   changeOwnPin,
   crewProfile,
   freeUsername,
@@ -22,25 +22,37 @@ import {
 } from "../services/ismCrew.service";
 import { EMAIL_ERROR, isValidOptionalEmail } from "../utils/email";
 import { sweepOverdue } from "../services/ismNotify.service";
+import { sweepIsm } from "../services/ismSweep.service";
 
 /**
- * Lista de tripulantes y claves de firma (informe R-14 del 29-oct). La
- * mantiene la Persona Designada: alta de tripulantes, cargo, a bordo y clave
- * temporal. Gerencia también puede (requireRole la deja pasar siempre).
+ * Tripulantes (especificación ISM, 25-nov-2026, secciones 3 y 5): una ficha
+ * por persona real. Gerencia crea, edita, registra firmas e inactiva; el
+ * Capitán ve a todos, cambia «abordo / en tierra» y registra firmas; la PD ve
+ * a todos y registra firmas; cada persona cambia su clave. La clave la pone
+ * siempre la persona: la que se da al crear es temporal.
  */
-function assertKeeper(req: Request) {
-  const role = req.auth!.role;
-  if (role !== "designada" && role !== "duena") {
-    throw forbidden("La lista de tripulantes la mantiene la Persona Designada");
+function assertManager(req: Request) {
+  if (req.auth!.role !== "duena") throw forbidden("Las fichas de tripulantes las crea y edita Gerencia");
+}
+
+/** Quién registra firmas (regla 2): Gerencia, el Capitán o la Persona Designada, con la persona presente. */
+function assertSignatureKeeper(req: Request) {
+  if (!["duena", "capitan", "designada"].includes(req.auth!.role)) {
+    throw forbidden("La firma la registran Gerencia, el Capitán o la Persona Designada");
   }
 }
+
+/** Cuenta de la ficha → rol: las áreas de abordo salen del cargo. */
+const ACCOUNT_ROLES: Record<string, string> = { designada: "designada", administracion: "admin", gerencia: "duena" };
+const MANAGER_TITLES = ["", "general", "operaciones", "logistica"];
 
 const validPosition = (p: unknown): p is string => typeof p === "string" && CREW_POSITIONS.includes(p as never);
 
 /** Lista para elegir quién hace el chequeo (todos) y para administrarla (Persona Designada). */
 export async function listCrewMembers(req: Request, res: Response, next: NextFunction) {
   try {
-    const keeper = req.auth!.role === "designada" || req.auth!.role === "duena";
+    // Ven a todos (con inactivos): Gerencia, Capitán y Persona Designada.
+    const keeper = ["designada", "duena", "capitan"].includes(req.auth!.role);
     const manage = keeper && req.query.all === "1";
     const crew = await listCrew({ onboardOnly: req.query.onboard === "1", includeInactive: manage, includeShared: manage });
     res.json({ crew });
@@ -71,24 +83,30 @@ const roleForPosition = (position: string) => (position === "CAP" ? "capitan" : 
  */
 export async function createCrewMember(req: Request, res: Response, next: NextFunction) {
   try {
-    assertKeeper(req);
-    const { firstName, lastName, email, position, onboard, pin } = req.body as {
+    assertManager(req);
+    const { firstName, lastName, email, position, onboard, pin, account, managerTitle } = req.body as {
       pin?: string;
       firstName?: string;
       lastName?: string;
       email?: string;
       position?: string;
       onboard?: boolean;
+      /** designada, administracion o gerencia; las áreas de abordo salen del cargo. */
+      account?: string;
+      managerTitle?: string;
     };
     const first = cleanText(firstName);
     const last = cleanText(lastName);
     if (first.length < 2) throw badRequest("Escribe el nombre");
     if (last.length < 2) throw badRequest("Escribe el apellido");
-    if (!validPosition(position)) throw badRequest("Elige el cargo");
+    const landRole = account ? ACCOUNT_ROLES[account] : undefined;
+    if (account && !landRole) throw badRequest("Cuenta inválida");
+    if (!landRole && !validPosition(position)) throw badRequest("Elige el cargo");
+    if (managerTitle !== undefined && !MANAGER_TITLES.includes(managerTitle)) throw badRequest("Gerente inválido");
     if (pin && !isValidNewPin(pin)) throw badRequest("La clave son 4 números que no sean seguidos ni repetidos.");
     const clean = `${first} ${last}`;
     const exists = await User.findOne({
-      role: { $in: CREW_LIST_ROLES },
+      role: { $in: SIGNER_ROLES },
       active: true,
       name: { $regex: `^${clean.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`, $options: "i" },
     });
@@ -101,17 +119,20 @@ export async function createCrewMember(req: Request, res: Response, next: NextFu
       crewManaged: true,
       // Contraseña aleatoria que nadie conoce: entra con su usuario y su clave de 4 números.
       passwordHash: await bcrypt.hash(crypto.randomBytes(24).toString("hex"), 10),
-      role: roleForPosition(position),
-      position,
+      role: landRole ?? roleForPosition(position!),
+      position: landRole ? "" : position,
       createdBy: req.auth!.sub,
     });
     const profile = await crewProfile(user._id);
-    profile.onboard = onboard !== false;
+    // Persona Designada, Administración y Gerencia están en tierra (sección 3).
+    profile.onboard = landRole ? false : onboard !== false;
+    if (landRole === "duena" && managerTitle) profile.managerTitle = managerTitle as never;
     profile.updatedBy = new Types.ObjectId(req.auth!.sub);
     await profile.save();
-    if (pin) await setPinFor(user._id, pin, req.auth!.sub, req.auth!.name);
-    await logEvent(req.auth, { kind: "equipo", title: `Tripulante agregado · ${user.name}`, detail: position });
-    const crew = await listCrew({ includeInactive: true });
+    // La clave la pone siempre la persona: la que se escribe aquí es temporal y la cambia al primer uso.
+    if (pin) await setPinFor(user._id, pin, req.auth!.sub, req.auth!.name, true);
+    await logEvent(req.auth, { kind: "equipo", title: `Tripulante agregado · ${user.name}`, detail: landRole ?? position });
+    const crew = await listCrew({ includeInactive: true, includeShared: true });
     res.status(201).json({ member: crew.find((c) => c.id === user._id.toString()) });
   } catch (err) {
     next(err);
@@ -121,10 +142,11 @@ export async function createCrewMember(req: Request, res: Response, next: NextFu
 /** Nombre, correo, cargo, a bordo y activo. El rol de las cuentas con contraseña lo cambia Gerencia. */
 export async function updateCrewMember(req: Request, res: Response, next: NextFunction) {
   try {
-    assertKeeper(req);
+    const role = req.auth!.role;
+    if (role !== "duena" && role !== "capitan") throw forbidden("Las fichas de tripulantes las edita Gerencia");
     const user = await User.findById(req.params.id);
-    if (!user || !CREW_LIST_ROLES.includes(user.role as never)) throw notFound("Tripulante no encontrado");
-    const { name, email, position, onboard, active, sharedDevice, pin } = req.body as {
+    if (!user || !SIGNER_ROLES.includes(user.role as never)) throw notFound("Tripulante no encontrado");
+    const { name, email, position, onboard, active, sharedDevice, pin, managerTitle } = req.body as {
       pin?: string;
       name?: string;
       email?: string;
@@ -132,7 +154,21 @@ export async function updateCrewMember(req: Request, res: Response, next: NextFu
       onboard?: boolean;
       active?: boolean;
       sharedDevice?: boolean;
+      managerTitle?: string;
     };
+    // El Capitán solo corrige «abordo / en tierra» el mismo día (sección 5).
+    if (role === "capitan") {
+      if (typeof onboard !== "boolean") throw forbidden("El Capitán solo cambia si la persona está abordo o en tierra");
+      const profile = await crewProfile(user._id);
+      profile.onboard = onboard;
+      profile.updatedBy = new Types.ObjectId(req.auth!.sub);
+      await profile.save();
+      await logEvent(req.auth, { kind: "equipo", title: `${onboard ? "Abordo" : "En tierra"} · ${user.name}` });
+      const list = await listCrew({ includeInactive: true, includeShared: true });
+      res.json({ member: list.find((c) => c.id === user._id.toString()) });
+      return;
+    }
+    if (managerTitle !== undefined && !MANAGER_TITLES.includes(managerTitle)) throw badRequest("Gerente inválido");
     // Altas de Tripulantes (y las antiguas sin correo): las maneja la Persona Designada.
     const managed = Boolean(user.crewManaged) || !hasRealEmail(user.email);
     if (typeof name === "string") {
@@ -159,12 +195,13 @@ export async function updateCrewMember(req: Request, res: Response, next: NextFu
     user.updatedBy = new Types.ObjectId(req.auth!.sub);
     await user.save();
     if (pin) {
-      await setPinFor(user._id, pin, req.auth!.sub, req.auth!.name);
-      await logEvent(req.auth, { kind: "equipo", title: `Clave de firma · ${user.name}` });
+      await setPinFor(user._id, pin, req.auth!.sub, req.auth!.name, true);
+      await logEvent(req.auth, { kind: "equipo", title: `Clave temporal de firma · ${user.name}` });
     }
-    if (typeof onboard === "boolean") {
+    if (typeof onboard === "boolean" || (managerTitle !== undefined && user.role === "duena")) {
       const profile = await crewProfile(user._id);
-      profile.onboard = onboard;
+      if (typeof onboard === "boolean") profile.onboard = onboard;
+      if (managerTitle !== undefined && user.role === "duena") profile.managerTitle = managerTitle as never;
       profile.updatedBy = new Types.ObjectId(req.auth!.sub);
       await profile.save();
     }
@@ -192,14 +229,14 @@ export async function crewSignature(req: Request, res: Response, next: NextFunct
  */
 export async function setCrewSignature(req: Request, res: Response, next: NextFunction) {
   try {
-    assertKeeper(req);
+    assertSignatureKeeper(req);
     const { image } = req.body as { image?: unknown };
     if (typeof image !== "string" || !image.startsWith("data:image/png;base64,")) throw badRequest("Firma con el dedo en el recuadro");
     if (image.length > 400_000) throw badRequest("La firma es demasiado grande");
     const user = Types.ObjectId.isValid(String(req.params.id))
       ? await User.findById(req.params.id).select("name role active sharedDevice")
       : null;
-    if (!user || !CREW_LIST_ROLES.includes(user.role as never) || !user.active || user.sharedDevice) {
+    if (!user || !SIGNER_ROLES.includes(user.role as never) || !user.active || user.sharedDevice) {
       throw notFound("Tripulante no encontrado");
     }
     const profile = await crewProfile(user._id);
@@ -248,12 +285,22 @@ export async function temporaryPin(req: Request, res: Response, next: NextFuncti
       throw forbidden("La clave temporal la da la Persona Designada o Gerencia");
     }
     const user = await User.findById(req.params.id).select("name role active");
-    if (!user || !CREW_LIST_ROLES.includes(user.role as never) || !user.active) {
+    if (!user || !SIGNER_ROLES.includes(user.role as never) || !user.active) {
       throw notFound("Tripulante no encontrado");
     }
     const pin = await issueTemporaryPin(user._id, req.auth!.sub, req.auth!.name);
     await logEvent(req.auth, { kind: "equipo", title: `Clave temporal de firma · ${user.name}` });
     res.json({ pin, name: user.name });
+  } catch (err) {
+    next(err);
+  }
+}
+
+/** Mi ficha (cada cuenta ve la suya y cambia su clave; sección 5). */
+export async function myCrewProfile(req: Request, res: Response, next: NextFunction) {
+  try {
+    const crew = await listCrew({ includeInactive: true, includeShared: true });
+    res.json({ member: crew.find((c) => c.id === req.auth!.sub) ?? null });
   } catch (err) {
     next(err);
   }
@@ -288,6 +335,7 @@ export async function changeMyPin(req: Request, res: Response, next: NextFunctio
 export async function listNotices(req: Request, res: Response, next: NextFunction) {
   try {
     await sweepOverdue();
+    await sweepIsm();
     const to = new Types.ObjectId(req.auth!.sub);
     const [notices, unread] = await Promise.all([
       IsmNotice.find({ to }).sort({ createdAt: -1 }).limit(30),

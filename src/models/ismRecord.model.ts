@@ -4,8 +4,11 @@ import mongoose, { Schema, Types } from "mongoose";
  * Registro ISM (listado de registros del Manual de Gestión de Seguridad).
  * Circuito: borrador (se llena y firma la tripulación) → por_capitan →
  * por_oficina (Persona Designada) → archivado (inmutable).
+ * Especificación ISM (25-nov-2026): cada formato sigue el orden de firmas de
+ * su hoja (services/ismFlow.service.ts); por_gerencia espera a José, Jorge o
+ * Paula y por_firmar a una persona (filas del R-30, recepción del R-18).
  */
-export const ISM_STATUSES = ["borrador", "por_capitan", "por_oficina", "archivado"] as const;
+export const ISM_STATUSES = ["borrador", "por_capitan", "por_oficina", "por_gerencia", "por_firmar", "archivado"] as const;
 export type IsmStatus = (typeof ISM_STATUSES)[number];
 
 export const SIGNATURE_STAGES = ["tripulacion", "capitan", "oficina"] as const;
@@ -47,6 +50,11 @@ export interface IIsmSignature {
   pinResetByName?: string;
   /** Hora de la tablet al firmar (la del servidor es signedAt). */
   deviceAt?: Date | null;
+  /** Firma de externo (sin cuenta): cédula de quien firma (especificación ISM, regla 6). */
+  idNumber?: string;
+  external?: boolean;
+  /** Firmado sin señal: signedAt es la hora real del teléfono y esta, la de llegada al servidor. */
+  syncedAt?: Date | null;
 }
 
 export interface IIsmEvent {
@@ -179,6 +187,15 @@ export interface IIsmRecord {
    * servidor: "ISM/Listado de registros/R-14 …/2026/10_octubre".
    */
   archivePath?: string;
+  /**
+   * Área que llena el registro (especificación ISM, regla 8): el borrador es
+   * del área y cualquiera de ella lo sigue (reemplazo de turno).
+   */
+  area?: string;
+  /** Quién lo llena, elegido al empezar (no la cuenta del área). */
+  filler?: { user: Types.ObjectId; name: string; position: string } | null;
+  /** Creado por el sistema (relevo del calendario, hoja nueva del R-16): evita duplicarlo. */
+  sourceKey?: string | null;
   createdAt?: Date;
   updatedAt?: Date;
 }
@@ -203,6 +220,9 @@ const signatureSchema = new Schema<IIsmSignature>(
     pinResetAt: { type: Date },
     pinResetByName: { type: String },
     deviceAt: { type: Date },
+    idNumber: { type: String },
+    external: { type: Boolean },
+    syncedAt: { type: Date },
   },
   { _id: false },
 );
@@ -286,6 +306,15 @@ const ismRecordSchema = new Schema<IIsmRecord>(
       default: undefined,
     },
     archivePath: { type: String },
+    area: { type: String, default: "" },
+    filler: {
+      type: new Schema(
+        { user: { type: Schema.Types.ObjectId, ref: "User" }, name: String, position: String },
+        { _id: false },
+      ),
+      default: null,
+    },
+    sourceKey: { type: String, default: null },
     archivedPdf: {
       type: new Schema(
         {
@@ -375,6 +404,8 @@ ismRecordSchema.index({ code: 1, recordDate: -1 });
 ismRecordSchema.index({ status: 1, updatedAt: -1 });
 ismRecordSchema.index({ createdBy: 1, status: 1 });
 ismRecordSchema.index({ recordDate: -1 });
+ismRecordSchema.index({ area: 1, status: 1 });
+ismRecordSchema.index({ sourceKey: 1 }, { unique: true, partialFilterExpression: { sourceKey: { $type: "string" } } });
 // Un reintento de creación con la misma clave devuelve el mismo registro.
 ismRecordSchema.index(
   { createdBy: 1, idempotencyKey: 1 },

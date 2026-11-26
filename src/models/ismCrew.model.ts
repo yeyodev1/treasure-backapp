@@ -27,6 +27,10 @@ export interface IIsmCrew {
   /** Firma dibujada por la persona (PNG en data URL); se estampa en sus siguientes firmas con su clave. */
   signatureImage?: string;
   signatureSetAt?: Date | null;
+  /** Gerencia: qué gerente firma cada casilla (R-11, R-24, R-30). Especificación ISM, 25-nov-2026. */
+  managerTitle?: "" | "general" | "operaciones" | "logistica";
+  /** Día (AAAA-MM-DD) en que el calendario de rotación puso «abordo / en tierra»; el capitán lo corrige ese día. */
+  onboardSyncedOn?: string;
   createdAt?: Date;
   updatedAt?: Date;
 }
@@ -46,6 +50,8 @@ const ismCrewSchema = new Schema<IIsmCrew>(
     pinResetByName: { type: String, default: "" },
     signatureImage: { type: String, default: "" },
     signatureSetAt: { type: Date, default: null },
+    managerTitle: { type: String, enum: ["", "general", "operaciones", "logistica"], default: "" },
+    onboardSyncedOn: { type: String, default: "" },
   },
   { timestamps: true },
 );

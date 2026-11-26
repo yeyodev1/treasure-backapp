@@ -46,20 +46,35 @@ import {
 import { logEvent } from "../services/audit.service";
 import { freezeArchivedPdf, readArchivedPdf, tryFreezeArchivedPdf } from "../services/ismArchive.service";
 import { syncNovedades } from "../services/ismNovedad.service";
-import { CREW_LIST_ROLES, crewProfile, PIN_RESET_WINDOW_MS, positionLabel, verifyPin } from "../services/ismCrew.service";
+import { CREW_LIST_ROLES, PIN_RESET_WINDOW_MS, positionLabel, verifyPin } from "../services/ismCrew.service";
 import { notifyRole, notifyUsers } from "../services/ismNotify.service";
 import { nextCode } from "../services/codes.service";
 import { badRequest, conflict, forbidden, notFound } from "../errors/httpError";
-import { CREW_POSITIONS, POSITION_LABELS, ROLE_LABELS, isManager } from "../utils/roles";
-import { canCreateForm, canFillEquipment, ismAccessOf } from "../services/ismAccess.service";
-
-/** Quién puede ver todos los registros (la tripulación ve los suyos). Gerencia ve todo. */
-const SEES_ALL = new Set(["duena", "admin", "capitan", "designada"]);
+import { CREW_POSITIONS, POSITION_LABELS, ROLE_LABELS } from "../utils/roles";
+import {
+  AREA_LABELS,
+  BAR_LINK_AREAS,
+  IsmArea,
+  ONBOARD_AREAS,
+  canCreateForm,
+  canEditData,
+  canFillEquipment,
+  canViewRecord,
+  ismAccessOf,
+  ismArea,
+  viewFilter,
+  AREA_POSITIONS,
+} from "../services/ismAccess.service";
+import { flowView, giveBackFlow, outgoingPending, signSlot, submitFlow } from "./ismFlow.controller";
+import { flowOf } from "../services/ismFlow.service";
+import { obligations } from "../services/ismObligations.service";
 
 const STATUS_LABEL: Record<IsmStatus, string> = {
   borrador: "Borrador",
   por_capitan: "Por firmar · Capitán",
   por_oficina: "Por firmar · Persona Designada",
+  por_gerencia: "Por firmar · Gerencia",
+  por_firmar: "Por firmar",
   archivado: "Archivado",
 };
 
@@ -113,20 +128,8 @@ export function archivePathFor(code: string, folder: string | undefined, dateKey
   return [...base, String(y), `${String(m).padStart(2, "0")}_${MONTH_NAMES[m - 1]}`].join("/");
 }
 
-/**
- * La firma va atada al rol de quien firma (informe ISM 29-oct, falla 1):
- * solo el Capitán firma como Capitán y solo la Persona Designada en oficina.
- * Gerencia y Administración ven todo, pero no firman por otro rol.
- */
-function canSignStage(role: string, stage: SignatureStage, officeRole = "designada"): boolean {
-  if (stage === "capitan") return role === "capitan";
-  if (stage === "oficina") return role === officeRole;
-  return true;
-}
-
 /** Quién recibe en tierra: la Persona Designada, o Administración en el R-18 Hotelería (5-nov). */
 const officeRoleOf = (def: { officeRole?: string }) => def.officeRole ?? "designada";
-const officeLabelOf = (def: { officeRole?: string }) => (def.officeRole === "admin" ? "Administración" : "Persona Designada");
 
 /**
  * Número de orden (O/R) del R-18: lo pone el sistema al crear (TREASURE ISM 2.0,
@@ -138,32 +141,8 @@ const ORDER_FIELD: Record<string, string> = {
   "R-18_Hoteleria": "Text Field 3",
 };
 
-/**
- * Al pasar de paso, avisa a quien le toca (AUTO-X04: el siguiente rol recibe su
- * pendiente sin que nadie reenvíe). Los registros de prueba no avisan.
- */
-async function notifyNextStep(record: IIsmRecord & { _id: Types.ObjectId }, def: { officeRole?: string }) {
-  if (record.test) return;
-  const code = record.code.replace("_", " · ");
-  if (record.status === "por_capitan") {
-    await notifyRole("capitan", { kind: "por_firmar_capitan", title: `${code} por firmar`, body: record.fileName, record: record._id });
-  } else if (record.status === "por_oficina") {
-    if (officeRoleOf(def) === "admin") {
-      await notifyRole("admin", { kind: "por_recibir", title: `${code} por recibir`, body: record.fileName, record: record._id });
-    } else {
-      await notifyRole("designada", { kind: "por_firmar_designada", title: `${code} por archivar`, body: record.fileName, record: record._id });
-    }
-  }
-}
-
 /** R-07 enviado a quien recibe el cargo: es suyo leerlo, firmarlo y enviarlo al Capitán. */
 const isReceiver = (record: IIsmRecord, uid: string) => record.handoff?.to?.toString() === uid;
-
-function stageOpen(record: IIsmRecord, stage: SignatureStage, officeOnly: boolean): boolean {
-  if (stage === "tripulacion") return record.status === "borrador";
-  if (stage === "capitan") return record.status === "borrador" || record.status === "por_capitan";
-  return record.status === "por_oficina" || (officeOnly && record.status === "borrador");
-}
 
 /** Id de quien creó el registro (poblado o no). */
 function creatorId(record: Pick<IIsmRecord, "createdBy">): string {
@@ -172,33 +151,24 @@ function creatorId(record: Pick<IIsmRecord, "createdBy">): string {
 }
 
 /**
- * Quién edita. Registros guiados (R-14…): solo quien lo creó (la sesión del
- * barco o el tripulante) y solo en borrador, también cuando vuelve devuelto.
- * Capitán, Gerencia, Administración y Persona Designada revisan y devuelven
- * con motivo, pero no cambian respuestas ni contexto (auditoría 30-oct).
+ * Quién edita (especificación ISM, 25-nov-2026, reglas 8 y 13): en borrador,
+ * el área que lo llena (cualquiera de ella sigue el borrador del compañero);
+ * en revisión, quien firma ese paso completa su parte. Gerencia no edita.
+ * Registros guiados (R-14): solo en borrador; quien revisa devuelve con motivo.
  */
-function canEdit(record: IIsmRecord, role: string, officeOnly: boolean, uid: string, officeRole = "designada"): boolean {
-  if (record.status === "archivado") return false;
-  if (record.schemaVersion) return record.status === "borrador" && creatorId(record) === uid;
-  if (isManager(role)) return true;
-  // Quien recibe el cargo lee y firma; cambiar datos anularía la firma del saliente.
-  if (record.status === "borrador" && record.handoff) return false;
-  if (record.status === "borrador") return officeOnly ? role === "designada" : true;
-  if (record.status === "por_capitan") return role === "capitan";
-  return role === officeRole;
+function canEdit(record: IIsmRecord, area: IsmArea, role: string, uid: string, officeRole = "designada"): boolean {
+  if (record.schemaVersion && record.status !== "borrador") return false;
+  return canEditData(area, role, uid, record, officeRole);
 }
 
-/** La tripulación solo ve, edita, firma y envía los registros que creó o firmó. */
-function assertCanView(record: IIsmRecord, req: Request) {
-  if (SEES_ALL.has(req.auth!.role)) return;
-  const uid = req.auth!.sub;
-  // R-07 enviado: sale de la lista del saliente y queda en la de quien recibe (5-nov).
-  const involved = record.handoff
-    ? isReceiver(record, uid)
-    : creatorId(record) === uid || record.signatures.some((s) => s.user.toString() === uid);
-  if (!involved) throw forbidden("Este registro no está a tu cargo");
-  // El Archivo ISM lo ven Capitán, Persona Designada y Gerencia (tabla del cliente, 5-nov-2026).
-  if (record.status === "archivado") throw forbidden("El Archivo ISM lo ven el Capitán, la Persona Designada y Gerencia");
+/**
+ * Qué ve cada cuenta (sección 5): Gerencia y la PD todo, el Puente lo de
+ * abordo, cada área lo suyo, Administración solo el R-18 de Hotelería.
+ */
+async function assertCanView(record: IIsmRecord, req: Request): Promise<IsmArea> {
+  const { area } = await ismAccessOf(req.auth!);
+  if (!canViewRecord(area, req.auth!.sub, record)) throw forbidden("Este registro no es de tu área");
+  return area;
 }
 
 function pushEvent(record: IIsmRecord, req: Request, action: string, reason = "", section = "") {
@@ -289,7 +259,7 @@ type ClientSignature = Omit<IIsmSignature, "image"> & { valid: boolean };
  * Lo que recibe la tablet: nunca las imágenes de las firmas (se piden aparte
  * por /signatures/:field/image) y, por firma, si sigue siendo válida.
  */
-function toClient(record: { toObject?: () => unknown } & Partial<IIsmRecord>) {
+export function toClient(record: { toObject?: () => unknown } & Partial<IIsmRecord>) {
   const raw = (typeof record.toObject === "function" ? record.toObject() : record) as IIsmRecord & {
     _id: Types.ObjectId;
   };
@@ -330,21 +300,33 @@ const LIST_FIELDS = "-data -signatures.image -history -answers -idempotencyKey";
 
 export async function catalog(req: Request, res: Response, next: NextFunction) {
   try {
-    const { area, positions: fillPositions } = await ismAccessOf(req.auth!);
+    const { area } = await ismAccessOf(req.auth!);
+    const role = req.auth!.role;
     res.json({
       forms: ismCatalog().map((f) => {
         const guidedVersion = latestSchemaVersion(f.code);
         // Tarjeta de Mis tareas del formato guiado (sale del esquema, no del código).
         const card = guidedVersion ? ismSchema(f.code, guidedVersion)?.card : undefined;
         // Todos los formatos van (títulos de la bandeja y el archivo); `canCreate` dice cuáles llena esta cuenta.
-        return { ...f, guidedVersion, canCreate: canCreateForm(area, f.code, f.officeOnly), ...(card ? { card } : {}) };
+        return { ...f, guidedVersion, canCreate: canCreateForm(area, f.code), ...(card ? { card } : {}) };
       }),
-      archive: SEES_ALL.has(req.auth!.role),
-      equipment: ismEquipment().filter((e) => canFillEquipment(area, e.owner)),
+      // Archivo: cada cuenta ve el suyo (sección 5); el servidor filtra qué registros.
+      archive: area !== "otros",
+      equipment: ismEquipment().filter((e) => canFillEquipment(area, e)),
       positions: CREW_POSITIONS.map((p) => ({ value: p, label: POSITION_LABELS[p] })),
-      // Cargos por los que esta cuenta abre un R-07 o R-23 (null = cualquiera).
-      fillPositions,
+      // Cargos por los que esta cuenta abre un R-07 o R-22 (null = cualquiera).
+      fillPositions: ONBOARD_AREAS.includes(area) ? (AREA_POSITIONS[area] ?? null) : null,
       vessel: defaultVessel(),
+      // Qué ve cada cuenta (especificación ISM, 25-nov-2026, sección 5).
+      access: {
+        area,
+        areaLabel: AREA_LABELS[area],
+        crew: role === "duena" ? "gerencia" : role === "capitan" ? "capitan" : role === "designada" ? "designada" : "propia",
+        frequencies: role === "duena" ? "edita" : role === "designada" ? "ve" : null,
+        rotation: role === "duena",
+        barLink: BAR_LINK_AREAS.includes(area),
+        markTest: role === "duena" || role === "designada",
+      },
     });
   } catch (err) {
     next(err);
@@ -375,6 +357,18 @@ export async function schemaDefinition(req: Request, res: Response, next: NextFu
   }
 }
 
+/**
+ * Quién llena (regla 1): una persona del área de la cuenta, elegida al
+ * empezar. Sin elegir, la persona de la sesión.
+ */
+async function fillerOf(id: unknown, area: IsmArea, req: Request) {
+  const pick = typeof id === "string" && Types.ObjectId.isValid(id) ? id : req.auth!.sub;
+  const user = await User.findOne({ _id: pick, active: true, sharedDevice: { $ne: true } }).select("name role position");
+  if (!user) throw badRequest("Elige quién lo llena");
+  if (pick !== req.auth!.sub && ismArea(user.role, user.position) !== area) throw badRequest("Esa persona es de otra área");
+  return { user: user._id, name: user.name, position: user.position ?? "" };
+}
+
 async function findByKey(uid: string, key: string) {
   return IsmRecord.findOne({ createdBy: uid, idempotencyKey: key })
     .select("-signatures.image")
@@ -383,7 +377,7 @@ async function findByKey(uid: string, key: string) {
 
 export async function createRecord(req: Request, res: Response, next: NextFunction) {
   try {
-    const { code, recordDate, equipmentFolder, position, idempotencyKey, context, test } = req.body as {
+    const { code, recordDate, equipmentFolder, position, idempotencyKey, context, test, filler } = req.body as {
       code?: string;
       recordDate?: string;
       equipmentFolder?: string;
@@ -391,15 +385,18 @@ export async function createRecord(req: Request, res: Response, next: NextFuncti
       idempotencyKey?: string;
       context?: Record<string, unknown>;
       test?: boolean;
+      /** Quién lo llena (especificación ISM, regla 1): se elige al empezar. */
+      filler?: string;
     };
     const def = code ? ismDefinition(code) : null;
     if (!def) throw badRequest("Formulario inválido");
     if (!recordDate) throw badRequest("Indica la fecha del registro");
     if (!isDateKey(recordDate)) throw badRequest("La fecha no es válida. Elige otra en el calendario.");
     const access = await ismAccessOf(req.auth!);
-    if (!canCreateForm(access.area, def.code, def.officeOnly)) {
+    if (!canCreateForm(access.area, def.code)) {
       throw forbidden(`El ${def.code.replace("_", " · ")} no lo llena tu área. Pídelo a quien le corresponde.`);
     }
+    const person = await fillerOf(filler, access.area, req);
 
     // Reintento de la misma acción (señal intermitente, doble toque): mismo registro.
     const key =
@@ -422,7 +419,15 @@ export async function createRecord(req: Request, res: Response, next: NextFuncti
     if (def.frequency === "por_equipo") {
       const eq = ismEquipment().find((e) => e.folder === equipmentFolder);
       if (!eq) throw badRequest("Elige el equipo");
-      if (!canFillEquipment(access.area, eq.owner)) throw forbidden(`${eq.name} lo llena ${eq.owner === "Jefe de Máquinas" ? "Mantenimiento" : "Cubierta"}`);
+      if (!canFillEquipment(access.area, eq)) throw forbidden(`${eq.name} lo llena otra área`);
+      // R-16 es una bitácora (sección 7): una hoja abierta por equipo que se va llenando.
+      const open = await IsmRecord.findOne({ code: "R-16", "equipment.folder": eq.folder, status: { $ne: "archivado" }, test: { $ne: true } })
+        .select("-signatures.image")
+        .populate("createdBy", "name role position");
+      if (open && !test) {
+        res.status(200).json({ record: toClient(open), duplicate: true });
+        return;
+      }
       equipment = { folder: eq.folder, name: eq.name, category: eq.category };
       const map = def.equipmentFields!;
       data[map.name] = eq.name;
@@ -434,11 +439,14 @@ export async function createRecord(req: Request, res: Response, next: NextFuncti
 
     let pos = "";
     if (def.frequency.startsWith("por_cargo")) {
-      if (!position || !CREW_POSITIONS.includes(position as never)) throw badRequest("Elige el cargo");
-      if (access.positions && !access.positions.includes(position)) {
-        throw forbidden(access.positions.length ? "Ese cargo no lo llenas tú" : "Pide a la Persona Designada que te ponga tu cargo");
+      // R-23 es por persona: el cargo es el de quien lo llena (sección 4).
+      const wanted = def.code === "R-23" ? person.position || position : position;
+      if (!wanted || !CREW_POSITIONS.includes(wanted as never)) throw badRequest("Elige el cargo");
+      const allowed = AREA_POSITIONS[access.area];
+      if (def.code !== "R-23" && allowed && !allowed.includes(wanted) && access.area !== "puente") {
+        throw forbidden("Ese cargo es de otra área");
       }
-      pos = position;
+      pos = wanted;
     }
 
     // Registro guiado: contexto confirmado al iniciar, con la identidad de la sesión.
@@ -459,7 +467,9 @@ export async function createRecord(req: Request, res: Response, next: NextFuncti
             name: req.auth!.name,
             role: req.auth!.role,
             position: user?.position ?? "",
-            fromList: false,
+            // R-14 v2 (especificación ISM, 25-nov-2026): lo llena el propio Capitán, no se elige de la lista.
+            fromList: schema.signers?.[0]?.who !== "lista",
+            positionFixed: schema.signers?.[0]?.who !== "lista" && Boolean(user?.position),
           },
           confirmedAt: null,
         },
@@ -468,7 +478,7 @@ export async function createRecord(req: Request, res: Response, next: NextFuncti
       ctx = await applyCrewChoice(ctx, context ?? {}, req);
     }
 
-    const isTest = test === true && (isManager(req.auth!.role) || req.auth!.role === "designada");
+    const isTest = test === true && (req.auth!.role === "duena" || req.auth!.role === "designada");
     const orderField = ORDER_FIELD[def.code];
     if (orderField && !isTest) data[orderField] = await nextCode(`OR-${recordDate.slice(0, 4)}`);
 
@@ -488,6 +498,8 @@ export async function createRecord(req: Request, res: Response, next: NextFuncti
       equipment,
       cruise: cruise?._id ?? null,
       createdBy: req.auth!.sub,
+      area: access.area,
+      filler: person,
       schemaVersion: schema?.version ?? null,
       context: ctx,
       answers: {},
@@ -524,7 +536,7 @@ export async function createRecord(req: Request, res: Response, next: NextFuncti
 
 export async function listRecords(req: Request, res: Response, next: NextFunction) {
   try {
-    const { code, status, from, to, position, equipment, mine, before, limit, q } = req.query as Record<
+    const { code, status, from, to, position, equipment, mine, before, limit, q, inbox } = req.query as Record<
       string,
       string
     >;
@@ -552,16 +564,16 @@ export async function listRecords(req: Request, res: Response, next: NextFunctio
       filter.$or = [{ fileName: { $regex: safe, $options: "i" } }, { title: { $regex: safe, $options: "i" } }];
     }
 
-    const uid = new Types.ObjectId(req.auth!.sub);
-    if (mine === "1" || !SEES_ALL.has(req.auth!.role)) {
-      filter.$and = [
-        { $or: [{ createdBy: uid, handoff: null }, { "signatures.user": uid, handoff: null }, { "handoff.to": uid }] },
-      ];
-    }
-    // Sin acceso al Archivo ISM: no ven los archivados, ni los propios.
-    if (!SEES_ALL.has(req.auth!.role)) {
-      (filter.$and as unknown[]).push({ status: { $ne: "archivado" } });
-    }
+    // Cada cuenta ve lo de su área (especificación ISM, 25-nov-2026, sección 5).
+    const { area } = await ismAccessOf(req.auth!);
+    const and: unknown[] = [viewFilter(area, req.auth!.sub)];
+    // «Míos» = los borradores de mi área (el reemplazo de turno los sigue).
+    if (mine === "1") and.push(ONBOARD_AREAS.includes(area) || area === "designada" ? { area } : { createdBy: new Types.ObjectId(req.auth!.sub) });
+    // Por firmar de esta cuenta (bandeja del capitán, de la PD, de Administración, de Gerencia…).
+    if (inbox === "1") and.push(awaitingFilter(area, req.auth!.role));
+    // Las pruebas no aparecen en Por firmar ni en el Archivo (regla 12).
+    if (inbox === "1" || (status && !status.split(",").includes("borrador"))) and.push({ test: { $ne: true } });
+    filter.$and = and;
 
     const pageSize = Math.min(Number(limit) || 30, 100);
     const records = await IsmRecord.find(filter)
@@ -583,8 +595,17 @@ export async function getRecord(req: Request, res: Response, next: NextFunction)
       .select("-signatures.image -idempotencyKey")
       .populate("createdBy", "name role position");
     if (!record) throw notFound("Registro no encontrado");
-    assertCanView(record, req);
-    res.json({ record: toClient(record) });
+    const area = await assertCanView(record, req);
+    const session = { area, role: req.auth!.role, uid: req.auth!.sub };
+    res.json({
+      record: {
+        ...toClient(record),
+        // Orden de firmas de la hoja y qué puede firmar esta cuenta (sección 4).
+        flow: flowView(record, session),
+        canEdit: canEdit(record, area, req.auth!.role, req.auth!.sub, officeRoleOf(ismDefinition(record.code) ?? {})),
+        outgoingPending: await outgoingPending(record),
+      },
+    });
   } catch (err) {
     next(err);
   }
@@ -627,12 +648,12 @@ export async function saveData(req: Request, res: Response, next: NextFunction) 
 
     const record = await IsmRecord.findById(req.params.id);
     if (!record) throw notFound("Registro no encontrado");
-    assertCanView(record, req);
+    const area = await assertCanView(record, req);
     const def = ismDefinition(record.code)!;
-    if (!canEdit(record, req.auth!.role, def.officeOnly, req.auth!.sub, officeRoleOf(def))) {
+    if (!canEdit(record, area, req.auth!.role, req.auth!.sub, officeRoleOf(def))) {
       throw forbidden(
         record.schemaVersion && record.status === "borrador"
-          ? "Solo quien hizo el registro lo corrige. Si hay que cambiar algo, devuélvelo con motivo."
+          ? "Lo corrige el área que lo llena. Si hay que cambiar algo, devuélvelo con motivo."
           : `No puedes editar un registro ${STATUS_LABEL[record.status].toLowerCase()}`,
       );
     }
@@ -702,10 +723,15 @@ export async function saveData(req: Request, res: Response, next: NextFunction) 
       // Toda edición queda en el historial: quién y qué cambió.
       pushEvent(record, req, "editó", changedFields.length ? changedFields.join(", ").slice(0, 1000) : "Datos del registro");
       for (const sig of record.signatures) {
-        if (sig.hashV === 2 && sig.dataHash === before) {
-          invalidated.push(sig.field);
-          pushEvent(record, req, `firma anulada: ${sig.label}`, "Los datos cambiaron después de firmar");
+        if (sig.hashV !== 2 || sig.dataHash !== before) continue;
+        // Quien revisa completa su parte (análisis de causa, medida correctiva, despacho):
+        // las firmas anteriores siguen valiendo. En borrador, cambiar datos anula la firma.
+        if (record.status !== "borrador") {
+          sig.dataHash = after;
+          continue;
         }
+        invalidated.push(sig.field);
+        pushEvent(record, req, `firma anulada: ${sig.label}`, "Los datos cambiaron después de firmar");
       }
     }
 
@@ -735,9 +761,9 @@ export async function saveData(req: Request, res: Response, next: NextFunction) 
 /** Imagen de una firma (PNG). Va aparte para que el registro pese poco. */
 export async function signatureImage(req: Request, res: Response, next: NextFunction) {
   try {
-    const record = await IsmRecord.findById(req.params.id).select("code createdBy signatures");
+    const record = await IsmRecord.findById(req.params.id).select("code status area createdBy handoff signatures");
     if (!record) throw notFound("Registro no encontrado");
-    assertCanView(record, req);
+    await assertCanView(record, req);
     const sig = record.signatures.find((s) => s.field === req.params.field);
     if (!sig?.image) throw notFound("Esa firma no existe");
     const [meta, b64] = sig.image.split(",");
@@ -749,91 +775,35 @@ export async function signatureImage(req: Request, res: Response, next: NextFunc
   }
 }
 
-/** Firma con el dedo un recuadro del formulario. */
+/**
+ * Firma una casilla (especificación ISM, 25-nov-2026): se elige la persona y
+ * pone su clave, o «Firma de externo». Antes se firmaba con el dedo y un
+ * nombre escrito a mano; la cuenta del área sola ya no firma.
+ */
 export async function sign(req: Request, res: Response, next: NextFunction) {
-  try {
-    const { field, image, signerName } = req.body as {
-      field?: string;
-      image?: string;
-      signerName?: string;
-    };
-    if (!field || !image?.startsWith("data:image/png;base64,")) throw badRequest("Firma inválida");
-    if (image.length > 400_000) throw badRequest("La firma es demasiado grande");
-
-    const record = await IsmRecord.findById(req.params.id);
-    if (!record) throw notFound("Registro no encontrado");
-    assertCanView(record, req);
-    const def = ismDefinition(record.code)!;
-    const slot = def.fields.find((f) => f.name === field && f.type === "signature");
-    if (!slot || !slot.stage) throw badRequest("Ese recuadro no es de firma");
-    if (!canSignStage(req.auth!.role, slot.stage, officeRoleOf(def))) {
-      throw forbidden(`Esta firma corresponde a: ${slot.label}`);
-    }
-    if (record.handoff && slot.stage === "tripulacion" && (!isReceiver(record, req.auth!.sub) || field !== def.handoff?.to)) {
-      throw forbidden(`Ya se envió a ${record.handoff.toName}: solo falta su firma`);
-    }
-    assertNotStepSigned(record);
-    if (!stageOpen(record, slot.stage, def.officeOnly)) {
-      throw conflict("Esta firma no está habilitada en la etapa actual del registro");
-    }
-
-    // Capitán y Persona Designada firman con el nombre de su propia cuenta.
-    const name = (slot.stage === "tripulacion" ? signerName?.trim() || req.auth!.name : req.auth!.name).slice(0, 120);
-    record.signatures = record.signatures.filter((s) => s.field !== field) as never;
-    record.signatures.push({
-      field,
-      stage: slot.stage,
-      label: slot.label ?? "",
-      signerName: name,
-      user: new Types.ObjectId(req.auth!.sub),
-      userName: req.auth!.name,
-      userRole: req.auth!.role,
-      image,
-      signedAt: new Date(),
-      dataHash: hashContent(record),
-      hashV: 2,
-    });
-    pushEvent(record, req, `firmó ${slot.label}`, name !== req.auth!.name ? `Firma de ${name}` : "");
-    await saveOrConflict(record);
-
-    await logEvent(req.auth, {
-      kind: "registro",
-      title: `${record.code} · firma ${slot.label}`,
-      detail: `${record.fileName} · ${name}`,
-    });
-    await record.populate("createdBy", "name role position");
-    res.json({ record: toClient(record) });
-  } catch (err) {
-    next(err);
-  }
+  return signSlot(req, res, next);
 }
 
+/** Quitar una firma de llenado mientras el registro está en borrador (p. ej. firmó la persona equivocada). */
 export async function removeSignature(req: Request, res: Response, next: NextFunction) {
   try {
     const record = await IsmRecord.findById(req.params.id);
     if (!record) throw notFound("Registro no encontrado");
-    const def = ismDefinition(record.code)!;
+    const area = await assertCanView(record, req);
     assertNotStepSigned(record);
     const sig = record.signatures.find((s) => s.field === req.params.field);
     if (!sig) throw notFound("Esa firma no existe");
-    if (!stageOpen(record, sig.stage, def.officeOnly)) throw conflict("La firma ya no se puede quitar");
-    if (!isManager(req.auth!.role) && sig.user.toString() !== req.auth!.sub) {
-      throw forbidden("Solo quien capturó la firma puede quitarla");
-    }
+    const step = flowOf(record.code)?.steps.find((s) => s.fields.includes(sig.field));
+    if (record.status !== "borrador" || !step?.atFill) throw conflict("La firma ya no se puede quitar: devuélvelo con comentario");
+    if (!canEdit(record, area, req.auth!.role, req.auth!.sub)) throw forbidden("Solo el área que lo llena quita una firma");
     record.signatures = record.signatures.filter((s) => s.field !== sig.field) as never;
-    pushEvent(record, req, `quitó firma ${sig.label}`);
+    pushEvent(record, req, `quitó firma ${sig.label}`, sig.signerName);
     await saveOrConflict(record);
     await record.populate("createdBy", "name role position");
     res.json({ record: toClient(record) });
   } catch (err) {
     next(err);
   }
-}
-
-/** Recuadros de firma de una etapa sin una firma válida. */
-function missing(def: ReturnType<typeof ismDefinition>, record: IIsmRecord, stage: SignatureStage) {
-  const signed = new Set(validSignatures(record).map((s) => s.field));
-  return def!.fields.filter((f) => f.type === "signature" && f.stage === stage && !signed.has(f.name));
 }
 
 /** Firmas que quedaron invalidadas porque los datos cambiaron después. */
@@ -858,19 +828,18 @@ function rejectIfIncomplete(record: IIsmRecord, res: Response): boolean {
 /**
  * R-07 (5-nov): el saliente llena, firma y lo envía a quien recibe el cargo.
  * No se ven entre ellos: desde aquí sale de su lista; quien recibe lo lee,
- * firma y lo envía al Capitán.
+ * firma con su clave y el relevo pasa al Capitán.
  */
 export async function handoffRecord(req: Request, res: Response, next: NextFunction) {
   try {
     const record = await IsmRecord.findById(req.params.id);
     if (!record) throw notFound("Registro no encontrado");
     if (record.status !== "borrador") throw conflict("El registro ya fue enviado");
-    assertCanView(record, req);
+    const area = await assertCanView(record, req);
     const def = ismDefinition(record.code)!;
     if (!def.handoff) throw badRequest("Este registro no se envía a otra persona");
     if (record.handoff) throw conflict(`Ya se envió a ${record.handoff.toName}`);
-    if (!canEdit(record, req.auth!.role, def.officeOnly, req.auth!.sub)) throw forbidden();
-    if (rejectIfIncomplete(record, res)) return;
+    if (!canEdit(record, area, req.auth!.role, req.auth!.sub)) throw forbidden();
     const own = validSignatures(record).some((s) => s.field === def.handoff!.from);
     if (!own) throw badRequest("Firma primero como saliente");
     const { to } = req.body as { to?: string };
@@ -878,15 +847,16 @@ export async function handoffRecord(req: Request, res: Response, next: NextFunct
       ? await User.findOne({ _id: to, active: true, role: { $in: CREW_LIST_ROLES }, sharedDevice: { $ne: true } }).select("name")
       : null;
     if (!person) throw badRequest("Elige a quien recibe el cargo");
-    if (person._id.equals(req.auth!.sub)) throw badRequest("Quien recibe el cargo es otra persona");
+    const outgoing = validSignatures(record).find((s) => s.field === def.handoff!.from)!;
+    if (person._id.equals(outgoing.user)) throw badRequest("Quien recibe el cargo es otra persona");
     record.handoff = { to: person._id, toName: person.name, by: new Types.ObjectId(req.auth!.sub), at: new Date() };
     pushEvent(record, req, `enviado a ${person.name} para que reciba el cargo`);
     await saveOrConflict(record);
     if (!record.test) {
       await notifyUsers([person._id], {
         kind: "entrega_cargo",
-        title: `${record.code}: ${req.auth!.name} te entrega el cargo`,
-        body: "Léelo, firma como entrante y envíalo al Capitán.",
+        title: `${record.code}: ${outgoing.signerName} te entrega el cargo`,
+        body: "Léelo y firma como entrante con tu clave.",
         record: record._id,
       });
     }
@@ -903,51 +873,11 @@ export async function submit(req: Request, res: Response, next: NextFunction) {
     const record = await IsmRecord.findById(req.params.id);
     if (!record) throw notFound("Registro no encontrado");
     if (record.status !== "borrador") throw conflict("El registro ya fue enviado");
-    assertCanView(record, req);
+    const area = await assertCanView(record, req);
     assertNotStepSigned(record);
-    const def = ismDefinition(record.code)!;
-    if (!canEdit(record, req.auth!.role, def.officeOnly, req.auth!.sub, officeRoleOf(def)) && !isReceiver(record, req.auth!.sub)) {
-      throw forbidden();
-    }
-    if (def.handoff && missing(def, record, "tripulacion").some((f) => f.name === def.handoff!.to)) {
-      throw badRequest("Falta la firma de quien recibe el cargo. Envíaselo con «Enviar a quien recibe»");
-    }
-
-    // Misma validación que la tablet: faltantes en su pregunta exacta.
-    if (rejectIfIncomplete(record, res)) return;
-
-    const invalid = invalidSignatures(record).filter((s) => s.stage === "tripulacion");
-    if (invalid.length) {
-      throw badRequest(
-        `Los datos cambiaron después de firmar: vuelve a firmar ${invalid.map((s) => s.label).join(", ")}`,
-      );
-    }
-    if (!def.officeOnly && def.stages.tripulacion > 0) {
-      const crewSigned = validSignatures(record).some((s) => s.stage === "tripulacion");
-      if (!crewSigned) throw badRequest("Falta la firma de quien llenó el registro");
-    }
-
-    record.submittedAt = new Date();
-    if (def.officeOnly) {
-      record.status = "por_oficina";
-    } else if (def.stages.capitan > 0 && missing(def, record, "capitan").length) {
-      record.status = "por_capitan";
-    } else {
-      record.status = "por_oficina";
-      if (def.stages.capitan > 0) {
-        // El Capitán ya firmó en el borrador: la aprobación es suya, no de quien envía.
-        const captainSig = validSignatures(record)
-          .filter((s) => s.stage === "capitan")
-          .sort((a, b) => new Date(b.signedAt).getTime() - new Date(a.signedAt).getTime())[0]!;
-        record.captainApprovedBy = captainSig.user;
-        record.captainApprovedAt = captainSig.signedAt;
-      }
-    }
-    record.returnInfo = null;
-    pushEvent(record, req, "enviado");
-    await saveOrConflict(record);
-    await notifyNextStep(record, def);
-
+    if (!canEdit(record, area, req.auth!.role, req.auth!.sub) && !isReceiver(record, req.auth!.sub)) throw forbidden();
+    if (!flowOf(record.code)) throw conflict("Este registro se envía desde su chequeo guiado");
+    await submitFlow(record, req);
     await logEvent(req.auth, {
       kind: "registro",
       title: `${record.code} enviado`,
@@ -960,63 +890,11 @@ export async function submit(req: Request, res: Response, next: NextFunction) {
   }
 }
 
-/** Capitán aprueba → oficina. Oficina aprueba → archivado e inmutable. */
-export async function approve(req: Request, res: Response, next: NextFunction) {
-  try {
-    const record = await IsmRecord.findById(req.params.id);
-    if (!record) throw notFound("Registro no encontrado");
-    assertNotStepSigned(record);
-    const def = ismDefinition(record.code)!;
-    const role = req.auth!.role;
-
-    if (record.status === "por_capitan" || record.status === "por_oficina") {
-      if (rejectIfIncomplete(record, res)) return;
-      const invalid = invalidSignatures(record);
-      if (invalid.length) {
-        throw badRequest(
-          `La firma de ${invalid.map((s) => s.label).join(", ")} quedó invalidada porque los datos cambiaron después. ` +
-            "Devuélvelo para que se vuelva a firmar.",
-        );
-      }
-    }
-
-    if (record.status === "por_capitan") {
-      if (role !== "capitan") throw forbidden("Solo el Capitán, desde su cuenta, firma este paso");
-      const pending = missing(def, record, "capitan");
-      if (pending.length) throw badRequest(`Falta firmar: ${pending.map((p) => p.label).join(", ")}`);
-      record.status = "por_oficina";
-      record.captainApprovedBy = new Types.ObjectId(req.auth!.sub);
-      record.captainApprovedAt = new Date();
-      pushEvent(record, req, "aprobado por el Capitán");
-    } else if (record.status === "por_oficina") {
-      if (role !== officeRoleOf(def)) {
-        throw forbidden(`Solo ${def.officeRole === "admin" ? "Administración" : "la Persona Designada"}, desde su cuenta, recibe este registro`);
-      }
-      const pending = missing(def, record, "oficina").filter((f) => f.label === officeLabelOf(def));
-      if (pending.length) throw badRequest(`Falta la firma de ${officeLabelOf(def)}`);
-      record.status = "archivado";
-      record.officeApprovedBy = new Types.ObjectId(req.auth!.sub);
-      record.archivedAt = new Date();
-      record.contentHash = hashRecord(record);
-      pushEvent(record, req, "archivado");
-    } else {
-      throw conflict("El registro no está esperando aprobación");
-    }
-
-    await saveOrConflict(record);
-    if (record.status === "archivado") await tryFreezeArchivedPdf(record);
-    else await notifyNextStep(record, def);
-    await logEvent(req.auth, {
-      kind: "registro",
-      title: `${record.code} · ${record.status === "archivado" ? "archivado" : "aprobado por el Capitán"}`,
-      detail: record.fileName,
-    });
-    await record.populate("createdBy", "name role position");
-    res.json({ record: toClient(record) });
-  } catch (err) {
-    next(err);
-  }
+/** Antes el Capitán y la PD «aprobaban» aparte; ahora firmar su casilla pasa el registro al siguiente. */
+export async function approve(_req: Request, _res: Response, next: NextFunction) {
+  next(conflict("Ahora se firma la casilla con tu clave y el registro pasa solo al siguiente. Actualiza la app."));
 }
+
 
 /**
  * Firma el paso actual de un registro guiado y lo pasa al siguiente
@@ -1030,22 +908,16 @@ export async function approve(req: Request, res: Response, next: NextFunction) {
  */
 export async function signStep(req: Request, res: Response, next: NextFunction) {
   try {
-    const { image, pin, newPin, signer: signerId, deviceAt } = req.body as {
-      image?: string;
+    const { pin, newPin, signer: signerId, deviceAt } = req.body as {
       pin?: string;
       newPin?: string;
       signer?: string;
       deviceAt?: string;
     };
-    // Sin dibujo se estampa la firma guardada de la persona (con su clave, igual que siempre).
-    if (image) {
-      if (!image.startsWith("data:image/png;base64,")) throw badRequest("Firma con el dedo en el recuadro");
-      if (image.length > 400_000) throw badRequest("La firma es demasiado grande");
-    }
 
     const record = await IsmRecord.findById(req.params.id);
     if (!record) throw notFound("Registro no encontrado");
-    assertCanView(record, req);
+    const area = await assertCanView(record, req);
     const step = currentSigner(record);
     if (!step) throw conflict(record.status === "archivado" ? "El registro ya está archivado" : "Este registro no se firma por pasos");
     const role = req.auth!.role;
@@ -1067,6 +939,11 @@ export async function signStep(req: Request, res: Response, next: NextFunction) 
     } else {
       // Nadie firma por otro rol: ni Gerencia ni Administración.
       if (role !== step.who) throw forbidden(`Solo ${roleName(step.who)}, desde su cuenta, firma este paso`);
+      // R-14 v2 (especificación ISM, 25-nov-2026): el Capitán llena y firma en borrador.
+      if (record.status === "borrador") {
+        if (!canEdit(record, area, role, req.auth!.sub)) throw forbidden("Lo firma el Puente, que lo llenó");
+        if (rejectIfIncomplete(record, res)) return;
+      }
       const invalid = invalidSignatures(record);
       if (invalid.length) {
         throw badRequest(
@@ -1079,24 +956,13 @@ export async function signStep(req: Request, res: Response, next: NextFunction) 
     const person = await User.findOne({ _id: signerUser, active: true }).select("name role position sharedDevice");
     if (!person) throw forbidden("Esa persona ya no está activa en la lista de tripulantes");
     if (person.sharedDevice) throw forbidden("La tablet compartida no firma: elige a la persona que hizo el chequeo");
-    // Antes de la clave: sin firma guardada hay que dibujarla (no se gasta un intento).
-    if (!image) {
-      const saved = await IsmCrew.exists({ user: signerUser, signatureImage: { $nin: ["", null] } });
-      if (!saved) throw badRequest("Aún no tienes firma registrada: dibújala en el recuadro o pide a la Persona Designada que la registre");
-    }
+    // Firma registrada una sola vez (especificación ISM, regla 2): sin ella no se firma.
+    const saved = await IsmCrew.exists({ user: signerUser, signatureImage: { $nin: ["", null] } });
+    if (!saved) throw badRequest(`${person.name} aún no tiene firma registrada. La registran Gerencia, el Capitán o la Persona Designada en Tripulantes.`);
     const sessionUser = new Types.ObjectId(req.auth!.sub);
-    // Quien firma desde su propia sesión ya probó quién es al entrar con su usuario y clave
-    // (pedido del cliente, 5-nov-2026): un toque en «Firmar» pone su firma. En una tablet
-    // con la sesión de otra persona se sigue pidiendo la clave.
-    const ownSession = sessionUser.equals(signerUser);
-    const profile = ownSession ? await crewProfile(signerUser) : await verifyPin(signerUser, pin, newPin);
-    // Firma dibujada: queda guardada para las siguientes; sin dibujo, se usa la guardada.
-    const signatureImage = image || profile.signatureImage!;
-    if (image) {
-      profile.signatureImage = image;
-      profile.signatureSetAt = new Date();
-      await profile.save();
-    }
+    // Se firma siempre con la clave (regla 3: la cuenta sola no firma), también desde la propia sesión.
+    const profile = await verifyPin(signerUser, pin, newPin);
+    const signatureImage = profile.signatureImage!;
 
     const now = new Date();
     // Clave restablecida poco antes de firmar: queda en la firma (y en el anexo).
@@ -1114,7 +980,7 @@ export async function signStep(req: Request, res: Response, next: NextFunction) 
       position: step.who === "lista" ? record.context?.filledBy?.position || person.position || "" : person.position || "",
       capturedBy: sessionUser.equals(signerUser) ? null : sessionUser,
       capturedByName: sessionUser.equals(signerUser) ? "" : req.auth!.name,
-      method: ownSession ? "sesion" : "clave",
+      method: "clave",
       ...(recentReset ? { pinResetAt: recentReset, pinResetByName: profile.pinResetByName || "" } : {}),
       ...(deviceTime(deviceAt) ? { deviceAt: deviceTime(deviceAt) } : {}),
       image: signatureImage,
@@ -1126,15 +992,19 @@ export async function signStep(req: Request, res: Response, next: NextFunction) 
       record,
       req,
       `firmó ${step.label}`,
-      `${sessionUser.equals(signerUser) ? "Con su clave" : `Firma de ${person.name} con su clave, en la sesión de ${req.auth!.name}`}${image ? "" : " y su firma guardada"}`,
+      `${sessionUser.equals(signerUser) ? "Con su clave" : `Firma de ${person.name} con su clave, en la sesión de ${req.auth!.name}`} y su firma registrada`,
     );
 
     const returned = record.returnInfo;
+    const fromDraft = record.status === "borrador";
     record.returnInfo = null;
     record.status = step.next;
-    if (step.step === "tripulacion") {
+    if (fromDraft) {
       record.submittedAt = now;
-      pushEvent(record, req, "enviado al Capitán");
+      pushEvent(record, req, step.step === "tripulacion" ? "enviado al Capitán" : "enviado");
+    }
+    if (step.step === "tripulacion") {
+      // (fin del paso de quien hizo el chequeo)
     } else if (step.step === "capitan") {
       record.captainApprovedBy = signerUser;
       record.captainApprovedAt = now;
@@ -1145,7 +1015,7 @@ export async function signStep(req: Request, res: Response, next: NextFunction) 
       pushEvent(record, req, "archivado");
     }
     await saveOrConflict(record);
-    if (step.step === "tripulacion") await syncNovedades(record, { id: req.auth!.sub, name: req.auth!.name });
+    if (fromDraft) await syncNovedades(record, { id: req.auth!.sub, name: req.auth!.name });
     // El PDF se genera una vez y queda congelado con su sha256.
     if (record.status === "archivado") await tryFreezeArchivedPdf(record);
 
@@ -1203,30 +1073,14 @@ export async function giveBack(req: Request, res: Response, next: NextFunction) 
       res.json({ record: toClient(record) });
       return;
     }
-    if (typeof section !== "string" || !section.trim()) throw badRequest("Indica la sección afectada");
-    const cleanReason = reason.trim().slice(0, 1000);
-    const cleanSection = section.trim().slice(0, 120);
-    const role = req.auth!.role;
-    if (record.status === "por_capitan" && role !== "capitan") {
-      throw forbidden("Solo el Capitán devuelve este registro");
-    }
-    if (record.status === "por_oficina" && role !== officeRoleOf(ismDefinition(record.code) ?? {})) {
-      throw forbidden(`Solo ${officeLabelOf(ismDefinition(record.code) ?? {})} devuelve este registro`);
-    }
-    if (record.status !== "por_capitan" && record.status !== "por_oficina") {
-      throw conflict("Solo se devuelve un registro que está en revisión");
-    }
-    record.status = "borrador";
-    record.signatures = record.signatures.filter((s) => s.stage === "tripulacion") as never;
-    record.captainApprovedAt = null;
-    record.captainApprovedBy = null;
-    record.returnInfo = { reason: cleanReason, section: cleanSection, byName: req.auth!.name, at: new Date() };
-    pushEvent(record, req, "devuelto", cleanReason, cleanSection);
-    await saveOrConflict(record);
+    await assertCanView(record, req);
+    if (!flowOf(record.code)) throw conflict("Este registro no se devuelve desde aquí");
+    // Regla 5: vuelve a quien lo llenó, con las firmas anteriores; se anulan la de quien devuelve y las posteriores.
+    await giveBackFlow(record, req, reason, typeof section === "string" ? section : "");
     await logEvent(req.auth, {
       kind: "registro",
       title: `${record.code} devuelto`,
-      detail: `${record.fileName} · ${cleanSection} · ${cleanReason}`,
+      detail: `${record.fileName} · ${reason.trim().slice(0, 300)}`,
     });
     await record.populate("createdBy", "name role position");
     res.json({ record: toClient(record) });
@@ -1302,8 +1156,10 @@ export async function discard(req: Request, res: Response, next: NextFunction) {
     const record = await IsmRecord.findById(req.params.id);
     if (!record) throw notFound("Registro no encontrado");
     if (record.status !== "borrador") throw conflict("Solo se descartan borradores");
-    if (!isManager(req.auth!.role) && record.createdBy.toString() !== req.auth!.sub) {
-      throw forbidden("Solo quien lo creó puede descartarlo");
+    // El borrador es del área (regla 8): lo descarta su área (o la PD en la limpieza, sección 12).
+    const area = await assertCanView(record, req);
+    if (!canEdit(record, area, req.auth!.role, req.auth!.sub) && req.auth!.role !== "designada") {
+      throw forbidden("Solo el área que lo llena puede descartarlo");
     }
     await record.deleteOne();
     await logEvent(req.auth, { kind: "registro", title: `${record.code} descartado`, detail: record.fileName });
@@ -1320,7 +1176,7 @@ export async function discard(req: Request, res: Response, next: NextFunction) {
 export async function setTest(req: Request, res: Response, next: NextFunction) {
   try {
     const role = req.auth!.role;
-    if (!(role === "designada" || isManager(role))) throw forbidden("Solo la Persona Designada marca registros de prueba");
+    if (!(role === "designada" || role === "duena")) throw forbidden("Solo la Persona Designada o Gerencia marcan registros de prueba");
     const { test, reason } = req.body as { test?: unknown; reason?: string };
     if (typeof test !== "boolean") throw badRequest("Indica si es de prueba");
     const record = await IsmRecord.findById(req.params.id);
@@ -1343,7 +1199,7 @@ export async function pdf(req: Request, res: Response, next: NextFunction) {
   try {
     const record = await IsmRecord.findById(req.params.id);
     if (!record) throw notFound("Registro no encontrado");
-    assertCanView(record, req);
+    await assertCanView(record, req);
     // Archivado: siempre el mismo archivo congelado (se genera en la primera descarga si es de antes).
     if (record.status === "archivado") {
       const frozen = await freezeArchivedPdf(record);
@@ -1364,78 +1220,54 @@ export async function pdf(req: Request, res: Response, next: NextFunction) {
   }
 }
 
-/** Resumen: bandejas por etapa y lo que falta llenar este mes. */
+/**
+ * Lo que espera la firma de esta cuenta (especificación ISM, 25-nov-2026,
+ * sección 5, «Mis tareas»): la bandeja del Capitán, lo de la PD (con las R-18
+ * de Cubierta y Máquinas por despachar), el R-18 de Hotelería de
+ * Administración, lo de José, Jorge o Paula en Gerencia, y en las áreas su
+ * fila del R-30 y la recepción conforme de su R-18.
+ */
+export function awaitingFilter(area: IsmArea, role: string): Record<string, unknown> {
+  if (role === "capitan") return { status: "por_capitan" };
+  if (role === "designada") return { status: "por_oficina", code: { $ne: "R-18_Hoteleria" } };
+  if (role === "admin") return { status: "por_oficina", code: "R-18_Hoteleria" };
+  if (role === "duena") return { status: "por_gerencia" };
+  if (ONBOARD_AREAS.includes(area)) return { status: "por_firmar", $or: [{ code: "R-30" }, { area }] };
+  return { _id: null };
+}
+
+/** Resumen de Mis tareas: bandejas, borradores del área y obligatorios según las frecuencias de Gerencia. */
 export async function summary(req: Request, res: Response, next: NextFunction) {
   try {
-    const uid = new Types.ObjectId(req.auth!.sub);
-    const { start, end, y, m } = monthRangeGalapagos();
-    // Los registros de prueba no cuentan en indicadores.
+    const { area } = await ismAccessOf(req.auth!);
+    const role = req.auth!.role;
+    const { y, m } = monthRangeGalapagos();
+    // Las pruebas no cuentan en Por firmar, Obligatorios ni Archivo (regla 12).
     const real = { test: { $ne: true } };
-    const monthFilter = { recordDate: { $gte: start, $lt: end }, status: { $ne: "borrador" }, ...real };
-    // Las bandejas cuentan lo mismo que muestra la lista: sin SEES_ALL, solo lo suyo y sin archivados.
-    const seesAll = SEES_ALL.has(req.auth!.role);
-    const scope = seesAll
-      ? real
-      : {
-          ...real,
-          status: { $ne: "archivado" },
-          $or: [{ createdBy: uid, handoff: null }, { "signatures.user": uid, handoff: null }, { "handoff.to": uid }],
-        };
-
-    const [byStatus, mine, mineReturned, monthly, equipmentDone, positionsDone] = await Promise.all([
+    const scope = { $and: [viewFilter(area, req.auth!.sub), real] };
+    const mine = ONBOARD_AREAS.includes(area) || area === "designada" ? { area } : { createdBy: new Types.ObjectId(req.auth!.sub) };
+    const [byStatus, drafts, returned, toSign, checklist] = await Promise.all([
       IsmRecord.aggregate([{ $match: scope }, { $group: { _id: "$status", n: { $sum: 1 } } }]),
-      IsmRecord.countDocuments({ status: "borrador", $or: [{ createdBy: uid, handoff: null }, { "handoff.to": uid }] }),
-      IsmRecord.countDocuments({ createdBy: uid, status: "borrador", returnInfo: { $ne: null } }),
-      IsmRecord.aggregate([
-        { $match: { ...monthFilter, code: { $in: ["R-25_Alcohol", "R-25_Drogas", "R-28"] } } },
-        { $group: { _id: "$code", n: { $sum: 1 } } },
-      ]),
-      IsmRecord.distinct("equipment.folder", { ...monthFilter, code: "R-16" }),
-      IsmRecord.distinct("position", { ...monthFilter, code: "R-23" }),
+      IsmRecord.countDocuments({ status: "borrador", ...mine }),
+      IsmRecord.countDocuments({ status: "borrador", returnInfo: { $ne: null }, ...mine }),
+      IsmRecord.countDocuments({ $and: [awaitingFilter(area, role), viewFilter(area, req.auth!.sub), real] }),
+      obligations(area),
     ]);
-
-    // R-16 dividido: Cubierta y Mantenimiento ven el avance de sus equipos.
-    const { area, positions } = await ismAccessOf(req.auth!);
-    const equipment = ismEquipment().filter((e) => canFillEquipment(area, e.owner));
-    // R-23: cada área ve el avance de los cargos por los que llena (null = todos).
-    const ownPositions = positions ?? [...CREW_POSITIONS];
-    const ownPositionsDone = ownPositions.filter((p) => positionsDone.includes(p));
-    const doneHere = equipment.filter((e) => equipmentDone.includes(e.folder)).length;
     const counts = Object.fromEntries(byStatus.map((s: { _id: string; n: number }) => [s._id, s.n]));
-    const monthlyDone = new Set(monthly.map((x: { _id: string }) => x._id));
-
     res.json({
       month: { y, m },
       counts: {
         borrador: counts.borrador ?? 0,
         por_capitan: counts.por_capitan ?? 0,
         por_oficina: counts.por_oficina ?? 0,
+        por_gerencia: counts.por_gerencia ?? 0,
+        por_firmar: counts.por_firmar ?? 0,
         archivado: counts.archivado ?? 0,
-        misBorradores: mine,
-        misDevueltos: mineReturned,
+        misBorradores: drafts,
+        misDevueltos: returned,
+        porFirmar: toSign,
       },
-      // Cada cuenta ve solo los obligatorios de los R que llena (tabla del cliente, 5-nov-2026).
-      checklist: [
-        { code: "R-25_Alcohol", title: "Control mensual de alcohol", done: monthlyDone.has("R-25_Alcohol") },
-        { code: "R-25_Drogas", title: "Control mensual de drogas", done: monthlyDone.has("R-25_Drogas") },
-        { code: "R-28", title: "Chequeo contraincendios y salvamento", done: monthlyDone.has("R-28") },
-        {
-          code: "R-16",
-          title: "Mantenimiento preventivo por equipo",
-          done: doneHere >= equipment.length,
-          progress: { done: doneHere, total: equipment.length },
-          missing: equipment
-            .filter((e) => !equipmentDone.includes(e.folder))
-            .map((e) => e.name),
-        },
-        {
-          code: "R-23",
-          title: "Horas de descanso por cargo",
-          done: ownPositionsDone.length >= ownPositions.length,
-          progress: { done: ownPositionsDone.length, total: ownPositions.length },
-          missing: ownPositions.filter((p) => !positionsDone.includes(p)).map((p) => POSITION_LABELS[p as keyof typeof POSITION_LABELS]),
-        },
-      ].filter((i) => canCreateForm(area, i.code) && (i.code !== "R-23" || ownPositions.length > 0)),
+      checklist,
     });
   } catch (err) {
     next(err);

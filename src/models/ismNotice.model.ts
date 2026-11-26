@@ -14,6 +14,10 @@ export const NOTICE_KINDS = [
   "clave_bloqueada",
   "entrega_cargo",
   "por_recibir",
+  // Especificación ISM (25-nov-2026): bandeja agrupada del capitán, firmas de otros pasos y vencimientos.
+  "bandeja_capitan",
+  "por_firmar",
+  "vencimiento",
 ] as const;
 export type NoticeKind = (typeof NOTICE_KINDS)[number];
 

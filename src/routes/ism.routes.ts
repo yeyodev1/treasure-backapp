@@ -3,6 +3,8 @@ import { requireAuth } from "../middlewares/auth.middleware";
 import * as ism from "../controllers/ism.controller";
 import * as crew from "../controllers/ismCrew.controller";
 import * as plantilla from "../controllers/ismPlantilla.controller";
+import * as flow from "../controllers/ismFlow.controller";
+import * as gestion from "../controllers/ismGestion.controller";
 
 /**
  * Rutas nuevas de Registros ISM (informe R-14 del 29-oct). Van aparte del
@@ -17,6 +19,7 @@ export function ismRoutes(router: Router, crewRoles: RequestHandler) {
   // Lista de tripulantes y claves (la mantiene la Persona Designada; se valida en el controlador).
   router.get("/ism/crew", requireAuth, crewRoles, crew.listCrewMembers);
   router.post("/ism/crew", requireAuth, crewRoles, crew.createCrewMember);
+  router.get("/ism/crew/me", requireAuth, crewRoles, crew.myCrewProfile);
   router.get("/ism/crew/me/pin", requireAuth, crewRoles, crew.myPin);
   router.post("/ism/crew/me/pin", requireAuth, crewRoles, crew.changeMyPin);
   router.patch("/ism/crew/:id", requireAuth, crewRoles, crew.updateCrewMember);
@@ -29,6 +32,18 @@ export function ismRoutes(router: Router, crewRoles: RequestHandler) {
   router.get("/ism/novedades", requireAuth, crewRoles, plantilla.listNovedades);
   router.patch("/ism/novedades/:id", requireAuth, crewRoles, plantilla.updateNovedad);
   router.get("/ism/metrics", requireAuth, crewRoles, plantilla.metrics);
+
+  // Especificación ISM (25-nov-2026): quién puede firmar una casilla (persona con clave y firma registrada).
+  router.get("/ism/records/:id/signers/:field", requireAuth, crewRoles, flow.signersFor);
+
+  // Frecuencias y avisos (sección 8) y calendario de rotación (sección 9), de Gerencia.
+  router.get("/ism/frequencies", requireAuth, crewRoles, gestion.listFrequencies);
+  router.put("/ism/frequencies/:code", requireAuth, crewRoles, gestion.updateFrequency);
+  router.get("/ism/rotation", requireAuth, crewRoles, gestion.rotation);
+  router.post("/ism/rotation/posts", requireAuth, crewRoles, gestion.createPost);
+  router.post("/ism/rotation/turns", requireAuth, crewRoles, gestion.createTurn);
+  router.patch("/ism/rotation/turns/:id", requireAuth, crewRoles, gestion.updateTurn);
+  router.delete("/ism/rotation/turns/:id", requireAuth, crewRoles, gestion.deleteTurn);
 
   // Avisos dentro de la app
   router.get("/ism/notices", requireAuth, crewRoles, crew.listNotices);

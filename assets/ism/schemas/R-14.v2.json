@@ -1,0 +1,175 @@
+{
+ "code": "R-14",
+ "version": 2,
+ "template": "R-14.pdf",
+ "templateEdition": "Edición 00 · Vigencia 01-05-2025",
+ "title": "Chequeo previo al zarpe",
+ "officialTitle": "R-14 Lista de chequeo previo al zarpe y rondas de seguridad",
+ "vessel": "Y/P Treasure of Galápagos I",
+ "notice": "Lo llena y firma solo el Capitán antes de cada zarpe de puerto. Arribo, fondeo y rondas no se registran en la app (especificación ISM, 25-nov-2026).",
+ "obs": {
+  "page": 0,
+  "x": 0.112,
+  "y": 0.3485,
+  "w": 0.818,
+  "h": 0.0175
+ },
+ "archiveFolder": "ISM/Listado de registros/R-14 Chequeo previo al zarpe",
+ "card": {
+  "title": "Chequeo previo al zarpe",
+  "text": "Solo el Capitán, una vez por cada zarpe de puerto: la sección previa al zarpe.",
+  "icon": "fa-anchor",
+  "newLabel": "Nuevo zarpe",
+  "resumeTitle": "Tienes un chequeo sin enviar"
+ },
+ "fileNamePattern": "{code}_{date}_{time}.pdf",
+ "uniqueness": {
+  "by": "fileName",
+  "onConflict": "suffix"
+ },
+ "answerTypes": [
+  "si",
+  "no",
+  "na"
+ ],
+ "signers": [
+  {
+   "step": "capitan",
+   "who": "capitan",
+   "label": "Capitán (quien chequea)",
+   "field": "Firma_Capitan",
+   "print": "anexo",
+   "status": "borrador",
+   "next": "por_oficina",
+   "returnsTo": null,
+   "order": 1,
+   "signers": 1
+  },
+  {
+   "step": "oficina",
+   "who": "designada",
+   "label": "Persona Designada",
+   "field": "Firma_Persona_Designada",
+   "print": "casilla",
+   "status": "por_oficina",
+   "next": "archivado",
+   "returnsTo": "capitan",
+   "order": 2,
+   "signers": 1
+  }
+ ],
+ "context": {
+  "activityDate": {
+   "label": "Fecha de la actividad",
+   "pdfField": "Text Field 1069",
+   "required": true
+  },
+  "activityTime": {
+   "label": "Hora de la actividad",
+   "pdfField": "Text Field 1070",
+   "required": true
+  },
+  "place": {
+   "label": "Lugar",
+   "pdfField": "Text Field 1071",
+   "required": true,
+   "suggestions": [
+    "Baltra",
+    "Puerto Ayora",
+    "San Cristóbal",
+    "Navegando"
+   ]
+  }
+ },
+ "sections": [
+  {
+   "id": "zarpe",
+   "title": "Previo al zarpe",
+   "officialTitle": "LISTA DE CHEQUEO DE CUBIERTA PREVIO AL ZARPE",
+   "hint": "Antes de soltar amarras o levar el ancla.",
+   "items": [
+    {
+     "id": "zarpe.personal",
+     "n": "01",
+     "official": "Se verifica que todo el personal este abordo y sin novedad.",
+     "prompt": "¿Todo el personal está a bordo y sin novedad?",
+     "si": "Check Box 1013",
+     "no": "Check Box 1014",
+     "allowNa": true
+    },
+    {
+     "id": "zarpe.pangas",
+     "n": "02",
+     "official": "Pangas trincadas y aseguradas sobre cubierta en caso de remolque, verificar que los motores se encuentren con el seguro puesto y amarradas a la nave",
+     "prompt": "¿Las pangas están trincadas y aseguradas (o, si van a remolque, con el seguro de los motores puesto y amarradas a la nave)?",
+     "si": "Check Box 1015",
+     "no": "Check Box 1016",
+     "allowNa": true
+    },
+    {
+     "id": "zarpe.navegacion",
+     "n": "03",
+     "official": "Equipos de navegación en correcto funcionamiento (Radar, GPS, Navtex, Sonda, Indicador de ángulo de caña, AIS, VDR)",
+     "prompt": "¿Los equipos de navegación funcionan bien (radar, GPS, Navtex, sonda, indicador de ángulo de caña, AIS y VDR)?",
+     "si": "Check Box 1017",
+     "no": "Check Box 1018",
+     "allowNa": true
+    },
+    {
+     "id": "zarpe.comunicaciones",
+     "n": "04",
+     "official": "Chequeo del estado operativo de los equipos de comunicaciones.",
+     "prompt": "¿Los equipos de comunicaciones están operativos?",
+     "si": "Check Box 1019",
+     "no": "Check Box 1020",
+     "allowNa": true
+    },
+    {
+     "id": "zarpe.maquinas",
+     "n": "05",
+     "official": "Maquinas en funcionamiento, chequeo de controles de máquinas operativos",
+     "prompt": "¿Las máquinas están en funcionamiento y sus controles operativos?",
+     "si": "Check Box 1021",
+     "no": "Check Box 1022",
+     "allowNa": true
+    },
+    {
+     "id": "zarpe.gobierno",
+     "n": "06",
+     "official": "Sistema de gobierno principal y auxiliar operativos",
+     "prompt": "¿El sistema de gobierno principal y el auxiliar están operativos?",
+     "si": "Check Box 1023",
+     "no": "Check Box 1024",
+     "allowNa": true
+    },
+    {
+     "id": "zarpe.luces",
+     "n": "07",
+     "official": "Luces de navegación en servicio y luces de emergencia operativos",
+     "prompt": "¿Las luces de navegación están en servicio y las de emergencia operativas?",
+     "si": "Check Box 1025",
+     "no": "Check Box 1026",
+     "allowNa": true
+    },
+    {
+     "id": "zarpe.cartas",
+     "n": "08",
+     "official": "Cartas Náuticas listas de acuerdo al plan de viaje",
+     "prompt": "¿Las cartas náuticas están listas según el plan de viaje?",
+     "si": "Check Box 1027",
+     "no": "Check Box 1028",
+     "allowNa": true
+    },
+    {
+     "id": "zarpe.capitania",
+     "n": "09",
+     "official": "Reporte a la Capitanía del puerto respectivo y solicitud de zarpe",
+     "prompt": "¿Se reportó a la Capitanía del puerto y se solicitó el zarpe?",
+     "si": "Check Box 1029",
+     "no": "Check Box 1030",
+     "allowNa": true
+    }
+   ]
+  }
+ ]
+}
