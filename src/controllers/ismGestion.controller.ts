@@ -146,12 +146,20 @@ async function cleanTurn(body: Record<string, unknown>) {
   return { from, to, user };
 }
 
+/** Dos turnos del mismo puesto no se pisan: cada puesto tiene una persona por día. */
+async function assertNoOverlap(post: unknown, from: string, to: string, except?: unknown) {
+  const clash = await IsmRotationTurn.exists({ post, from: { $lte: to }, to: { $gte: from }, ...(except ? { _id: { $ne: except } } : {}) });
+  if (clash) throw badRequest("Ese puesto ya tiene un turno en esas fechas: mueve o elimina el otro primero");
+}
+
 export async function createTurn(req: Request, res: Response, next: NextFunction) {
   try {
     assertOwner(req);
     const post = Types.ObjectId.isValid(String(req.body?.post)) ? await IsmRotationPost.findById(req.body.post) : null;
     if (!post) throw badRequest("Elige el puesto");
-    const turn = await IsmRotationTurn.create({ post: post._id, ...(await cleanTurn(req.body)), updatedBy: req.auth!.sub });
+    const clean = await cleanTurn(req.body);
+    await assertNoOverlap(post._id, clean.from as string, clean.to as string);
+    const turn = await IsmRotationTurn.create({ post: post._id, ...clean, updatedBy: req.auth!.sub });
     res.status(201).json({ turn });
   } catch (err) {
     next(err);
@@ -176,6 +184,7 @@ export async function updateTurn(req: Request, res: Response, next: NextFunction
       }
     } else {
       const clean = await cleanTurn({ from: turn.from, to: turn.to, user: turn.user, ...req.body });
+      await assertNoOverlap(turn.post, clean.from as string, clean.to as string, turn._id);
       Object.assign(turn, clean);
     }
     turn.updatedBy = new Types.ObjectId(req.auth!.sub);

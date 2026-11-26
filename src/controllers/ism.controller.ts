@@ -315,7 +315,8 @@ export async function catalog(req: Request, res: Response, next: NextFunction) {
       equipment: ismEquipment().filter((e) => canFillEquipment(area, e)),
       positions: CREW_POSITIONS.map((p) => ({ value: p, label: POSITION_LABELS[p] })),
       // Cargos por los que esta cuenta abre un R-07 o R-22 (null = cualquiera).
-      fillPositions: ONBOARD_AREAS.includes(area) ? (AREA_POSITIONS[area] ?? null) : null,
+      // El Capitán evalúa (R-22) a cualquier cargo; cada área, los suyos.
+      fillPositions: ONBOARD_AREAS.includes(area) && area !== "puente" ? (AREA_POSITIONS[area] ?? null) : null,
       vessel: defaultVessel(),
       // Qué ve cada cuenta (especificación ISM, 25-nov-2026, sección 5).
       access: {
