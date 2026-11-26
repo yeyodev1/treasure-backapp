@@ -27,6 +27,7 @@ import { hashRecord } from "../services/ism.service";
  *   npx ts-node --transpile-only src/scripts/ism-spec-25nov.ts                     (vista previa)
  *   npx ts-node --transpile-only src/scripts/ism-spec-25nov.ts --apply
  *   npx ts-node --transpile-only src/scripts/ism-spec-25nov.ts --apply --mark-tests --discard-empty
+ *   … --deactivate-generic   (solo cuando las personas reales ya tienen clave y firma)
  */
 
 const GENERIC_NAMES = [/^jefe de m[aá]quinas$/i, /^timonel ?1$/i, /^persona designada \(oficina\)$/i];
@@ -74,11 +75,13 @@ async function main() {
     );
   }
 
-  // 3. Fichas genéricas.
+  // 3. Fichas genéricas: solo con --deactivate-generic, después de que Gerencia cargue a las personas
+  // reales con su clave y su firma (si no, el barco se queda sin quién firme).
+  const deactivateGeneric = process.argv.includes("--deactivate-generic");
   const generic = [...users.values()].filter((u) => GENERIC_NAMES.some((re) => re.test(u.name.trim())));
   for (const u of generic) {
-    log(`3. ficha genérica → inactiva: ${u.name} (${u.role})`);
-    if (apply) await User.updateOne({ _id: u._id }, { $set: { active: false } });
+    log(`3. ficha genérica → inactiva: ${u.name} (${u.role})${deactivateGeneric ? "" : " · se omite (agrega --deactivate-generic)"}`);
+    if (apply && deactivateGeneric) await User.updateOne({ _id: u._id }, { $set: { active: false } });
   }
 
   // 4. Persona Designada en tierra.
