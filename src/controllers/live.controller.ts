@@ -43,7 +43,8 @@ export async function livePulse(req: Request, res: Response, next: NextFunction)
       (await Cruise.findOne({ status: "planificado" }).sort({ startDate: 1 }));
 
     const [feed, todayOrders, openOrders, reviews, annulments, counts] = await Promise.all([
-      AuditEvent.find(since ? { createdAt: { $gt: since } } : {})
+      // En vivo es del bar: lo de Registros ISM se ve en Registros (pedido de Gerencia, 26-nov-2026).
+      AuditEvent.find({ kind: { $ne: "registro" }, ...(since ? { createdAt: { $gt: since } } : {}) })
         .sort({ createdAt: -1 })
         .limit(50),
       Order.find({ createdAt: { $gte: dayStart }, status: { $nin: ["cancelada", "retenida"] } }).select(
