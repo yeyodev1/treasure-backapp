@@ -6,6 +6,7 @@ import { Product } from "../models/product.model";
 import { Cruise } from "../models/cruise.model";
 import { applyMovement, belongsInQuito, LOCATION_FIELD } from "../services/inventory.service";
 import { logEvent } from "../services/audit.service";
+import { nextCountCode } from "../services/barStock.service";
 import { badRequest, conflict, forbidden, notFound } from "../errors/httpError";
 import { LOCATION_LABELS, round2, STOCK_LOCATIONS, StockLocation } from "../utils/units";
 
@@ -16,11 +17,7 @@ const POPULATE_PEOPLE = [
   { path: "cruise", select: "code name" },
 ];
 
-async function nextCode(): Promise<string> {
-  const last = await StockCount.findOne().sort({ createdAt: -1 }).select("code");
-  const n = last ? Number(last.code.replace(/\D/g, "")) + 1 : 1;
-  return `CT-${String(n).padStart(3, "0")}`;
-}
+const nextCode = nextCountCode;
 
 export async function listCounts(_req: Request, res: Response, next: NextFunction) {
   try {

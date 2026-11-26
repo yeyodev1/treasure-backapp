@@ -6,7 +6,17 @@ import { STOCK_LOCATIONS, StockLocation } from "../utils/units";
  * cambia stock. Solo Gerencia aprueba: se registra una sola diferencia por
  * producto contra el corte y se conservan los movimientos posteriores.
  */
-export const COUNT_STATUSES = ["borrador", "enviado", "aprobado", "rechazado"] as const;
+/**
+ * Conteo de cierre (Bar-stock, 24-nov-2026): borrador (el bar cuenta a
+ * ciegas) → enviado (la directora recuenta a ciegas lo que difiere) →
+ * gerencia (merma sobre el límite, botella completa o repetición) → aprobado
+ * (verificado: pasa a ser la referencia del stock).
+ */
+export const COUNT_STATUSES = ["borrador", "enviado", "gerencia", "aprobado", "rechazado"] as const;
+export const COUNT_KINDS = ["libre", "cierre", "inicial", "admin"] as const;
+export type CountKind = (typeof COUNT_KINDS)[number];
+export const WASTE_MOTIVES = ["rotura", "cortesia", "consumo", "faltante"] as const;
+export type WasteMotive = (typeof WASTE_MOTIVES)[number];
 export type CountStatus = (typeof COUNT_STATUSES)[number];
 
 export const COUNT_REASONS = [
@@ -25,6 +35,15 @@ export interface ICountLine {
   digitalAtCut: number;
   physical: number | null;
   reason: string;
+  /** Recuento a ciegas de la directora (solo productos con diferencia). */
+  recount: number | null;
+  /** ok: dentro de tolerancia · corregido: era error de conteo · merma: diferencia real. */
+  result: "" | "ok" | "tolerancia" | "corregido" | "merma";
+  motive: "" | WasteMotive;
+  /** Costo por unidad base al cerrar y valor de la merma (0 si no hay costo). */
+  unitCost: number;
+  value: number;
+  fullBottle: boolean;
 }
 
 export interface IStockCount {
@@ -41,6 +60,16 @@ export interface IStockCount {
   reviewedBy: Types.ObjectId | null;
   reviewedAt: Date | null;
   reviewNote: string;
+  kind: CountKind;
+  /** Merma total del conteo y por qué pasó a Gerencia. */
+  wasteTotal: number;
+  toManagement: string[];
+  verifiedBy: Types.ObjectId | null;
+  verifiedByName: string;
+  verifiedAt: Date | null;
+  submittedByName: string;
+  /** Decisión de Gerencia sobre la merma (rechazar vuelve a la directora con el comentario). */
+  decision: { approved: boolean; comment: string; byName: string; at: Date } | null;
   createdAt?: Date;
   updatedAt?: Date;
 }
@@ -53,6 +82,12 @@ const countLineSchema = new Schema<ICountLine>(
     digitalAtCut: { type: Number, required: true },
     physical: { type: Number, default: null },
     reason: { type: String, default: "" },
+    recount: { type: Number, default: null },
+    result: { type: String, enum: ["", "ok", "tolerancia", "corregido", "merma"], default: "" },
+    motive: { type: String, enum: ["", ...WASTE_MOTIVES], default: "" },
+    unitCost: { type: Number, default: 0 },
+    value: { type: Number, default: 0 },
+    fullBottle: { type: Boolean, default: false },
   },
   { _id: false },
 );
@@ -72,6 +107,20 @@ const stockCountSchema = new Schema<IStockCount>(
     reviewedBy: { type: Schema.Types.ObjectId, ref: "User", default: null },
     reviewedAt: { type: Date, default: null },
     reviewNote: { type: String, default: "" },
+    kind: { type: String, enum: COUNT_KINDS, default: "libre" },
+    wasteTotal: { type: Number, default: 0 },
+    toManagement: { type: [String], default: [] },
+    verifiedBy: { type: Schema.Types.ObjectId, ref: "User", default: null },
+    verifiedByName: { type: String, default: "" },
+    verifiedAt: { type: Date, default: null },
+    submittedByName: { type: String, default: "" },
+    decision: {
+      type: new Schema(
+        { approved: Boolean, comment: String, byName: String, at: Date },
+        { _id: false },
+      ),
+      default: null,
+    },
   },
   { timestamps: true },
 );

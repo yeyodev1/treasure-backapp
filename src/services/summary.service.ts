@@ -420,8 +420,8 @@ export async function barSummary(kind: unknown, value: unknown) {
 
   // ---- 10. Merma: conteo de cierre de cada crucero finalizado
   const finished = scopeCruises.filter((c) => c.status === "cerrado");
-  const counts = await StockCount.find({ location: "abordo", status: { $in: ["enviado", "aprobado"] } })
-    .select("cruise cutAt status lines")
+  const counts = await StockCount.find({ location: "abordo", status: { $in: ["enviado", "gerencia", "aprobado"] } })
+    .select("cruise cutAt status lines kind wasteTotal")
     .sort({ cutAt: -1 })
     .lean();
   const closingCount = (c: LeanCruise) =>
@@ -433,6 +433,12 @@ export async function barSummary(kind: unknown, value: unknown) {
     const k = closingCount(c);
     if (!k) continue;
     countedCruises += 1;
+    // Conteo de cierre de Bar-stock: su merma ya viene verificada (con el recuento de la directora).
+    if (k.kind === "cierre") {
+      wasteAmount += k.wasteTotal ?? 0;
+      if (k.lines.some((l) => l.result === "merma" && !l.unitCost)) wasteMissingCost = true;
+      continue;
+    }
     for (const line of k.lines) {
       if (line.physical === null) continue;
       const diff = line.digitalAtCut - line.physical;

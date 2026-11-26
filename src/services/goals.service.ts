@@ -12,6 +12,13 @@ export const GOAL_DEFS = [
   { key: "agencyMaxDays", label: "Días máximos de una factura a la agencia sin cobrar", unit: "días", initial: 30 },
   { key: "wetsuitAB", label: "Tarifa de wetsuit, cruceros A y B", unit: "$", initial: 50 },
   { key: "wetsuitC", label: "Tarifa de wetsuit, crucero C", unit: "$", initial: 80 },
+  // Bar-stock (especificación del 24-nov-2026, sección 7)
+  { key: "wasteLimit", label: "Límite de merma por crucero (más pasa a Gerencia)", unit: "$", initial: 25 },
+  { key: "repeatCruises", label: "Repetición que alerta (cruceros seguidos con merma)", unit: "", initial: 3 },
+  { key: "openTolerance", label: "Tolerancia de botella abierta", unit: "botella", initial: 0.25 },
+  { key: "verifyMaxHours", label: "Horas que tiene la directora para verificar", unit: "h", initial: 1 },
+  { key: "orderOutlierPct", label: "Pedido fuera de lo normal (sobre la propuesta)", unit: "%", initial: 20 },
+  { key: "receptionLateHours", label: "Recepción atrasada desde el envío", unit: "h", initial: 24 },
 ] as const;
 
 export type GoalKey = (typeof GOAL_DEFS)[number]["key"];

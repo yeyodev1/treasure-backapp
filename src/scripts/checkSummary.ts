@@ -4,6 +4,7 @@ import assert from "node:assert";
 import { Types } from "mongoose";
 import { dayStates } from "../services/summary.service";
 import { isTestOrTeamEmail } from "../services/emailRules.service";
+import { judgeRecount } from "../services/barStock.service";
 
 const cruise = (code: string, start: string, end: string, status: string) => ({
   _id: new Types.ObjectId(),
@@ -44,4 +45,15 @@ for (const bad of ["hola@hola.com", "hhyh@hu.com", "hhh@gmail.com", "simon@gmail
 for (const good of ["afgaviria7@gmail.com", "lex@doddstr.com.au", "ana@outlook.com", "marktattersall94@gmail.com", "schmollsarah@web.de", "facturaspaulateran@gmail.com"]) {
   assert.ok(!isTestOrTeamEmail(good, team), `debió aceptar ${good}`);
 }
+// Bar-stock, criterios 2-5: Club esperado 20, la directora cuenta 18 → merma de 2; cuenta 20 → se corrige.
+const club = { expected: 20, tolerance: 0, unitCost: 2.5, category: "cerveza", containerSize: 1 };
+assert.deepEqual(judgeRecount({ ...club, recount: 18 }), { result: "merma", value: 5, fullBottle: false });
+assert.equal(judgeRecount({ ...club, recount: 20 }).result, "corregido");
+assert.equal(judgeRecount({ ...club, recount: 22 }).result, "corregido", "sobrante no es merma");
+// Botella abierta: ±¼ de 750 ml es tolerancia; una botella completa de licor faltante va a Gerencia.
+const jw = { expected: 3000, tolerance: 187.5, unitCost: 0.04, category: "licor", containerSize: 750 };
+assert.equal(judgeRecount({ ...jw, recount: 2850 }).result, "corregido");
+assert.deepEqual(judgeRecount({ ...jw, recount: 2250 }), { result: "merma", value: 30, fullBottle: true });
+// Esperado negativo cuenta como 0 (nunca negativo).
+assert.equal(judgeRecount({ ...club, expected: -21, recount: 0 }).result, "corregido");
 console.log("ok", { navegando: n("navegando"), para: n("para"), porVenir: n("por_venir") });

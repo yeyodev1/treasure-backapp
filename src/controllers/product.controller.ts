@@ -46,6 +46,10 @@ interface ProductBody {
   servingIcon?: ServingIcon | "";
   /** Costo de un envase (IVA incluido): obligatorio al crear un insumo físico (24-nov-2026). */
   containerCost?: number;
+  /** Bar-stock: fresco sin stock, unidades por caja y lugar en la repisa. */
+  fresh?: boolean;
+  caseSize?: number;
+  countOrder?: number;
 }
 
 /** Costo del envase → costo por unidad base. */
@@ -106,6 +110,12 @@ function applyPhysicalFields(product: IProduct, body: ProductBody) {
     product.stockTarget = Number(body.stockTarget);
   }
   if (body.servingSize !== undefined) product.servingSize = body.servingSize;
+  if (body.fresh !== undefined) product.fresh = Boolean(body.fresh);
+  if (body.caseSize !== undefined) {
+    if (!(Number(body.caseSize) >= 0 && Number(body.caseSize) <= 200)) throw badRequest("Unidades por caja inválidas");
+    product.caseSize = Math.round(Number(body.caseSize));
+  }
+  if (body.countOrder !== undefined && Number.isFinite(Number(body.countOrder))) product.countOrder = Number(body.countOrder);
   if (body.servingPrice !== undefined) product.servingPrice = body.servingPrice;
 }
 

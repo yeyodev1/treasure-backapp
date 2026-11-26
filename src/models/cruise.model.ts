@@ -63,6 +63,13 @@ export interface ICruise {
   /** Bartender del crucero: se le acredita la comisión de sus ventas (4-nov-2026). */
   bartender: Types.ObjectId | null;
   bartenderName: string;
+  /**
+   * Inicio sin conteo de cierre del crucero anterior (Bar-stock, 24-nov-2026):
+   * la directora lo pide y Gerencia autoriza o no; queda quién y cuándo.
+   */
+  startAuthorization: { status: "pedida" | "autorizada" | "negada"; requestedByName: string; byName: string; at: Date; reason: string } | null;
+  /** Si cambia el bartender, el que entra firma que recibe el bar antes de vender. */
+  barReceipt: { byName: string; at: Date } | null;
   /** Agencia del crucero: a quién se le facturan sus cortesías y wetsuits (especificación, 24-nov-2026). */
   agency: { name: string; ruc: string; email: string };
   createdBy?: Types.ObjectId;
@@ -123,6 +130,14 @@ const cruiseSchema = new Schema<ICruise>(
     closeReason: { type: String, default: "" },
     bartender: { type: Schema.Types.ObjectId, ref: "User", default: null },
     bartenderName: { type: String, default: "" },
+    startAuthorization: {
+      type: new Schema(
+        { status: String, requestedByName: String, byName: String, at: Date, reason: String },
+        { _id: false },
+      ),
+      default: null,
+    },
+    barReceipt: { type: new Schema({ byName: String, at: Date }, { _id: false }), default: null },
     agency: {
       type: new Schema(
         {

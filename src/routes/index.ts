@@ -19,6 +19,7 @@ import * as consumptions from "../controllers/consumption.controller";
 import * as supply from "../controllers/supply.controller";
 import * as commissions from "../controllers/commission.controller";
 import * as summary from "../controllers/summary.controller";
+import * as barStock from "../controllers/barStock.controller";
 import * as agency from "../controllers/agency.controller";
 import * as weeklyOrders from "../controllers/weeklyOrder.controller";
 import * as shipStops from "../controllers/shipStop.controller";
@@ -75,6 +76,7 @@ export default function routerApi(app: Application) {
   // Equipo
   router.get("/users", requireAuth, OWNER, users.listUsers);
   router.get("/users/bartenders", requireAuth, LEAD, users.listBartenders);
+  router.get("/users/authorizers", requireAuth, requireRole("direccion", "bartender"), users.listAuthorizers);
   router.post("/users", requireAuth, OWNER, users.createUser);
   router.patch("/users/:id", requireAuth, OWNER, users.updateUser);
 
@@ -238,6 +240,20 @@ export default function routerApi(app: Application) {
   router.get("/reports/by-cruise", requireAuth, OWNER, reports.salesByCruise);
   router.get("/reports/owner", requireAuth, OWNER, reports.ownerPanel);
   router.get("/reports/cruise-calendar", requireAuth, OWNER, reports.cruiseCalendar);
+  // Bar-stock (especificación del 24-nov-2026): rotura y salida, conteo de cierre a ciegas e inicio con conteo
+  router.post("/bar-stock/movements", requireAuth, requireRole("direccion", "bartender"), barStock.createMovement);
+  router.get("/bar-stock/movements", requireAuth, requireRole("direccion", "bartender"), barStock.listMovements);
+  router.get("/bar-stock/counts/current", requireAuth, requireRole("direccion", "bartender"), barStock.currentCount);
+  router.post("/bar-stock/counts/initial", requireAuth, DIRECTOR, barStock.startInitialCount);
+  router.get("/bar-stock/counts/:id", requireAuth, requireRole("direccion", "bartender"), barStock.getCount);
+  router.put("/bar-stock/counts/:id/lines", requireAuth, requireRole("direccion", "bartender"), barStock.saveCountLines);
+  router.post("/bar-stock/counts/:id/send", requireAuth, requireRole("direccion", "bartender"), barStock.sendCount);
+  router.put("/bar-stock/counts/:id/recount", requireAuth, DIRECTOR, barStock.recountLines);
+  router.post("/bar-stock/counts/:id/close", requireAuth, DIRECTOR, barStock.closeCount);
+  router.post("/bar-stock/counts/:id/decide", requireAuth, OWNER, barStock.decideCount);
+  router.post("/cruises/:id/start-authorization", requireAuth, DIRECTOR, barStock.startAuthorization);
+  router.post("/bar-stock/receipt", requireAuth, requireRole("direccion", "bartender"), barStock.signBarReceipt);
+
   // Resumen de Gerencia en dos vistas (especificación, 24-nov-2026)
   router.get("/reports/summary/bar", requireAuth, OWNER, summary.barView);
   router.get("/reports/summary/operacion", requireAuth, OWNER, summary.operationView);
