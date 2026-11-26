@@ -83,6 +83,12 @@ export interface IProduct {
   servingIcon: ServingIcon | "";
 
   isCustom: boolean;
+  /** Fresco (menta, limón, azúcar…): se pide pero no lleva stock ni se cuenta (Bar-stock, 24-nov-2026). */
+  fresh: boolean;
+  /** Unidades por caja para contar «cajas + sueltas»; 0 = se cuenta suelto. */
+  caseSize: number;
+  /** Lugar en la repisa dentro de su categoría: el conteo sigue este orden. */
+  countOrder: number;
   /** Solo se cobra en estos trayectos (A, B, C); vacío = en todos. Los wetsuits tienen precio por trayecto. */
   legs: string[];
   active: boolean;
@@ -138,6 +144,9 @@ const productSchema = new Schema<IProduct>(
     wineStyle: { type: String, enum: [...WINE_STYLES, ""], default: "" },
     servingIcon: { type: String, enum: [...SERVING_ICONS, ""], default: "" },
     isCustom: { type: Boolean, default: false },
+    fresh: { type: Boolean, default: false },
+    caseSize: { type: Number, default: 0, min: 0 },
+    countOrder: { type: Number, default: 0 },
     legs: { type: [String], default: [] },
     active: { type: Boolean, default: true },
     costPerUnit: { type: Number, default: 0, min: 0 },

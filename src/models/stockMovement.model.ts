@@ -14,6 +14,9 @@ export const MOVEMENT_TYPES = [
   "reverso", // deshacer un consumo registrado por error (devuelve lo descontado)
   "devolucion", // anulación aprobada por Gerencia con regreso al stock
   "migracion", // saldo trasladado desde el modelo anterior
+  "rotura", // botella rota registrada en el momento, con foto (Bar-stock, 24-nov-2026)
+  "salida", // a cocina, tripulación o brindis, con quién autorizó (no es venta ni merma)
+  "devolucion_tierra", // vencido o dañado que vuelve a tierra (no es merma)
 ] as const;
 export type MovementType = (typeof MOVEMENT_TYPES)[number];
 
@@ -36,6 +39,12 @@ export interface IStockMovement {
   purchase: Types.ObjectId | null;
   /** Movimientos previos a la v3 están en unidades antiguas (no en ml). */
   legacy: boolean;
+  /** Rotura: foto obligatoria. */
+  photo: string;
+  /** Salida: cocina, tripulación o brindis. */
+  exitKind: "" | "cocina" | "tripulacion" | "brindis";
+  /** Salida: quién la autorizó. */
+  authorizedByName: string;
   user: Types.ObjectId;
   createdAt?: Date;
   updatedAt?: Date;
@@ -58,6 +67,9 @@ const stockMovementSchema = new Schema<IStockMovement>(
     requisition: { type: Schema.Types.ObjectId, ref: "Requisition", default: null },
     purchase: { type: Schema.Types.ObjectId, ref: "Purchase", default: null },
     legacy: { type: Boolean, default: false },
+    photo: { type: String, default: "" },
+    exitKind: { type: String, enum: ["", "cocina", "tripulacion", "brindis"], default: "" },
+    authorizedByName: { type: String, default: "" },
     user: { type: Schema.Types.ObjectId, ref: "User", required: true },
   },
   { timestamps: true },

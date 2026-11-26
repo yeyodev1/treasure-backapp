@@ -11,6 +11,12 @@ import {
   WeeklyOrder,
 } from "../models/weeklyOrder.model";
 import {
+  advanceDeadlines,
+  deadline,
+  APPROVE_AFTER_MS,
+  ALERT_AFTER_MS,
+  outlierReasons,
+  purchaseResponsible,
   ensureWeeklyOrder,
   isOverdue,
   latestCut,
@@ -22,7 +28,7 @@ import {
 } from "../services/weeklyOrder.service";
 import { moveStock, stockOf, updateCost } from "../services/inventory.service";
 import { logEvent } from "../services/audit.service";
-import { recordBarCount } from "./count.controller";
+import { goalsAt } from "../services/goals.service";
 import { badRequest, conflict, forbidden, notFound, unauthorized } from "../errors/httpError";
 import { round2 } from "../utils/units";
 
@@ -67,6 +73,9 @@ function serialize(order: OrderDoc) {
     phaseLabel: PHASE_LABELS[phase],
     overdue: isOverdue(order),
     toReceive: toReceive(order),
+    // Plazos del miércoles (Bar-stock): ajuste del bartender hasta las 15h00, aprobación hasta las 18h00.
+    barDeadline: deadline(order, ALERT_AFTER_MS),
+    approveDeadline: deadline(order, APPROVE_AFTER_MS),
   };
 }
 
@@ -126,10 +135,17 @@ function push(order: OrderDoc, req: Request, action: string, detail = "") {
 }
 
 /** El pedido vigente (se prepara aquí si la tarea del miércoles no corrió) y los anteriores. */
+/** Aplica los plazos de las 15h00 y 18h00 (y lo guarda) antes de mostrar el pedido. */
+async function withDeadlines(order: OrderDoc) {
+  if (await advanceDeadlines(order)) await save(order).catch(() => undefined);
+  return order;
+}
+
 export async function currentWeeklyOrder(_req: Request, res: Response, next: NextFunction) {
   try {
     await ensureWeeklyOrder();
     const orders = await WeeklyOrder.find().sort({ cutAt: -1 }).limit(12);
+    if (orders[0]) await withDeadlines(orders[0]);
     const [first] = orders;
     res.json({
       order: first ? serialize(first) : null,
@@ -153,7 +169,7 @@ export async function currentWeeklyOrder(_req: Request, res: Response, next: Nex
 
 export async function getWeeklyOrder(req: Request, res: Response, next: NextFunction) {
   try {
-    res.json({ order: serialize(await load(String(req.params.id))) });
+    res.json({ order: serialize(await withDeadlines(await load(String(req.params.id)))) });
   } catch (err) {
     next(err);
   }
@@ -269,17 +285,6 @@ export async function saveWeeklyOrder(req: Request, res: Response, next: NextFun
   }
 }
 
-/** El conteo del pedido pasa a ser el conteo físico del barco; repetirlo no ajusta dos veces. */
-async function saveBarCount(req: Request, order: OrderDoc) {
-  const result = await recordBarCount(order, req.auth!.sub);
-  if (!result) return;
-  await logEvent(req.auth, {
-    kind: "conteo",
-    title: `Conteo ${result.code} del bar (pedido ${order.code})`,
-    detail: `${result.adjusted} diferencia(s) · el conteo físico es la nueva referencia`,
-  });
-}
-
 /** Bar → directora. Guarda el conteo del bar como conteo físico; no compra. */
 export async function sendWeeklyOrder(req: Request, res: Response, next: NextFunction) {
   try {
@@ -287,12 +292,19 @@ export async function sendWeeklyOrder(req: Request, res: Response, next: NextFun
     if (order.status !== "bar") throw conflict("Este pedido ya se envió a revisión");
     assertCanEdit(req, order);
     assertVersion(order, req.body?.version);
+    // Motivo obligatorio si el bartender cambia más del N % lo propuesto (o agrega algo que no se propuso).
+    const pct = (await goalsAt()).orderOutlierPct ?? 20;
+    const noReason = order.lines.find((l) => {
+      const base = l.suggested ?? 0;
+      const changed = base > 0 ? Math.abs(l.qty - base) > (base * pct) / 100 : l.qty > 0;
+      return changed && !l.observation.trim();
+    });
+    if (noReason) throw badRequest(`${noReason.name}: cambió más de ${pct} % lo propuesto, escribe el motivo`);
     for (const l of order.lines) l.barQty = l.qty;
     order.status = "directora";
     push(order, req, "Enviado a revisión", `${order.lines.filter((l) => l.qty > 0).length} producto(s) con cantidad`);
     await save(order);
     await logEvent(req.auth, { kind: "requerimiento", title: `Pedido ${order.code} enviado a revisión`, detail: "" });
-    await saveBarCount(req, order);
     res.json({ order: serialize(order) });
   } catch (err) {
     next(err);
@@ -316,6 +328,7 @@ export async function approveWeeklyOrder(req: Request, res: Response, next: Next
     for (const l of order.lines) l.approvedQty = l.qty;
     order.status = "aprobado";
     order.noNeeds = noNeeds;
+    order.outliers = noNeeds ? [] : await outlierReasons(order);
     order.recipient = noNeeds ? "" : ORDER_RECIPIENT;
     push(
       order,
@@ -326,8 +339,6 @@ export async function approveWeeklyOrder(req: Request, res: Response, next: Next
         : `${withQty.length} producto(s) · para ${ORDER_RECIPIENT}${skippedBar ? " · el bar no lo revisó" : ""}`,
     );
     await save(order);
-    // Aprobó sin que el bar enviara: lo que el bar alcanzó a contar también queda como conteo.
-    if (skippedBar) await saveBarCount(req, order);
     await logEvent(req.auth, {
       kind: "requerimiento",
       title: noNeeds ? `Pedido ${order.code} cerrado sin necesidades` : `Pedido ${order.code} aprobado`,
@@ -377,7 +388,9 @@ export async function weeklyOrderCron(req: Request, res: Response, next: NextFun
     const secret = process.env.CRON_SECRET;
     if (!secret || req.headers.authorization !== `Bearer ${secret}`) throw unauthorized();
     const { order, created } = await ensureWeeklyOrder();
-    res.json({ ok: true, created, code: order.code, week: order.week });
+    const advanced = await advanceDeadlines(order);
+    if (advanced) await save(order);
+    res.json({ ok: true, created, advanced, code: order.code, week: order.week, status: order.status });
   } catch (err) {
     next(err);
   }
@@ -463,6 +476,10 @@ async function recordDelivery(
         arrivedAt: null,
         arrivedByName: "",
         awaitsBar: true,
+        different: false,
+        needsDirector: false,
+        directorConfirmedByName: "",
+        differenceDecision: null,
       };
       await apply(order, delivery, session);
       order.deliveries.push(delivery);
@@ -594,7 +611,7 @@ export async function shipWeeklyOrder(req: Request, res: Response, next: NextFun
 export async function arriveWeeklyOrder(req: Request, res: Response, next: NextFunction) {
   try {
     const key = String(req.params.key);
-    const body = (req.body ?? {}) as { items?: Array<{ productId: string; source: DeliverySource; received: number }>; note?: string };
+    const body = (req.body ?? {}) as { items?: Array<{ productId: string; source: DeliverySource; received: number }>; note?: string; different?: boolean };
     let order: OrderDoc | null = null;
     let arrived = false;
     let short = "";
@@ -618,9 +635,20 @@ export async function arriveWeeklyOrder(req: Request, res: Response, next: NextF
           if (got < item.qty) missing.push(`${item.name} ${item.qty - got}`);
         }
         const got = delivery.items.filter((i) => (i.received ?? 0) > 0).map((i) => ({ ...(i as unknown as { toObject(): IWeeklyOrderDeliveryItem }).toObject(), qty: i.received! }));
+        // «Llegó diferente» le llega a Gerencia (Bar-stock, 24-nov-2026).
+        delivery.different = missing.length > 0 || body.different === true;
+        delivery.arrivedByName = req.auth!.name;
+        // Quien compró es el mismo bartender que recibe: confirma además la directora; el stock sube con ella.
+        if (delivery.by && delivery.by.equals(req.auth!.sub) && req.auth!.role === "bartender") {
+          delivery.needsDirector = true;
+          o.markModified("deliveries");
+          o.history.push({ at: new Date(), by: new Types.ObjectId(req.auth!.sub), byName: req.auth!.name, action: "Recibió (falta la directora)", detail: "Compró y recibe la misma persona" });
+          await o.save({ session });
+          arrived = true;
+          return;
+        }
         if (got.length) await addToBoard(req, o, got, `${key}:llegada`, session);
         delivery.arrivedAt = new Date();
-        delivery.arrivedByName = req.auth!.name;
         const note = String(body.note ?? "").trim().slice(0, 200);
         short = missing.join(", ");
         o.history.push({
@@ -653,6 +681,117 @@ export async function arriveWeeklyOrder(req: Request, res: Response, next: NextF
       });
     }
     res.json({ order: serialize(result) });
+  } catch (err) {
+    next(err);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Bar-stock (especificación del 24-nov-2026): compra del jueves, recepción y Gerencia
+// ---------------------------------------------------------------------------
+
+/**
+ * Responsable de compras: registra por producto lo comprado, «no conseguido» o
+ * «reemplazado por…», sin costos (los costos viven en el Catálogo), y lo marca
+ * enviado al barco. El stock sube cuando el bar lo confirma.
+ */
+export async function purchaseWeeklyOrder(req: Request, res: Response, next: NextFunction) {
+  try {
+    const responsible = await purchaseResponsible();
+    if (req.auth!.role !== "duena" && responsible?.id !== req.auth!.sub) {
+      throw forbidden(`Esta semana compra ${responsible?.name ?? "el responsable de compras"}`);
+    }
+    const body = (req.body ?? {}) as {
+      key?: string;
+      items?: Array<{ productId: string; qty: number; status?: "comprado" | "no_conseguido" | "reemplazado"; replacement?: string }>;
+    };
+    const items = Array.isArray(body.items) ? body.items : [];
+    const order = await load(String(req.params.id));
+    if (order.status !== "aprobado" || order.noNeeds) throw conflict("Este pedido no está aprobado para comprar");
+    const shortages = items
+      .filter((i) => i.status === "no_conseguido" || i.status === "reemplazado")
+      .map((i) => {
+        const line = order.lines.find((l) => l.product.toString() === i.productId);
+        if (!line) throw badRequest("Hay un producto que no está en el pedido");
+        if (i.status === "reemplazado" && !String(i.replacement ?? "").trim()) throw badRequest(`${line.name}: ¿reemplazado por qué?`);
+        return { product: line.product, name: line.name, status: i.status as "no_conseguido" | "reemplazado", replacement: String(i.replacement ?? "").trim().slice(0, 120) };
+      });
+    const bought = items.filter((i) => Number(i.qty) > 0);
+    let result = order;
+    if (bought.length) {
+      req.body = { key: body.key, document: "Compra del jueves", items: bought.map((i) => ({ productId: i.productId, source: "compra", qty: Number(i.qty), cost: 0 })) };
+      result = await recordDelivery(req, "entrega", async () => undefined);
+    }
+    for (const sh of shortages) {
+      if (!result.shortages.some((x) => x.product.equals(sh.product))) result.shortages.push(sh);
+    }
+    result.sentAt = new Date();
+    result.sentByName = req.auth!.name;
+    push(result, req, "Enviado al barco", `${bought.length} comprado(s)${shortages.length ? ` · ${shortages.map((x) => `${x.name} ${x.status === "reemplazado" ? `→ ${x.replacement}` : "no conseguido"}`).join(", ")}` : ""}`);
+    await save(result);
+    await logEvent(req.auth, { kind: "compra", title: `Pedido ${result.code}: compra enviada al barco`, detail: req.auth!.name });
+    res.json({ order: serialize(result) });
+  } catch (err) {
+    next(err);
+  }
+}
+
+/** La directora confirma una recepción que el mismo bartender compró y recibió; ahí sube el stock. */
+export async function directorConfirmArrival(req: Request, res: Response, next: NextFunction) {
+  try {
+    if (role(req) !== "direccion" && role(req) !== "duena") throw forbidden("Confirma la directora");
+    const key = String(req.params.key);
+    let order: OrderDoc | null = null;
+    await mongoose.connection.transaction(async (session) => {
+      const o = await WeeklyOrder.findById(String(req.params.id)).session(session);
+      if (!o) throw notFound("Pedido no encontrado");
+      const delivery = o.deliveries.find((d) => d.key === key);
+      if (!delivery || !delivery.needsDirector) throw notFound("Recepción no encontrada");
+      order = o;
+      if (delivery.arrivedAt) return;
+      const got = delivery.items
+        .filter((i) => (i.received ?? 0) > 0)
+        .map((i) => ({ ...(i as unknown as { toObject(): IWeeklyOrderDeliveryItem }).toObject(), qty: i.received! }));
+      if (got.length) await addToBoard(req, o, got, `${key}:llegada`, session);
+      delivery.arrivedAt = new Date();
+      delivery.directorConfirmedByName = req.auth!.name;
+      o.markModified("deliveries");
+      o.history.push({ at: delivery.arrivedAt, by: new Types.ObjectId(req.auth!.sub), byName: req.auth!.name, action: "La directora confirmó la recepción", detail: "" });
+      await o.save({ session });
+    });
+    res.json({ order: serialize(order as unknown as OrderDoc) });
+  } catch (err) {
+    next(err);
+  }
+}
+
+/** Gerencia: acepta un pedido fuera de lo normal (o lo ajusta editando cantidades). */
+export async function decideOutlier(req: Request, res: Response, next: NextFunction) {
+  try {
+    const order = await load(String(req.params.id));
+    if (!order.outliers.length) throw conflict("Este pedido no está fuera de lo normal");
+    order.outlierDecision = { accepted: true, byName: req.auth!.name, at: new Date() };
+    push(order, req, "Gerencia aceptó el pedido fuera de lo normal", order.outliers.join(" · "));
+    await save(order);
+    res.json({ order: serialize(order) });
+  } catch (err) {
+    next(err);
+  }
+}
+
+/** Gerencia ante «Llegó diferente»: acepta o pide explicación a quien compró. */
+export async function decideDifference(req: Request, res: Response, next: NextFunction) {
+  try {
+    const { action, note } = req.body as { action?: string; note?: string };
+    if (action !== "aceptada" && action !== "explicacion") throw badRequest("Acción inválida");
+    const order = await load(String(req.params.id));
+    const delivery = order.deliveries.find((d) => d.key === String(req.params.key));
+    if (!delivery || !delivery.different) throw notFound("Recepción no encontrada");
+    delivery.differenceDecision = { action, byName: req.auth!.name, at: new Date(), note: String(note ?? "").trim().slice(0, 300) };
+    order.markModified("deliveries");
+    push(order, req, action === "aceptada" ? "Gerencia aceptó lo que llegó diferente" : "Gerencia pidió explicación a quien compró", String(note ?? "").trim());
+    await save(order);
+    res.json({ order: serialize(order) });
   } catch (err) {
     next(err);
   }

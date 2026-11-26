@@ -25,9 +25,11 @@ import { round2 } from "../utils/units";
  */
 
 /**
- * Una empresa de Contífico. El bar y los wetsuits son empresas distintas
- * (pedido del cliente, 14-nov-2026): cada cobro va a la de su línea, con su
- * key, su token, su serie y su numeración.
+ * Cuenta de facturación por línea. Bar y wetsuits facturan en la misma
+ * empresa de Contífico pero en establecimientos distintos (bar 001, renta y
+ * souvenirs 002; aclaración de Gerencia, 24-nov-2026): cada uno con su serie y
+ * su numeración. Si algún día son empresas distintas, basta con poner las
+ * variables CONTIFICO_WETSUIT_*.
  */
 export interface ContificoAccount {
   line: BillingLine;

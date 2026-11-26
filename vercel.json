@@ -18,7 +18,7 @@
   "crons": [
     {
       "path": "/api/cron/weekly-order",
-      "schedule": "0 21 * * 3"
+      "schedule": "5 * * * *"
     },
     {
       "path": "/api/cron/invoices",

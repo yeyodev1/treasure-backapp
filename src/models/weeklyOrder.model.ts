@@ -46,6 +46,8 @@ export interface IWeeklyOrderLine {
   observation: string;
   /** Envases que contó el bar a bordo (flujo simple, Gabriel 16-nov-2026); null = no contó. */
   counted: number | null;
+  /** Stock estimado al viernes (envases), con el que se calcula la propuesta (Bar-stock, 24-nov-2026). */
+  fridayStock: number | null;
   editedByName: string;
   editedAt: Date | null;
 }
@@ -86,6 +88,13 @@ export interface IWeeklyOrderDelivery {
    * confirma lo recibido. Las entregas anteriores (false) ya sumaron al barco.
    */
   awaitsBar: boolean;
+  /** El bar marcó «Llegó diferente»: le llega a Gerencia (Bar-stock, 24-nov-2026). */
+  different: boolean;
+  /** Quien compró es el mismo bartender que recibe: confirma además la directora. */
+  needsDirector: boolean;
+  directorConfirmedByName: string;
+  /** Gerencia: aceptó la diferencia o pidió explicación a quien compró. */
+  differenceDecision: { action: "aceptada" | "explicacion"; byName: string; at: Date; note: string } | null;
 }
 
 export interface IWeeklyOrderEvent {
@@ -113,6 +122,16 @@ export interface IWeeklyOrder {
   revision: number;
   changedAt: Date | null;
   recipient: string;
+  /** A las 18h00 sin aprobación se aprueba solo con la propuesta (Bar-stock, 24-nov-2026). */
+  autoApproved: boolean;
+  /** Pedido fuera de lo normal (más de 20 % sobre la propuesta o un producto que nunca se pide). */
+  outliers: string[];
+  outlierDecision: { accepted: boolean; byName: string; at: Date } | null;
+  /** Compra del jueves: lo que no se consiguió o se reemplazó. */
+  shortages: Array<{ product: Types.ObjectId; name: string; status: "no_conseguido" | "reemplazado"; replacement: string }>;
+  /** El responsable de compras marcó el pedido como enviado al barco. */
+  sentAt: Date | null;
+  sentByName: string;
   createdAt?: Date;
   updatedAt?: Date;
 }
@@ -141,6 +160,7 @@ const lineSchema = new Schema<IWeeklyOrderLine>(
     approvedQty: { type: Number, default: null },
     observation: { type: String, default: "", maxlength: 300 },
     counted: { type: Number, default: null, min: 0 },
+    fridayStock: { type: Number, default: null },
     editedByName: { type: String, default: "" },
     editedAt: { type: Date, default: null },
   },
@@ -185,6 +205,13 @@ const deliverySchema = new Schema<IWeeklyOrderDelivery>(
     arrivedAt: { type: Date, default: null },
     arrivedByName: { type: String, default: "" },
     awaitsBar: { type: Boolean, default: false },
+    different: { type: Boolean, default: false },
+    needsDirector: { type: Boolean, default: false },
+    directorConfirmedByName: { type: String, default: "" },
+    differenceDecision: {
+      type: new Schema({ action: String, byName: String, at: Date, note: String }, { _id: false }),
+      default: null,
+    },
   },
   { _id: false },
 );
@@ -203,6 +230,25 @@ const weeklyOrderSchema = new Schema<IWeeklyOrder>(
     revision: { type: Number, default: 0 },
     changedAt: { type: Date, default: null },
     recipient: { type: String, default: "" },
+    autoApproved: { type: Boolean, default: false },
+    outliers: { type: [String], default: [] },
+    outlierDecision: { type: new Schema({ accepted: Boolean, byName: String, at: Date }, { _id: false }), default: null },
+    shortages: {
+      type: [
+        new Schema(
+          {
+            product: { type: Schema.Types.ObjectId, ref: "Product", required: true },
+            name: { type: String, default: "" },
+            status: { type: String, enum: ["no_conseguido", "reemplazado"], required: true },
+            replacement: { type: String, default: "" },
+          },
+          { _id: false },
+        ),
+      ],
+      default: [],
+    },
+    sentAt: { type: Date, default: null },
+    sentByName: { type: String, default: "" },
   },
   { timestamps: true, optimisticConcurrency: true },
 );

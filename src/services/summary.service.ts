@@ -310,9 +310,14 @@ export async function barSummary(kind: unknown, value: unknown) {
       (p) => p.total,
     );
     const diff = round2(paid - consumedC);
+    const cruisePayments = livePayments.filter((p) => p.cruise.toString() === id);
+    const byMethod = (m: string) => sum(cruisePayments.filter((p) => p.method === m), (p) => p.total);
     return {
       id,
       code: c.code,
+      start: startKey(c),
+      end: endKey(c),
+      methods: { tarjeta: byMethod("tarjeta"), efectivo: byMethod("efectivo"), transferencia: byMethod("transferencia") + byMethod("online") },
       status: c.status,
       consumed: consumedC,
       collected: paid,
@@ -415,8 +420,8 @@ export async function barSummary(kind: unknown, value: unknown) {
 
   // ---- 10. Merma: conteo de cierre de cada crucero finalizado
   const finished = scopeCruises.filter((c) => c.status === "cerrado");
-  const counts = await StockCount.find({ location: "abordo", status: { $in: ["enviado", "aprobado"] } })
-    .select("cruise cutAt status lines")
+  const counts = await StockCount.find({ location: "abordo", status: { $in: ["enviado", "gerencia", "aprobado"] } })
+    .select("cruise cutAt status lines kind wasteTotal")
     .sort({ cutAt: -1 })
     .lean();
   const closingCount = (c: LeanCruise) =>
@@ -428,6 +433,12 @@ export async function barSummary(kind: unknown, value: unknown) {
     const k = closingCount(c);
     if (!k) continue;
     countedCruises += 1;
+    // Conteo de cierre de Bar-stock: su merma ya viene verificada (con el recuento de la directora).
+    if (k.kind === "cierre") {
+      wasteAmount += k.wasteTotal ?? 0;
+      if (k.lines.some((l) => l.result === "merma" && !l.unitCost)) wasteMissingCost = true;
+      continue;
+    }
     for (const line of k.lines) {
       if (line.physical === null) continue;
       const diff = line.digitalAtCut - line.physical;
@@ -541,6 +552,11 @@ export async function barSummary(kind: unknown, value: unknown) {
       }
     }
   }
+  for (const c of finished) {
+    if (!closingCount(c)) {
+      actions.push({ tone: "rojo", text: `${c.code} cerró sin conteo del bar: no se puede saber la merma`, to: "/bar-stock", label: "Ir a Conteos" });
+    }
+  }
   for (const r of collectedRows) {
     if (r.status === "cerrado" && Math.abs(r.diff) > 0.005) {
       actions.push({ tone: "rojo", text: `Revisar cobro de ${r.diff > 0 ? "más" : "menos"} en ${r.code}`, amount: Math.abs(r.diff), to: `/admin/pagos?crucero=${r.id}`, label: "Ir a Cobros" });
@@ -572,7 +588,7 @@ export async function barSummary(kind: unknown, value: unknown) {
         ? `Contar el bar antes de finalizar${belowZero.length ? `: ${belowZero.length} productos bajo cero` : ""}`
         : `Contar el bar: ${belowZero.length} producto${belowZero.length === 1 ? "" : "s"} bajo cero`,
       count: belowZero.length || undefined,
-      to: "/inventario/conteos",
+      to: "/bar-stock",
       label: "Ir a Conteos",
     });
   }
@@ -599,7 +615,7 @@ export async function barSummary(kind: unknown, value: unknown) {
   const byDay: Array<{ day: string; total: number }> = [];
   if (period.cruise) {
     for (let d = period.fromKey; d <= period.toKey; d = addDaysKey(d, 1)) {
-      byDay.push({ day: d, total: sum(sales.filter((s) => s.dayKey === d && !s.courtesy), (s) => s.amount) });
+      byDay.push({ day: d, total: sum(sales.filter((s) => s.dayKey === d && !s.courtesy && s.line === "bar"), (s) => s.amount) });
     }
   }
 
@@ -824,10 +840,11 @@ export function dayStates(fromKey: string, toKey: string, cruises: LeanCruise[],
   const today = commercialDateKey();
   const first = firstMonth(cruises);
   const nights = new Map<string, LeanCruise>();
-  for (const c of cruises) {
+  // Ordenados por zarpe: el que sale después pisa el día de cambio («cuenta para el crucero que zarpa»).
+  for (const c of [...cruises].sort((a, b) => startKey(a).localeCompare(startKey(b)))) {
     // Solo navegó lo que se inició: un crucero programado no cuenta (B-002 zarpa hoy pero aún no inicia).
     if (c.status === "planificado") continue;
-    for (let d = startKey(c); d < endKey(c); d = addDaysKey(d, 1)) if (!nights.has(d)) nights.set(d, c);
+    for (let d = startKey(c); d < endKey(c); d = addDaysKey(d, 1)) nights.set(d, c);
   }
   const out: Array<{ day: string; state: DayState; code: string; departs: boolean; arrives: boolean; today: boolean }> = [];
   for (let d = fromKey; d <= toKey; d = addDaysKey(d, 1)) {

@@ -26,6 +26,7 @@ import { AgencyInvoice } from "../models/agencyInvoice.model";
 import { StockMovement } from "../models/stockMovement.model";
 import { Requisition } from "../models/requisition.model";
 import { StockCount } from "../models/stockCount.model";
+import { openCount, startGate } from "../services/barStock.service";
 import { IsmRecord } from "../models/ismRecord.model";
 
 /** Bartender del crucero: un usuario activo con rol bartender, o null para quitarlo. */
@@ -585,6 +586,10 @@ async function startReview(cruise: InstanceType<typeof Cruise>) {
   const other = await Cruise.findOne({ status: "abordo", _id: { $ne: cruise._id } }).select("code name");
   if (other) blockers.push(`El crucero ${other.code || other.name} sigue en curso: finaliza su operación primero`);
 
+  // Bar-stock (24-nov-2026): el siguiente crucero solo arranca con el conteo de cierre del anterior verificado.
+  const gate = await startGate(cruise);
+  if (!gate.ok) blockers.push(gate.blocker);
+
   // Avisos de stock: no bloquean el crucero, el bar ve "no disponible" por producto.
   const availability = await onboardAvailability();
   const sellable = await Product.find({ active: true, sellable: true, kind: { $ne: "servicio" } }).select("name");
@@ -600,6 +605,7 @@ async function startReview(cruise: InstanceType<typeof Cruise>) {
 
   return {
     blockers,
+    gate,
     warnings: {
       unavailable,
       low: low.map((p) => `${p.name}: ${p.onboardStock} ${p.stockUnit} a bordo`),
@@ -781,12 +787,6 @@ export async function finishCruise(req: Request, res: Response, next: NextFuncti
     }
     if (cruise.status !== "abordo") throw conflict("Solo se finaliza un crucero en curso");
     const review = await finishReview(cruise);
-    if (!review.barCount) {
-      if (req.auth!.role !== "duena") {
-        throw badRequest("Falta el conteo del bar: cuenta el bar (Inventario → Conteos) antes de finalizar el crucero");
-      }
-      if (!reason) throw badRequest("Sin conteo del bar: indica el motivo para finalizar igual");
-    }
     if (review.issues.length && !reason) {
       throw badRequest(`Cierre excepcional: indica el motivo (${review.issues.join(" · ")})`);
     }
@@ -808,6 +808,14 @@ export async function finishCruise(req: Request, res: Response, next: NextFuncti
       return;
     }
 
+    // Bar-stock (24-nov-2026): al cerrar se abre el conteo de cierre del bartender, a ciegas.
+    const closing = await openCount("cierre", closed._id, req.auth!.sub, `Conteo de cierre de ${closed.code || closed.name}`);
+    await logEvent(req.auth, {
+      kind: "conteo",
+      title: `Conteo de cierre ${closing.code} abierto · ${closed.code || closed.name}`,
+      detail: `${closing.lines.length} productos por contar`,
+      cruise: closed._id,
+    });
     await logEvent(req.auth, {
       kind: "salida",
       title: `Operación del crucero finalizada · ${closed.code || closed.name}`,

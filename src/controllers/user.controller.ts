@@ -46,6 +46,16 @@ export async function listBartenders(_req: Request, res: Response, next: NextFun
   }
 }
 
+/** Quién puede autorizar una salida del bar: directoras de crucero y Gerencia (solo nombre). */
+export async function listAuthorizers(_req: Request, res: Response, next: NextFunction) {
+  try {
+    const users = await User.find({ role: { $in: ["direccion", "duena"] }, active: true }).select("name role").sort({ name: 1 });
+    res.json({ users });
+  } catch (err) {
+    next(err);
+  }
+}
+
 export async function createUser(req: Request, res: Response, next: NextFunction) {
   try {
     const { name, email, password, role, isCashier, position, pin } = req.body as {
