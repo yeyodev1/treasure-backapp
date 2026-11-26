@@ -70,3 +70,16 @@ import { isOldProposal } from "../controllers/weeklyOrder.controller";
   assert(!isOldProposal({ ...base, lines: [{ editedAt: new Date() }] as never, history: h("x") }), "editada por el bar → no");
   console.log("propuesta vieja ok");
 }
+
+// Ciclo de la semana: recepción del viernes de cada pedido.
+{
+  const { receptionRow } = require("../services/barControl.service") as typeof import("../services/barControl.service");
+  const now = Date.parse("2026-11-21T12:00:00Z");
+  const base = { code: "PS-005", week: "2026-11-18", status: "aprobado" };
+  assert.equal(receptionRow({ ...base }, "r", now).state, "pendiente");
+  assert.equal(receptionRow({ ...base, deliveries: [{ at: new Date("2026-11-20T10:00:00Z") }] }, "r", now).state, "26 h sin confirmar");
+  assert.equal(receptionRow({ ...base, deliveries: [{ at: new Date("2026-11-20T10:00:00Z") }] }, "r", now).tone, "rojo");
+  assert.equal(receptionRow({ ...base, deliveries: [{ at: new Date(), arrivedAt: new Date(), different: true }] }, "r", now).state, "recibida (llegó diferente)");
+  assert.equal(receptionRow({ ...base, noNeeds: true }, "r", now).tone, "gris");
+  console.log("ciclo de la semana ok");
+}

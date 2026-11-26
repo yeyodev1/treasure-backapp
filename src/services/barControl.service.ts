@@ -129,45 +129,64 @@ export async function pendingDecisions() {
 
 /* ───────────────────────── Ciclo de la semana ───────────────────────── */
 
-async function weekCycle(map: ProductMap) {
-  const [closing, order, admin, setting] = await Promise.all([
-    StockCount.findOne({ kind: "cierre" }).sort({ cutAt: -1 }).populate("cruise", "code").lean(),
-    WeeklyOrder.findOne().sort({ cutAt: -1 }).lean(),
+type CycleRow = { label: string; state: string; tone: "verde" | "amarillo" | "rojo" | "gris" };
+type LeanOrder = { code: string; week: string; status: string; noNeeds?: boolean; autoApproved?: boolean; deliveries?: Array<{ at: Date; arrivedAt?: Date | null; needsDirector?: boolean; different?: boolean }> };
+const shortDate = (k: string) => k.slice(5).split("-").reverse().join("-");
+const weekDay = (k: string) => new Date(`${k}T12:00:00-06:00`).toLocaleDateString("es-EC", { weekday: "short", day: "numeric", timeZone: "Pacific/Galapagos" });
+
+/** Recepción del viernes de un pedido (el viernes es 2 días después del corte del miércoles). */
+export function receptionRow(o: LeanOrder, label: string, now = Date.now()): CycleRow {
+  const ds = o.deliveries ?? [];
+  if (o.status === "cancelado") return { label, state: "cancelado", tone: "gris" };
+  if (o.noNeeds) return { label, state: "sin necesidades", tone: "gris" };
+  const open = ds.find((d) => !d.arrivedAt);
+  if (open) {
+    if (open.needsDirector) return { label, state: "falta la directora", tone: "amarillo" };
+    const hours = Math.floor((now - new Date(open.at).getTime()) / 3_600_000);
+    return { label, state: `${hours} h sin confirmar`, tone: hours >= 24 ? "rojo" : "amarillo" };
+  }
+  if (ds.length) return { label, state: ds.some((d) => d.different) ? "recibida (llegó diferente)" : "recibida", tone: ds.some((d) => d.different) ? "amarillo" : "verde" };
+  return { label, state: "pendiente", tone: "amarillo" };
+}
+
+/**
+ * Ciclo de la semana, siempre las mismas 5 filas del diseño de Gerencia (26-nov-2026):
+ * conteo de cierre del último crucero, pedido, recepción del pedido anterior,
+ * recepción de este viernes y control de Administración.
+ */
+async function weekCycle() {
+  const [lastCruise, orders, admin, setting] = await Promise.all([
+    Cruise.findOne({ status: "cerrado" }).sort({ startDate: -1 }).select("code").lean(),
+    WeeklyOrder.find().sort({ cutAt: -1 }).limit(2).lean() as unknown as Promise<LeanOrder[]>,
     StockCount.findOne({ kind: "admin", status: { $ne: "borrador" } }).sort({ submittedAt: -1 }).lean(),
     AppSetting.findOne({ key: "adminControl" }).lean(),
   ]);
-  const rows: Array<{ label: string; state: string; tone: "verde" | "amarillo" | "rojo" | "gris" }> = [];
-  if (closing) {
-    const code = (closing.cruise as unknown as { code?: string } | null)?.code ?? "";
-    rows.push({
-      label: `Conteo de cierre de ${code}`,
-      state: closing.status === "aprobado" ? `verificado ${keyOf(closing.verifiedAt ?? closing.updatedAt!).slice(5).split("-").reverse().join("-")}` : closing.status === "gerencia" ? "en Gerencia" : closing.status === "enviado" ? "con la directora" : "el bartender cuenta",
-      tone: closing.status === "aprobado" ? "verde" : closing.status === "gerencia" ? "rojo" : "amarillo",
-    });
-  }
-  if (order) {
-    const day = new Date(`${order.week}T12:00:00-06:00`).toLocaleDateString("es-EC", { weekday: "short", day: "numeric", timeZone: "Pacific/Galapagos" });
-    rows.push({
-      label: `Pedido ${order.code} (${day})`,
-      state: order.status === "aprobado" ? (order.autoApproved ? "aprobado solo 18h00" : order.noNeeds ? "sin necesidades" : "aprobado") : order.status === "directora" ? "por aprobar (hasta 18h00)" : order.status === "bar" ? "el bartender ajusta (hasta 15h00)" : "cancelado",
-      tone: order.status === "aprobado" ? (order.autoApproved ? "amarillo" : "verde") : "amarillo",
-    });
-    for (const d of order.deliveries ?? []) {
-      const hours = Math.floor((Date.now() - new Date(d.at).getTime()) / 3_600_000);
+  const rows: CycleRow[] = [];
+  if (lastCruise) {
+    const closing = await StockCount.findOne({ kind: "cierre", cruise: lastCruise._id }).sort({ cutAt: -1 }).lean();
+    const label = `Conteo de cierre de ${lastCruise.code}`;
+    if (!closing || closing.status === "rechazado") rows.push({ label, state: "sin conteo", tone: "rojo" });
+    else
       rows.push({
-        label: `Recepción ${order.code}`,
-        state: d.arrivedAt ? `recibida${d.different ? " (llegó diferente)" : ""}` : d.needsDirector ? "falta la directora" : `${hours} h sin confirmar`,
-        tone: d.arrivedAt ? (d.different ? "amarillo" : "verde") : hours >= 24 ? "rojo" : "amarillo",
+        label,
+        state: closing.status === "aprobado" ? `verificado ${shortDate(keyOf(closing.verifiedAt ?? closing.updatedAt!))}` : closing.status === "gerencia" ? "en Gerencia" : closing.status === "enviado" ? "con la directora" : "el bartender cuenta",
+        tone: closing.status === "aprobado" ? "verde" : closing.status === "gerencia" ? "rojo" : "amarillo",
       });
-    }
-    if (order.status === "aprobado" && !order.noNeeds && !(order.deliveries ?? []).length) {
-      rows.push({ label: "Compra del jueves", state: "pendiente", tone: "amarillo" });
-    }
   }
+  const [order, previous] = orders;
+  if (order) {
+    rows.push({
+      label: `Pedido ${order.code} (${weekDay(order.week)})`,
+      state: order.status === "aprobado" ? (order.autoApproved ? "aprobado solo 18h00" : order.noNeeds ? "sin necesidades" : "aprobado") : order.status === "directora" ? "por aprobar (hasta 18h00)" : order.status === "bar" ? "el bartender ajusta (hasta 15h00)" : "cancelado",
+      tone: order.status === "aprobado" ? (order.autoApproved ? "amarillo" : "verde") : order.status === "cancelado" ? "gris" : "amarillo",
+    });
+  }
+  if (previous) rows.push(receptionRow(previous, `Recepción ${previous.code} (${weekDay(addDaysKey(previous.week, 2))})`));
+  if (order) rows.push(receptionRow(order, `Recepción (${weekDay(addDaysKey(order.week, 2))})`));
   const next = (setting?.value as { nextDay?: string } | undefined)?.nextDay ?? "";
   rows.push({
     label: "Control de Administración",
-    state: admin ? `hecho ${keyOf(admin.submittedAt ?? admin.updatedAt!).slice(5).split("-").reverse().join("-")}` : next ? `próximo ${next.slice(5).split("-").reverse().join("-")}` : "sin programar",
+    state: admin ? `hecho ${shortDate(keyOf(admin.submittedAt ?? admin.updatedAt!))}` : next ? `próximo ${shortDate(next)}` : "sin programar",
     tone: admin ? "verde" : "gris",
   });
   return rows;
@@ -189,7 +208,7 @@ export async function controlCurrent() {
   const navigating = Boolean(cruise);
   if (!cruise) cruise = (await Cruise.findOne({ status: "cerrado" }).sort({ startDate: -1 }).lean()) as unknown as LeanCruise | null;
   const nextCruise = await Cruise.findOne({ status: "planificado" }).sort({ startDate: 1 }).select("code startDate").lean();
-  const [decisions, cycle] = await Promise.all([pendingDecisions(), weekCycle(map)]);
+  const [decisions, cycle] = await Promise.all([pendingDecisions(), weekCycle()]);
   if (!cruise) return { navigating: false, cruise: null, next: nextCruise ? { code: nextCruise.code, start: keyOf(nextCruise.startDate) } : null, decisions, cycle };
 
   const start = keyOf(cruise.startDate);
@@ -269,7 +288,7 @@ export async function controlCurrent() {
         product: p.name,
         now: round2(now / size),
         need: round2(need / size),
-        incoming: shortage.has(v._id.toString()) ? "no conseguido" : coming ? `${round2(coming / size)} pedidas` : "no pedido",
+        incoming: `${weekDay(friday)} · ${shortage.has(v._id.toString()) ? "no conseguido" : coming ? `${round2(coming / size)} pedidas` : "no pedido"}`,
         state: now + coming >= need ? "Alcanza con la recepción" : now <= 0 ? "Sin stock ahora" : runsOutIn <= 1 ? "Se acaba mañana" : `Se acaba el ${dayName}`,
         tone: now + coming >= need ? "amarillo" : "rojo",
       });
