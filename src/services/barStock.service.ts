@@ -22,7 +22,10 @@ export async function nextCountCode(): Promise<string> {
 
 /** Frescos (menta, limón, azúcar…): se piden pero no llevan stock ni se cuentan. */
 const FRESH_UNITS = new Set(["ramita", "rodaja", "cucharadita", "cucharada", "gota", "golpe", "porción"]);
-export const isFresh = (p: { fresh?: boolean; stockUnit?: string }) => Boolean(p.fresh) || FRESH_UNITS.has(p.stockUnit ?? "");
+/** Frescos que se guardan por unidad: clara de huevo y fruta entera (especificación, sección 6). */
+const FRESH_NAMES = /clara de huevo|\(fruta\)/i;
+export const isFresh = (p: { fresh?: boolean; stockUnit?: string; name?: string }) =>
+  Boolean(p.fresh) || FRESH_UNITS.has(p.stockUnit ?? "") || FRESH_NAMES.test(p.name ?? "");
 
 /** Orden fijo del conteo: el bar se guarda así y la pantalla sigue ese orden. */
 export const COUNT_GROUPS = ["licores", "vinos", "cervezas", "gaseosas", "insumos"] as const;
@@ -34,8 +37,11 @@ export const GROUP_LABELS: Record<CountGroup, string> = {
   gaseosas: "Gaseosas y agua",
   insumos: "Insumos",
 };
-export function groupOf(p: { category?: string }): CountGroup {
+export function groupOf(p: { category?: string; name?: string; containerLabel?: string }): CountGroup {
   if (p.category === "licor") return "licores";
+  // Baileys, Campari, Vermut y Caña son insumos de cóctel, pero se guardan y cuentan con los licores.
+  if (p.category === "insumo" && /\(botella\)/i.test(p.name ?? "")) return "licores";
+  if (/^soda\b/i.test(p.name ?? "")) return "gaseosas";
   if (p.category === "vino") return "vinos";
   if (p.category === "cerveza") return "cervezas";
   if (p.category === "gaseosa" || p.category === "agua") return "gaseosas";

@@ -175,7 +175,7 @@ type CountDoc = InstanceType<typeof StockCount>;
  */
 async function view(count: CountDoc, role: string) {
   const products = await Product.find({ _id: { $in: count.lines.map((l) => l.product) } })
-    .select("category stockUnit containerSize containerLabel caseSize countOrder")
+    .select("name category stockUnit containerSize containerLabel caseSize countOrder")
     .lean();
   const info = new Map(products.map((p) => [p._id.toString(), p]));
   const owner = role === "duena";
