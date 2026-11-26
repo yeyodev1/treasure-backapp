@@ -57,3 +57,16 @@ assert.deepEqual(judgeRecount({ ...jw, recount: 2250 }), { result: "merma", valu
 // Esperado negativo cuenta como 0 (nunca negativo).
 assert.equal(judgeRecount({ ...club, expected: -21, recount: 0 }).result, "corregido");
 console.log("ok", { navegando: n("navegando"), para: n("para"), porVenir: n("por_venir") });
+
+// Propuesta vieja (fórmula de antes del 26-nov, sin tocar) → se recalcula una sola vez.
+import { isOldProposal } from "../controllers/weeklyOrder.controller";
+{
+  const h = (detail: string) => [{ action: "Propuesta preparada", detail }] as never;
+  const base = { status: "bar", revision: 0, lines: [{ editedAt: null }] } as never as Parameters<typeof isOldProposal>[0];
+  const assert = (c: boolean, m: string) => { if (!c) throw new Error(m); };
+  assert(isOldProposal({ ...base, history: h("38 producto(s) con existencias del corte") }), "vieja sin tocar → recalcula");
+  assert(!isOldProposal({ ...base, history: h("6 producto(s) · consumo por pasajero de los últimos 4 cruceros") }), "nueva → no");
+  assert(!isOldProposal({ ...base, history: [...(h("x") as never[]), {}] as never }), "ya recalculada → no");
+  assert(!isOldProposal({ ...base, lines: [{ editedAt: new Date() }] as never, history: h("x") }), "editada por el bar → no");
+  console.log("propuesta vieja ok");
+}

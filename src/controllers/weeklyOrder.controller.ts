@@ -17,6 +17,7 @@ import {
   ALERT_AFTER_MS,
   outlierReasons,
   purchaseResponsible,
+  buildLines,
   ensureWeeklyOrder,
   isOverdue,
   latestCut,
@@ -141,10 +142,37 @@ async function withDeadlines(order: OrderDoc) {
   return order;
 }
 
+/** Propuesta armada con la fórmula vieja (antes del 26-nov) y sin tocar: se rehace con la de Bar-stock. */
+export function isOldProposal(order: Pick<IWeeklyOrder, "status" | "revision" | "history" | "lines">) {
+  const [first] = order.history;
+  return (
+    order.status === "bar" &&
+    !order.revision &&
+    order.history.length === 1 &&
+    first?.action === "Propuesta preparada" &&
+    !first.detail.includes("últimos 4 cruceros") &&
+    order.lines.every((l) => !l.editedAt)
+  );
+}
+
+async function upgradeProposal(order: OrderDoc) {
+  if (!isOldProposal(order)) return;
+  order.lines = (await buildLines(order.cutAt)) as never;
+  order.history.push({
+    at: new Date(),
+    by: null,
+    byName: "Sistema",
+    action: "Propuesta recalculada",
+    detail: `${order.lines.length} producto(s) · consumo por pasajero de los últimos 4 cruceros (la anterior usaba la fórmula vieja)`,
+  });
+  await save(order);
+}
+
 export async function currentWeeklyOrder(_req: Request, res: Response, next: NextFunction) {
   try {
     await ensureWeeklyOrder();
     const orders = await WeeklyOrder.find().sort({ cutAt: -1 }).limit(12);
+    if (orders[0]) await upgradeProposal(orders[0]);
     if (orders[0]) await withDeadlines(orders[0]);
     const [first] = orders;
     res.json({
