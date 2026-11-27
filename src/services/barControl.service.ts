@@ -267,7 +267,8 @@ export async function controlCurrent() {
     }
     for (const s of order.shortages ?? []) shortage.add(s.product.toString());
   }
-  const friday = addDaysKey(today, (5 - new Date(`${today}T12:00:00Z`).getUTCDay() + 7) % 7 || 7);
+  // El viernes de esta semana (si hoy es viernes, hoy: la recepción todavía puede llegar).
+  const friday = addDaysKey(today, (5 - new Date(`${today}T12:00:00Z`).getUTCDay() + 7) % 7);
   const short: Array<{ product: string; now: number; need: number; incoming: string; state: string; tone: string }> = [];
   if (navigating && pastPaxDays && daysLeft > 0) {
     for (const v of ventas) {
