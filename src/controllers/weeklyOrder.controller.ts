@@ -26,6 +26,7 @@ import {
   orderProgress,
   PHASE_LABELS,
   phaseOf,
+  RETURNED,
 } from "../services/weeklyOrder.service";
 import { moveStock, stockOf, updateCost } from "../services/inventory.service";
 import { logEvent } from "../services/audit.service";
@@ -372,6 +373,24 @@ export async function approveWeeklyOrder(req: Request, res: Response, next: Next
       title: noNeeds ? `Pedido ${order.code} cerrado sin necesidades` : `Pedido ${order.code} aprobado`,
       detail: `${withQty.length} producto(s)`,
     });
+    res.json({ order: serialize(order) });
+  } catch (err) {
+    next(err);
+  }
+}
+
+/** Directora: "Devolver al bartender" con el motivo; el bartender ajusta y lo vuelve a enviar. */
+export async function returnWeeklyOrder(req: Request, res: Response, next: NextFunction) {
+  try {
+    const reason = String(req.body?.reason ?? "").trim();
+    if (!reason) throw badRequest("Escribe qué debe corregir el bartender");
+    const order = await load(String(req.params.id));
+    if (order.status !== "directora") throw conflict("Este pedido no está esperando tu aprobación");
+    assertVersion(order, req.body?.version);
+    order.status = "bar";
+    push(order, req, RETURNED, reason);
+    await save(order);
+    await logEvent(req.auth, { kind: "requerimiento", title: `Pedido ${order.code} devuelto al bartender`, detail: reason });
     res.json({ order: serialize(order) });
   } catch (err) {
     next(err);

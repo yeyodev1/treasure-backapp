@@ -318,16 +318,21 @@ export async function outlierReasons(order: Pick<IWeeklyOrder, "lines" | "code" 
 /** Primer miércoles con los plazos automáticos: los pedidos anteriores siguen como estaban (no se aprueban solos de forma retroactiva). */
 export const DEADLINES_FROM_WEEK = "2026-12-02";
 
+/** Acción del historial cuando la directora devuelve el pedido al bartender. */
+export const RETURNED = "Devuelto al bartender";
+
 export async function advanceDeadlines(order: InstanceType<typeof WeeklyOrder>, now: Date = new Date()) {
   if (order.week < DEADLINES_FROM_WEEK) return false;
   let changed = false;
-  if (order.status === "bar" && now >= deadline(order, ALERT_AFTER_MS)) {
+  // Devuelto por la directora: no vuelve solo a las 15h00, pero a las 18h00 se aprueba igual.
+  const returned = order.history.some((h) => h.action === RETURNED);
+  if (order.status === "bar" && !returned && now >= deadline(order, ALERT_AFTER_MS)) {
     for (const l of order.lines) l.barQty = l.qty;
     order.status = "directora";
     order.history.push({ at: now, by: null, byName: "Sistema", action: "Pasó a la directora a las 15h00", detail: "El bartender no envió ajustes" });
     changed = true;
   }
-  if (order.status === "directora" && now >= deadline(order, APPROVE_AFTER_MS)) {
+  if ((order.status === "directora" || (order.status === "bar" && returned)) && now >= deadline(order, APPROVE_AFTER_MS)) {
     for (const l of order.lines) l.approvedQty = l.qty;
     order.status = "aprobado";
     order.autoApproved = true;

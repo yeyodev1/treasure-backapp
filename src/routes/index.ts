@@ -195,6 +195,7 @@ export default function routerApi(app: Application) {
   router.post("/weekly-orders/:id/send", requireAuth, BAR, weeklyOrders.sendWeeklyOrder);
   router.post("/weekly-orders/:id/approve", requireAuth, DIRECTOR, weeklyOrders.approveWeeklyOrder);
   router.post("/weekly-orders/:id/cancel", requireAuth, DIRECTOR, weeklyOrders.cancelWeeklyOrder);
+  router.post("/weekly-orders/:id/return", requireAuth, DIRECTOR, weeklyOrders.returnWeeklyOrder);
   // Cada responsable confirma su parte del pedido aprobado (guía 4 perfiles).
   router.post("/weekly-orders/:id/deliver", requireAuth, requireRole("admin"), weeklyOrders.deliverWeeklyOrder);
   router.post("/weekly-orders/:id/ship", requireAuth, OWNER, weeklyOrders.shipWeeklyOrder);

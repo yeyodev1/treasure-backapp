@@ -83,3 +83,14 @@ import { isOldProposal } from "../controllers/weeklyOrder.controller";
   assert.equal(receptionRow({ ...base, noNeeds: true }, "r", now).tone, "gris");
   console.log("ciclo de la semana ok");
 }
+
+// Devuelto por la directora: a las 16h00 no regresa solo a la directora (sí se aprueba a las 18h00).
+{
+  const { advanceDeadlines, RETURNED } = require("../services/weeklyOrder.service");
+  const o = { week: "2026-12-02", status: "bar", lines: [], history: [{ action: RETURNED }] };
+  advanceDeadlines(o, new Date("2026-12-02T16:00:00-06:00")).then((changed: boolean) => {
+    assert.equal(changed, false);
+    assert.equal(o.status, "bar");
+    console.log("devolver al bartender ok");
+  });
+}
