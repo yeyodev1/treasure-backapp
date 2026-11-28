@@ -97,6 +97,8 @@ export interface IProduct {
   costUpdatedAt: Date | null;
   /** Producto equivalente en Contífico (para facturar). Vacío = sin vincular. */
   contificoId: string;
+  /** Tipos que se cuentan por separado y suman al mismo producto (p. ej. Bacardi Blanco y Gold; pedido de Felipe, 28-nov-2026). */
+  variants: string[];
   contificoCode: string;
   priceHistory: IPriceChange[];
   createdBy?: Types.ObjectId;
@@ -153,6 +155,7 @@ const productSchema = new Schema<IProduct>(
     costUpdatedAt: { type: Date, default: null },
     contificoId: { type: String, default: "" },
     contificoCode: { type: String, default: "" },
+    variants: { type: [String], default: [] },
     priceHistory: { type: [priceChangeSchema], default: [] },
     createdBy: { type: Schema.Types.ObjectId, ref: "User" },
   },

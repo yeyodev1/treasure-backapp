@@ -44,6 +44,9 @@ export interface ICountLine {
   unitCost: number;
   value: number;
   fullBottle: boolean;
+  /** Productos con tipos: lo contado por tipo, en envases. La suma va en physical / recount. */
+  physicalBy: Record<string, number> | null;
+  recountBy: Record<string, number> | null;
 }
 
 export interface IStockCount {
@@ -88,6 +91,8 @@ const countLineSchema = new Schema<ICountLine>(
     unitCost: { type: Number, default: 0 },
     value: { type: Number, default: 0 },
     fullBottle: { type: Boolean, default: false },
+    physicalBy: { type: Schema.Types.Mixed, default: null },
+    recountBy: { type: Schema.Types.Mixed, default: null },
   },
   { _id: false },
 );

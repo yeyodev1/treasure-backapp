@@ -33,6 +33,21 @@ import { round2 } from "../utils/units";
 
 const isLead = (role: string) => role === "direccion" || role === "duena";
 
+/**
+ * Lo contado por tipo (envases) de un producto con tipos: solo los tipos del
+ * producto. total es la suma cuando están todos; null si falta alguno.
+ */
+export function byVariant(input: unknown, variants: string[]) {
+  if (!variants.length || !input || typeof input !== "object") return null;
+  const counted: Record<string, number> = {};
+  for (const v of variants) {
+    const n = (input as Record<string, unknown>)[v];
+    if (typeof n === "number" && n >= 0 && n < 100_000) counted[v] = n;
+  }
+  const values = Object.values(counted);
+  return { counted, total: values.length === variants.length ? round2(values.reduce((a, b) => a + b, 0)) : null };
+}
+
 /* ───────────── Rotura, salida y devolución a tierra ───────────── */
 
 const EXIT_KINDS = ["cocina", "tripulacion", "brindis"] as const;
@@ -179,7 +194,7 @@ type CountDoc = InstanceType<typeof StockCount>;
  */
 async function view(count: CountDoc, role: string) {
   const products = await Product.find({ _id: { $in: count.lines.map((l) => l.product) } })
-    .select("name category stockUnit containerSize containerLabel caseSize countOrder")
+    .select("name category stockUnit containerSize containerLabel caseSize countOrder variants")
     .lean();
   const info = new Map(products.map((p) => [p._id.toString(), p]));
   const owner = role === "duena";
@@ -198,9 +213,12 @@ async function view(count: CountDoc, role: string) {
         containerSize: size,
         caseSize: p?.caseSize ?? 0,
         countsOpen: p ? countsOpen(p) : false,
+        variants: p?.variants ?? [],
         // A ciegas: el bartender solo ve lo que él contó; la directora, solo su recuento.
         physical: role === "bartender" || owner || stage === "borrador" ? (l.physical === null ? null : round2(l.physical / size)) : undefined,
         recount: l.recount === null ? null : round2(l.recount / size),
+        physicalBy: role === "bartender" || owner || stage === "borrador" ? l.physicalBy ?? null : undefined,
+        recountBy: l.recountBy ?? null,
         expected: owner || stage === "aprobado" ? round2(Math.max(0, l.digitalAtCut) / size) : undefined,
         result: showResult ? l.result : "",
         motive: l.motive,
@@ -281,13 +299,21 @@ export async function saveCountLines(req: Request, res: Response, next: NextFunc
   try {
     const count = await loadCount(String(req.params.id), req.auth!.role);
     if (count.status !== "borrador") throw conflict("Este conteo ya se envió");
-    const lines = Array.isArray(req.body?.lines) ? (req.body.lines as Array<{ productId?: string; physical?: number | null }>) : [];
-    const products = await Product.find({ _id: { $in: count.lines.map((l) => l.product) } }).select("containerSize").lean();
+    const lines = Array.isArray(req.body?.lines)
+      ? (req.body.lines as Array<{ productId?: string; physical?: number | null; by?: unknown }>)
+      : [];
+    const products = await Product.find({ _id: { $in: count.lines.map((l) => l.product) } }).select("containerSize variants").lean();
     const size = new Map(products.map((p) => [p._id.toString(), p.containerSize || 1]));
+    const types = new Map(products.map((p) => [p._id.toString(), p.variants ?? []]));
     for (const input of lines) {
       const line = count.lines.find((l) => l.product.toString() === input.productId);
       if (!line) continue;
-      if (input.physical === null) line.physical = null;
+      const by = byVariant(input.by, types.get(line.product.toString()) ?? []);
+      if (by) {
+        line.physicalBy = by.counted;
+        line.physical = by.total === null ? null : round2(by.total * (size.get(line.product.toString()) ?? 1));
+        count.markModified("lines");
+      } else if (input.physical === null) line.physical = null;
       else if (typeof input.physical === "number" && input.physical >= 0 && input.physical < 100_000) {
         line.physical = round2(input.physical * (size.get(line.product.toString()) ?? 1));
       }
@@ -350,13 +376,23 @@ export async function recountLines(req: Request, res: Response, next: NextFuncti
     const count = await loadCount(String(req.params.id));
     if (count.status !== "enviado") throw conflict("Este conteo no está esperando el recuento");
     const lines = Array.isArray(req.body?.lines)
-      ? (req.body.lines as Array<{ productId?: string; recount?: number | null; motive?: string }>)
+      ? (req.body.lines as Array<{ productId?: string; recount?: number | null; motive?: string; by?: unknown }>)
       : [];
-    const products = await Product.find({ _id: { $in: count.lines.map((l) => l.product) } }).select("containerSize").lean();
+    const products = await Product.find({ _id: { $in: count.lines.map((l) => l.product) } }).select("containerSize variants").lean();
     const size = new Map(products.map((p) => [p._id.toString(), p.containerSize || 1]));
+    const types = new Map(products.map((p) => [p._id.toString(), p.variants ?? []]));
     for (const input of lines) {
       const line = count.lines.find((l) => l.product.toString() === input.productId);
       if (!line || ["ok", "tolerancia"].includes(line.result)) continue;
+      const by = byVariant(input.by, types.get(line.product.toString()) ?? []);
+      if (by) {
+        line.recountBy = by.counted;
+        count.markModified("lines");
+        if (by.total === null) {
+          line.recount = null;
+          line.result = "";
+        } else input.recount = by.total;
+      }
       if (typeof input.recount === "number" && input.recount >= 0) {
         const next = round2(input.recount * (size.get(line.product.toString()) ?? 1));
         if (next !== line.recount) line.result = "";

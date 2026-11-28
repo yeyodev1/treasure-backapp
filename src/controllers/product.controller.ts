@@ -50,6 +50,8 @@ interface ProductBody {
   fresh?: boolean;
   caseSize?: number;
   countOrder?: number;
+  /** Tipos que se cuentan aparte (Bacardi Blanco / Gold). */
+  variants?: string[];
 }
 
 /** Costo del envase → costo por unidad base. */
@@ -116,6 +118,11 @@ function applyPhysicalFields(product: IProduct, body: ProductBody) {
     product.caseSize = Math.round(Number(body.caseSize));
   }
   if (body.countOrder !== undefined && Number.isFinite(Number(body.countOrder))) product.countOrder = Number(body.countOrder);
+  if (Array.isArray(body.variants)) {
+    const types = [...new Set(body.variants.map((v) => String(v).trim().slice(0, 30)).filter(Boolean))];
+    if (types.length === 1 || types.length > 8) throw badRequest("Pon entre 2 y 8 tipos, o ninguno");
+    product.variants = types;
+  }
   if (body.servingPrice !== undefined) product.servingPrice = body.servingPrice;
 }
 
